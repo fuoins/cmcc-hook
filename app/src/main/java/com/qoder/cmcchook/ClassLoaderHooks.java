@@ -42,6 +42,7 @@ final class ClassLoaderHooks {
         boolean classicDone = false;
         boolean okhttpDone = false;
         boolean x5Done = false;
+        boolean updateDone = false;
         boolean fallbackTried = false;
         boolean classicLogged = false;
         boolean okhttpLogged = false;
@@ -50,6 +51,14 @@ final class ClassLoaderHooks {
 
         while (System.currentTimeMillis() - start < TOTAL_MS) {
             round++;
+            // 升级弹窗优先：它一旦弹出来就会崩，而且是首页动画结束后立刻触发。
+            if (!updateDone) {
+                try {
+                    updateDone = UpdateHooks.install(appLoader);
+                } catch (Throwable e) {
+                    HookLog.logcat("update hook probe failed: " + e);
+                }
+            }
             if (!classicDone) {
                 try {
                     WebViewHooks.installClassic(appLoader);
@@ -101,7 +110,7 @@ final class ClassLoaderHooks {
                         "已接管 com.tencent.smtt.sdk.WebView，H5 请求与页面快照会写入日志。");
             }
 
-            if (classicDone && okhttpDone && x5Done) {
+            if (classicDone && okhttpDone && x5Done && updateDone) {
                 break;
             }
 
@@ -117,9 +126,10 @@ final class ClassLoaderHooks {
         String detail = "探测轮次: " + round
                 + "\nClassic WebView: " + done(classicDone)
                 + "\nOkHttp: " + done(okhttpDone)
-                + "\nX5 WebView: " + done(x5Done);
+                + "\nX5 WebView: " + done(x5Done)
+                + "\n升级弹窗拦截: " + done(updateDone);
         HookLog.log("HOOK", "晚加载类探测结束", detail);
-        HookLog.logcat("late probe finished: okhttp=" + okhttpDone + " x5=" + x5Done);
+        HookLog.logcat("late probe finished: okhttp=" + okhttpDone + " x5=" + x5Done + " update=" + updateDone);
     }
 
     private static String done(boolean value) {

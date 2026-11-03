@@ -2,6 +2,8 @@ package com.qoder.cmcchook;
 
 import java.lang.reflect.Method;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -21,13 +23,21 @@ import de.robv.android.xposed.XposedBridge;
  *                             └─ android.media.QuourstGlaernong.<init>  ← 崩在这里
  *
  * QuourstGlaernong 是升级 SDK 里被改名的类，构造函数本身会抛异常，
- * 也就是说弹窗一旦创建就必崩。这里不去修它，而是在它上面四层全部设卡，
+ * 也就是弹窗一旦创建就必崩。这里不去修它，而是在它上面四层全部设卡，
  * 让代码根本走不到那一行。
  *
  * 为什么不写死方法签名：没有 11.9.1 的反编译结果，参数类型可能被混淆，
  * 用 hookAllMethods 按方法名把同名重载一次性全挂上，改版也不容易失效。
+ *
+ * 为什么不在 HookEntry 里直接装：App 有加固壳，业务类要等壳初始化后才加载，
+ * 启动瞬间 Class.forName 一定是 ClassNotFound。这里做成可重复调用的
+ * install()，由 ClassLoaderHooks 的后台探测线程反复尝试，类一出现就补装。
  */
 final class UpdateHooks {
+
+    /** 已经处理过的类，避免探测线程重复挂钩 */
+    private static final Set<String> HOOKED = ConcurrentHashMap.newKeySet();
+    private static final AtomicBoolean READY_LOGGED = new AtomicBoolean();
 
     /** 弹窗链路入口，任意一个命中就能阻断整条链 */
     private static final String[][] DIALOG_ENTRIES = {
@@ -85,42 +95,67 @@ final class UpdateHooks {
     private UpdateHooks() {
     }
 
-    static void install(ClassLoader cl) {
-        int total = 0;
+    /**
+     * 可重复调用：还没加载的类下一轮再试，已处理过的类不会重复挂钩。
+     *
+     * @return 四条弹窗链路入口是否都已完成挂钩
+     */
+    static boolean install(ClassLoader cl) {
         for (String[] entry : DIALOG_ENTRIES) {
-            total += hook(cl, entry);
+            hookOnce(cl, entry);
         }
         for (String[] entry : CHECK_ENTRIES) {
-            total += hook(cl, entry);
+            hookOnce(cl, entry);
         }
         for (String[] entry : FLAG_ENTRIES) {
-            total += hook(cl, entry);
+            hookOnce(cl, entry);
         }
-        HookLog.logcat("update hooks installed, methods=" + total);
+
+        boolean ready = true;
+        for (String[] entry : DIALOG_ENTRIES) {
+            if (!HOOKED.contains(entry[0])) {
+                ready = false;
+                break;
+            }
+        }
+        if (ready && READY_LOGGED.compareAndSet(false, true)) {
+            HookLog.log("HOOK", "升级弹窗拦截已安装",
+                    "已拦截 UpgradeDialogChecker / CheckVersionHelper / "
+                            + "AppUpgradeManager / AppUpgradeDialogManager，"
+                            + "并关闭版本检查，不会再弹出「发现新版本」。");
+            HookLog.logcat("update hooks ready, classes=" + HOOKED.size());
+        }
+        return ready;
     }
 
-    private static int hook(ClassLoader cl, String[] entry) {
+    private static void hookOnce(ClassLoader cl, String[] entry) {
+        if (HOOKED.contains(entry[0])) {
+            return;
+        }
         Class<?> clazz = findClass(cl, entry[0]);
         if (clazz == null) {
-            HookLog.logcat("update hook missing class: " + entry[0]);
-            return 0;
+            // 加固壳还没把类放出来，交给下一轮探测
+            return;
         }
+
         int count = 0;
+        StringBuilder detail = new StringBuilder();
         for (int i = 1; i < entry.length; i++) {
             String name = entry[i];
             try {
                 Set<XC_MethodHook.Unhook> unhooks = XposedBridge.hookAllMethods(clazz, name, SKIP);
                 if (unhooks == null || unhooks.isEmpty()) {
-                    HookLog.logcat("update hook no match: " + entry[0] + "#" + name);
+                    detail.append(' ').append(name).append("=miss");
                 } else {
                     count += unhooks.size();
-                    HookLog.logcat("update hook ok: " + entry[0] + "#" + name + " x" + unhooks.size());
+                    detail.append(' ').append(name).append('=').append(unhooks.size());
                 }
             } catch (Throwable e) {
-                HookLog.logcat("update hook failed: " + entry[0] + "#" + name + " " + e);
+                detail.append(' ').append(name).append("=err(").append(e).append(')');
             }
         }
-        return count;
+        HOOKED.add(entry[0]);
+        HookLog.logcat("update hook " + entry[0] + " x" + count + detail);
     }
 
     private static Class<?> findClass(ClassLoader cl, String name) {

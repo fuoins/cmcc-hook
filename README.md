@@ -50,8 +50,8 @@ v1.3 起自动拦截升级弹窗，不需要额外配置。
 日志里搜 `update hook` 可以看到命中情况：
 
 ```
-update hook ok: com.cmccit.appupgrade.utils.AppUpgradeDialogManager#showDialog x1
-update hooks installed, methods=7
+update hook com.cmccit.appupgrade.utils.AppUpgradeDialogManager x1 showDialog=1
+update hooks ready, classes=4
 ```
 
 ## 抓取步骤（请按这个顺序操作）
