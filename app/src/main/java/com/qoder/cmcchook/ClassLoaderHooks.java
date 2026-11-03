@@ -8,7 +8,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 很容易和加固壳冲突导致闪退），改为后台低频探测：类一旦出现再补装 Hook。
  */
 final class ClassLoaderHooks {
-    private static final long TOTAL_MS = 5L * 60L * 1000L;
+    private static final long TOTAL_MS = 15L * 60L * 1000L;
     private static final long FAST_PHASE_MS = 60_000L;
     private static final AtomicBoolean STARTED = new AtomicBoolean();
 
@@ -31,11 +31,21 @@ final class ClassLoaderHooks {
     }
 
     private static void probe(ClassLoader appLoader) {
+        // 给 Application.attachBaseContext 一点时间，保证日志能通过广播发出去。
+        try {
+            Thread.sleep(1500L);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return;
+        }
         long start = System.currentTimeMillis();
         boolean classicDone = false;
         boolean okhttpDone = false;
         boolean x5Done = false;
         boolean fallbackTried = false;
+        boolean classicLogged = false;
+        boolean okhttpLogged = false;
+        boolean x5Logged = false;
         int round = 0;
 
         while (System.currentTimeMillis() - start < TOTAL_MS) {
@@ -48,6 +58,11 @@ final class ClassLoaderHooks {
                 } catch (Throwable e) {
                     HookLog.logcat("classic WebView probe failed: " + e);
                 }
+            }
+            if (classicDone && !classicLogged) {
+                classicLogged = true;
+                HookLog.log("HOOK", "Classic WebView Hook 已安装",
+                        "已接管 android.webkit.WebView 的构造、loadUrl、页面回调与 Cookie。");
             }
 
             if (!okhttpDone) {
@@ -66,6 +81,12 @@ final class ClassLoaderHooks {
                     }
                 }
             }
+            if (okhttpDone && !okhttpLogged) {
+                okhttpLogged = true;
+                HookLog.log("HOOK", "OkHttp Hook 已安装",
+                        "已接管 okhttp3.internal.http.RealInterceptorChain.proceed，"
+                                + "请求与响应会写入日志。");
+            }
 
             if (!x5Done) {
                 try {
@@ -74,6 +95,11 @@ final class ClassLoaderHooks {
                     HookLog.logcat("X5 probe failed: " + e);
                 }
             }
+            if (x5Done && !x5Logged) {
+                x5Logged = true;
+                HookLog.log("HOOK", "X5 WebView Hook 已安装",
+                        "已接管 com.tencent.smtt.sdk.WebView，H5 请求与页面快照会写入日志。");
+            }
 
             if (classicDone && okhttpDone && x5Done) {
                 break;
@@ -81,7 +107,7 @@ final class ClassLoaderHooks {
 
             long elapsed = System.currentTimeMillis() - start;
             try {
-                Thread.sleep(elapsed < FAST_PHASE_MS ? 800L : 3000L);
+                Thread.sleep(elapsed < FAST_PHASE_MS ? 800L : 5000L);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;

@@ -119,6 +119,13 @@ final class ActivityHooks {
         }
         detail.append("说明: 从这里开始记录，APP_START 表示模块已注入目标进程。");
         HookLog.log("APP-START", "中国移动 App 启动 / 模块已注入", detail.toString());
+        // 读取上一次进程退出的系统记录：可区分 Java 崩溃、native 崩溃、被信号杀死等。
+        try {
+            if (Build.VERSION.SDK_INT >= 30) {
+                ExitInfoApi30.log(app);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     private static String processName() {
