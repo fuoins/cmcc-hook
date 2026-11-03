@@ -17,7 +17,7 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 final class HookLog {
     static final String MODULE_PACKAGE = "com.qoder.cmcchook";
     static final String TARGET_PACKAGE = "com.greenpoint.android.mc10086.activity";
-    static final String MODULE_VERSION = "1.0";
+    static final String MODULE_VERSION = "1.1";
     static final String ACTION_LOG = "com.qoder.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.qoder.cmcchook.action.HEARTBEAT";
     private static final String RECEIVER = "com.qoder.cmcchook.LogReceiver";
@@ -108,6 +108,10 @@ final class HookLog {
     static void error(String summary, Throwable throwable) {
         String detail = throwable == null ? "" : Log.getStackTraceString(throwable);
         log("ERROR", summary, detail);
+    }
+
+    static String processName() {
+        return processName;
     }
 
     static void heartbeatIfDue() {

@@ -11,8 +11,8 @@ android {
         applicationId = "com.qoder.cmcchook"
         minSdk = 23
         targetSdk = 30
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
 
     buildTypes {

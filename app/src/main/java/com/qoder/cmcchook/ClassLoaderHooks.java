@@ -1,132 +1,102 @@
 package com.qoder.cmcchook;
 
-import java.util.Collections;
-import java.util.HashMap;
-import java.util.Map;
-import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
-
-import de.robv.android.xposed.XC_MethodHook;
-import de.robv.android.xposed.XposedBridge;
-import de.robv.android.xposed.XposedHelpers;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * 中国移动 App 使用了加固壳，OkHttp / X5 WebView 等业务类通常在启动之后
- * 才由自定义 ClassLoader 动态加载。安装时直接 findClass 往往找不到这些类，
- * 因此这里监听类加载，在目标类第一次出现时补装对应的 Hook。
+ * 中国移动 App 使用了加固壳，OkHttp / X5 WebView 等业务类通常要等壳初始化后
+ * 才真正加载。这里不再 hook ClassLoader.loadClass / findClass（这类全局 hook
+ * 很容易和加固壳冲突导致闪退），改为后台低频探测：类一旦出现再补装 Hook。
  */
 final class ClassLoaderHooks {
-    private static final int KIND_OKHTTP = 1;
-    private static final int KIND_WEBVIEW = 2;
-
-    private static final Map<String, Integer> WATCHED;
-
-    static {
-        Map<String, Integer> map = new HashMap<>();
-        map.put("okhttp3.internal.http.RealInterceptorChain", KIND_OKHTTP);
-        map.put("com.squareup.okhttp.internal.http.RealInterceptorChain", KIND_OKHTTP);
-        map.put("com.android.okhttp.internal.http.RealInterceptorChain", KIND_OKHTTP);
-        map.put("com.tencent.smtt.sdk.WebView", KIND_WEBVIEW);
-        map.put("com.tencent.smtt.sdk.WebViewClient", KIND_WEBVIEW);
-        map.put("com.tencent.smtt.sdk.WebChromeClient", KIND_WEBVIEW);
-        map.put("com.tencent.smtt.sdk.CookieManager", KIND_WEBVIEW);
-        WATCHED = Collections.unmodifiableMap(map);
-    }
-
-    /** 防止补装 Hook 时 findClass 再次触发 loadClass 造成递归。 */
-    private static final ThreadLocal<Boolean> GUARD = new ThreadLocal<>();
-    /** 已处理过的 类名@ClassLoader，避免同一个类重复补装。 */
-    private static final Set<String> HANDLED = ConcurrentHashMap.newKeySet();
+    private static final long TOTAL_MS = 5L * 60L * 1000L;
+    private static final long FAST_PHASE_MS = 60_000L;
+    private static final AtomicBoolean STARTED = new AtomicBoolean();
 
     private ClassLoaderHooks() {
     }
 
-    static void install() {
-        hookLoadClass();
-        hookBaseDexFindClass();
-    }
-
-    private static void hookLoadClass() {
-        try {
-            XposedBridge.hookAllMethods(ClassLoader.class, "loadClass", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    handle(param);
-                }
-            });
-            HookLog.logcat("ClassLoader.loadClass watcher installed");
-        } catch (Throwable e) {
-            HookLog.logcat("ClassLoader.loadClass watcher failed: " + e);
-        }
-    }
-
-    /**
-     * 部分加固壳在自定义 ClassLoader 中直接走 BaseDexClassLoader.findClass，
-     * 这里再补一层，保证动态加载的类也能被看到。
-     */
-    private static void hookBaseDexFindClass() {
-        Class<?> baseDex = XposedHelpers.findClassIfExists(
-                "dalvik.system.BaseDexClassLoader", null);
-        if (baseDex == null) {
+    static void install(final ClassLoader appLoader) {
+        if (appLoader == null || !STARTED.compareAndSet(false, true)) {
             return;
         }
-        try {
-            XposedBridge.hookAllMethods(baseDex, "findClass", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    handle(param);
-                }
-            });
-            HookLog.logcat("BaseDexClassLoader.findClass watcher installed");
-        } catch (Throwable e) {
-            HookLog.logcat("BaseDexClassLoader.findClass watcher failed: " + e);
-        }
-    }
-
-    private static void handle(XC_MethodHook.MethodHookParam param) {
-        if (param.args == null || param.args.length == 0) {
-            return;
-        }
-        Object nameArg = param.args[0];
-        if (!(nameArg instanceof String)) {
-            return;
-        }
-        String name = (String) nameArg;
-        Integer kind = WATCHED.get(name);
-        if (kind == null) {
-            return;
-        }
-        Object result = param.getResult();
-        if (!(result instanceof Class)) {
-            return;
-        }
-        Class<?> clazz = (Class<?>) result;
-        if (!name.equals(clazz.getName())) {
-            return;
-        }
-        if (Boolean.TRUE.equals(GUARD.get())) {
-            return;
-        }
-        ClassLoader loader = clazz.getClassLoader();
-        if (loader == null) {
-            return;
-        }
-        String key = name + "@" + System.identityHashCode(loader);
-        if (!HANDLED.add(key)) {
-            return;
-        }
-        GUARD.set(Boolean.TRUE);
-        try {
-            HookLog.logcat("late class detected: " + name);
-            if (kind == KIND_OKHTTP) {
-                OkHttpHooks.install(loader);
-            } else {
-                WebViewHooks.install(loader);
+        Thread thread = new Thread(new Runnable() {
+            @Override
+            public void run() {
+                probe(appLoader);
             }
-        } catch (Throwable e) {
-            HookLog.logcat("late install failed for " + name + ": " + e);
-        } finally {
-            GUARD.remove();
+        }, "CmccHook-LateProbe");
+        thread.setDaemon(true);
+        thread.setPriority(Thread.MIN_PRIORITY);
+        thread.start();
+    }
+
+    private static void probe(ClassLoader appLoader) {
+        long start = System.currentTimeMillis();
+        boolean classicDone = false;
+        boolean okhttpDone = false;
+        boolean x5Done = false;
+        boolean fallbackTried = false;
+        int round = 0;
+
+        while (System.currentTimeMillis() - start < TOTAL_MS) {
+            round++;
+            if (!classicDone) {
+                try {
+                    WebViewHooks.installClassic(appLoader);
+                    classicDone = true;
+                    HookLog.logcat("classic WebView hooks installed");
+                } catch (Throwable e) {
+                    HookLog.logcat("classic WebView probe failed: " + e);
+                }
+            }
+
+            if (!okhttpDone) {
+                try {
+                    okhttpDone = OkHttpHooks.install(appLoader, false);
+                } catch (Throwable e) {
+                    HookLog.logcat("OkHttp probe failed: " + e);
+                }
+                long elapsed = System.currentTimeMillis() - start;
+                if (!okhttpDone && !fallbackTried && elapsed > 20_000L) {
+                    fallbackTried = true;
+                    try {
+                        OkHttpHooks.installFallback(appLoader);
+                    } catch (Throwable e) {
+                        HookLog.logcat("OkHttp fallback probe failed: " + e);
+                    }
+                }
+            }
+
+            if (!x5Done) {
+                try {
+                    x5Done = WebViewHooks.installX5(appLoader);
+                } catch (Throwable e) {
+                    HookLog.logcat("X5 probe failed: " + e);
+                }
+            }
+
+            if (classicDone && okhttpDone && x5Done) {
+                break;
+            }
+
+            long elapsed = System.currentTimeMillis() - start;
+            try {
+                Thread.sleep(elapsed < FAST_PHASE_MS ? 800L : 3000L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            }
         }
+
+        String detail = "探测轮次: " + round
+                + "\nClassic WebView: " + done(classicDone)
+                + "\nOkHttp: " + done(okhttpDone)
+                + "\nX5 WebView: " + done(x5Done);
+        HookLog.log("HOOK", "晚加载类探测结束", detail);
+        HookLog.logcat("late probe finished: okhttp=" + okhttpDone + " x5=" + x5Done);
+    }
+
+    private static String done(boolean value) {
+        return value ? "已安装" : "未找到（可能该版本不使用）";
     }
 }

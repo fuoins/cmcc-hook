@@ -56,11 +56,15 @@ public final class LogReceiver extends BroadcastReceiver {
         String tag = safe(intent.getStringExtra("tag"));
         String summary = safe(intent.getStringExtra("summary"));
         String detail = safe(intent.getStringExtra("detail"));
+        String process = safe(intent.getStringExtra("process"));
         if (tag.isEmpty()) {
             tag = "LOG";
         }
         if (summary.isEmpty()) {
             summary = "(no summary)";
+        }
+        if (!process.isEmpty() && !AppPrefs.TARGET_PACKAGE.equals(process)) {
+            summary = "[" + shortProcess(process) + "] " + summary;
         }
 
         AppPrefs.setHeartbeat(
@@ -74,5 +78,10 @@ public final class LogReceiver extends BroadcastReceiver {
 
     private static String safe(String value) {
         return value == null ? "" : value;
+    }
+
+    private static String shortProcess(String process) {
+        int colon = process.indexOf(':');
+        return colon >= 0 ? process.substring(colon) : process;
     }
 }

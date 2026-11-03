@@ -27,20 +27,43 @@ final class WebViewHooks {
     private static final ThreadLocal<Boolean> COOKIE_GUARD = new ThreadLocal<>();
     private static final Map<String, Boolean> REPORTED = new ConcurrentHashMap<>();
     private static final Set<String> INSTALLED = ConcurrentHashMap.newKeySet();
+    private static volatile boolean x5Done;
 
     private WebViewHooks() {
     }
 
     static void install(ClassLoader classLoader) {
+        installClassic(classLoader);
+        installX5(classLoader);
+    }
+
+    /** android.webkit 属于系统类，任何 ClassLoader 都能立刻找到并安装。 */
+    static void installClassic(ClassLoader classLoader) {
         hookWebView(classLoader, CLASSIC_WEBVIEW);
         hookClient(classLoader, CLASSIC_CLIENT);
         hookChrome(classLoader, CLASSIC_CHROME);
         hookCookieManager(classLoader, "android.webkit.CookieManager");
+    }
 
+    /**
+     * X5 SDK 可能随加固壳晚加载，必须等类真正出现后再 hook。
+     *
+     * @return true 表示已安装或已确认该版本没有 X5，无需继续探测。
+     */
+    static synchronized boolean installX5(ClassLoader classLoader) {
+        if (x5Done) {
+            return true;
+        }
+        if (XposedHelpers.findClassIfExists(X5_WEBVIEW, classLoader) == null) {
+            return false;
+        }
         hookWebView(classLoader, X5_WEBVIEW);
         hookClient(classLoader, X5_CLIENT);
         hookChrome(classLoader, X5_CHROME);
         hookCookieManager(classLoader, X5_COOKIE);
+        x5Done = true;
+        HookLog.logcat("X5 WebView hooks installed");
+        return true;
     }
 
     private static void hookWebView(ClassLoader classLoader, String className) {

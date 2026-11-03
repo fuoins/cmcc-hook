@@ -11,9 +11,12 @@ import de.robv.android.xposed.XposedHelpers;
 
 final class OkHttpHooks {
     private static final int MAX_BODY = 200_000;
+    private static final long DEDUPE_MS = 1500L;
     private static final Map<String, Long> RECENT = new ConcurrentHashMap<>();
     private static final Map<String, Boolean> REPORTED = new ConcurrentHashMap<>();
     private static final Set<Class<?>> CHAIN_HOOKED = Collections.newSetFromMap(
+            new ConcurrentHashMap<Class<?>, Boolean>());
+    private static final Set<Class<?>> CHAIN_ATTEMPTED = Collections.newSetFromMap(
             new ConcurrentHashMap<Class<?>, Boolean>());
     private static final Set<Class<?>> FALLBACK_HOOKED = Collections.newSetFromMap(
             new ConcurrentHashMap<Class<?>, Boolean>());
@@ -23,14 +26,23 @@ final class OkHttpHooks {
     private OkHttpHooks() {
     }
 
-    static void install(ClassLoader classLoader) {
-        boolean installed = hookChain(classLoader, "okhttp3.internal.http.RealInterceptorChain");
-        installed |= hookChain(classLoader, "com.android.okhttp.internal.http.RealInterceptorChain");
-        installed |= hookChain(classLoader, "com.squareup.okhttp.internal.http.RealInterceptorChain");
-        if (!installed) {
-            hookFallback(classLoader, "okhttp3.OkHttpClient");
-            hookFallback(classLoader, "com.squareup.okhttp.OkHttpClient");
+    /** @return true 表示已处理（安装成功或已尝试过），无需继续探测。 */
+    static boolean install(ClassLoader classLoader, boolean allowFallback) {
+        // com.android.okhttp 是系统内置实现，App 一般只把它用于系统组件；
+        // hook 它收益低且影响面大，这里不再处理。
+        boolean installed = hookChain(classLoader,
+                "okhttp3.internal.http.RealInterceptorChain");
+        installed |= hookChain(classLoader,
+                "com.squareup.okhttp.internal.http.RealInterceptorChain");
+        if (!installed && allowFallback) {
+            installFallback(classLoader);
         }
+        return installed;
+    }
+
+    static void installFallback(ClassLoader classLoader) {
+        hookFallback(classLoader, "okhttp3.OkHttpClient");
+        hookFallback(classLoader, "com.squareup.okhttp.OkHttpClient");
     }
 
     private static boolean hookChain(ClassLoader classLoader, String className) {
@@ -38,7 +50,7 @@ final class OkHttpHooks {
         if (clazz == null) {
             return false;
         }
-        if (!CHAIN_HOOKED.add(clazz)) {
+        if (!CHAIN_ATTEMPTED.add(clazz)) {
             return true;
         }
         boolean installed = false;
@@ -50,13 +62,11 @@ final class OkHttpHooks {
                 }
             });
             installed = true;
+            CHAIN_HOOKED.add(clazz);
             CHAIN_LOADERS.add(classLoader);
             HookLog.logcat("OkHttp chain hooked: " + className);
         } catch (Throwable e) {
             reportOnce(className, "hook " + className + " failed: " + e);
-        }
-        if (!installed) {
-            CHAIN_HOOKED.remove(clazz);
         }
         return installed;
     }
@@ -87,11 +97,11 @@ final class OkHttpHooks {
         try {
             int code = intValue(call(response, "code"), 0);
             String body = responseBody(response);
-            String key = System.identityHashCode(request) + "|" + code + "|"
+            String key = requestMethod(request) + " " + url + "|" + code + "|"
                     + (body == null ? 0 : body.hashCode());
             long now = System.currentTimeMillis();
             Long previous = RECENT.put(key, now);
-            if (previous != null && now - previous < 500L) {
+            if (previous != null && now - previous < DEDUPE_MS) {
                 return;
             }
             if (RECENT.size() > 300) {
@@ -190,16 +200,25 @@ final class OkHttpHooks {
                 return "";
             }
             Object contentType = call(body, "contentType");
-            String type = contentType == null ? "" : String.valueOf(contentType);
+            String type = contentType == null ? "" : String.valueOf(contentType).toLowerCase();
             if (type.startsWith("image/") || type.startsWith("video/")
                     || type.startsWith("audio/") || type.startsWith("font/")
-                    || type.startsWith("application/zip") || type.startsWith("application/pdf")) {
+                    || type.startsWith("application/zip") || type.startsWith("application/pdf")
+                    || type.contains("event-stream") || type.contains("octet-stream")) {
                 return "[" + type + " body omitted]";
             }
             Object contentLength = call(body, "contentLength");
-            long length = contentLength instanceof Number ? ((Number) contentLength).longValue() : -1L;
-            Object peek = callWith(response, "peekBody", new Class<?>[]{long.class},
-                    Math.min(MAX_BODY, length > 0 ? length : MAX_BODY));
+            long length = contentLength instanceof Number
+                    ? ((Number) contentLength).longValue() : -1L;
+            if (length > MAX_BODY) {
+                return "[响应体 " + length + " bytes，超过上限未展开]";
+            }
+            if (length < 0 && !isTexty(type)) {
+                // 长度未知且不是文本，peekBody 可能阻塞流式响应，直接跳过。
+                return "[响应体长度未知，未展开]";
+            }
+            long peekSize = length > 0 ? length : MAX_BODY;
+            Object peek = callWith(response, "peekBody", new Class<?>[]{long.class}, peekSize);
             if (peek != null) {
                 String value = string(call(peek, "string"));
                 return cut(value, MAX_BODY);
@@ -211,6 +230,12 @@ final class OkHttpHooks {
         } catch (Throwable e) {
             return "[unreadable response body]";
         }
+    }
+
+    private static boolean isTexty(String type) {
+        return type.contains("json") || type.contains("text")
+                || type.contains("xml") || type.contains("javascript")
+                || type.contains("html") || type.contains("x-www-form-urlencoded");
     }
 
     private static String bodyString(Object body) {

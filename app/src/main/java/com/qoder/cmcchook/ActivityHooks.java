@@ -28,6 +28,7 @@ final class ActivityHooks {
                         protected void afterHookedMethod(MethodHookParam param) {
                             if (param.thisObject instanceof Application) {
                                 HookLog.setApplication((Application) param.thisObject);
+                                CrashHooks.ensureDefaultHandler();
                             }
                         }
                     });
@@ -43,6 +44,7 @@ final class ActivityHooks {
                             if (param.thisObject instanceof Application) {
                                 Application app = (Application) param.thisObject;
                                 HookLog.setApplication(app);
+                                CrashHooks.ensureDefaultHandler();
                                 logAppStart(app);
                             }
                         }
@@ -104,6 +106,13 @@ final class ActivityHooks {
         detail.append("Android: ").append(Build.VERSION.RELEASE)
                 .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
         detail.append("模块: ").append(HookLog.MODULE_VERSION).append('\n');
+        detail.append("注入进程: ").append(HookLog.processName()).append('\n');
+        detail.append("抓取开关: H5=").append(HookPrefs.h5())
+                .append(" 原生=").append(HookPrefs.nativeHttp())
+                .append(" 页面=").append(HookPrefs.ui())
+                .append(" 存储=").append(HookPrefs.storage())
+                .append(" 仅10086=").append(HookPrefs.only10086())
+                .append('\n');
         try {
             detail.append("Xposed: ").append(XposedBridge.getXposedVersion()).append('\n');
         } catch (Throwable ignored) {

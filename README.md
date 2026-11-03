@@ -13,7 +13,7 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 
 ## 安装与启用
 
-1. 安装 `cmcc-hook-v1.0-capture.apk`（debug 签名，可直接安装）。
+1. 安装 `cmcc-hook-v1.1-capture.apk`（debug 签名，可直接安装）。
 2. 打开 LSPosed 管理器 → 模块 → 启用「移动签到助手」。
 3. 点开作用域，**只勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。
 4. 在系统设置里强制停止中国移动 App，或重启手机，让模块重新注入。
@@ -43,7 +43,7 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 
 - 先确认首页有「最近心跳」，日志里有 `APP-START`。没有心跳就是模块没注入，与抓取逻辑无关。
 - 关闭首页的「仅记录 10086 / cmcc 域名」开关再试一次；有些请求会走其他域名。
-- 中国移动 App 有多个进程，本模块会自动注入每个进程，日志条目的 `process` 字段会标明来源。
+- 默认只注入主进程；加固壳的 `:tools` 安全进程始终跳过。需要抓推送 / X5 沙盒进程时，可在首页打开「注入其他进程」。
 - 如果只看到 `ACTIVITY` / `WEBVIEW` 而没有 `HTTP` / `H5`，可能是加固壳使用了自研网络库或系统
   `HttpURLConnection`。把现有日志发回来，下一版再针对性补 Hook。
 - MIUI / ColorOS / OriginOS 等系统请给本模块和中国移动 App 允许自启动、后台运行、无省电限制，
@@ -66,6 +66,8 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 | `H5-ERROR` | H5 脚本错误 |
 | `COOKIE` | WebView / X5 Cookie 读写快照 |
 | `ACTIVITY` | 原生页面打开与新 Intent（含 extras） |
+| `CRASH` | 未捕获异常：线程、进程、完整堆栈（排查闪退） |
+| `HOOK` | 晚加载类探测结果（OkHttp / X5 是否补装成功） |
 
 日志保存在 App 私有目录，单文件上限 10 MB，超出后自动轮转为 `hook.log.1`；导出的 txt 是可读全量文本。
 「清空」会删除本机两份日志文件。
@@ -100,12 +102,13 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 ```
 app/src/main/java/com/qoder/cmcchook/
   HookEntry.java         模块入口，按进程安装 Hook
-  ClassLoaderHooks.java  监听动态类加载，补装晚加载的 OkHttp / X5 Hook
+  ClassLoaderHooks.java  后台探测晚加载的 OkHttp / X5 类并补装 Hook
   ActivityHooks.java     Application / Activity / Intent
+  CrashHooks.java        未捕获异常捕获（CRASH 堆栈）
   WebViewHooks.java      WebView / X5 的加载、页面回调、Cookie
   JsInjector.java        注入 H5 抓取脚本与 JS Bridge
   JsBridge.java          把 H5 数据转成日志
-  OkHttpHooks.java       OkHttp 2/3 与系统 OkHttp 请求响应
+  OkHttpHooks.java       OkHttp 2/3 请求响应（不再 hook 系统 com.android.okhttp）
   HookLog.java           通过显式广播把日志送到模块 App
   LogReceiver.java       接收日志并落盘
   LogStore.java          日志存储 / 轮转 / 读取

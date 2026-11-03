@@ -11,6 +11,7 @@ final class HookPrefs {
     private static volatile boolean ui = true;
     private static volatile boolean storage = true;
     private static volatile boolean only10086 = true;
+    private static volatile boolean secondary = false;
 
     private HookPrefs() {
     }
@@ -51,6 +52,11 @@ final class HookPrefs {
         return only10086;
     }
 
+    static boolean secondaryProcesses() {
+        reload(false);
+        return secondary;
+    }
+
     private static void reload(boolean force) {
         long now = System.currentTimeMillis();
         if (!force && now - lastReload < 1500L) {
@@ -68,6 +74,7 @@ final class HookPrefs {
             ui = p.getBoolean("capture_ui", true);
             storage = p.getBoolean("capture_storage", true);
             only10086 = p.getBoolean("filter_10086", true);
+            secondary = p.getBoolean("hook_secondary", false);
         } catch (Throwable e) {
             HookLog.logcat("reload prefs failed: " + e);
         }

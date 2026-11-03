@@ -57,6 +57,7 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchUi, AppPrefs.KEY_CAPTURE_UI);
         bindSwitch(R.id.switchStorage, AppPrefs.KEY_CAPTURE_STORAGE);
         bindSwitch(R.id.switchFilter, AppPrefs.KEY_FILTER_10086);
+        bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
 
         MaterialButton openCmcc = findViewById(R.id.openCmccButton);
         MaterialButton copyWelfare = findViewById(R.id.copyWelfareButton);
@@ -83,9 +84,13 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private void bindSwitch(int viewId, String key) {
+        bindSwitch(viewId, key, true);
+    }
+
+    private void bindSwitch(int viewId, String key, boolean defaultValue) {
         SwitchMaterial view = findViewById(viewId);
         view.setOnCheckedChangeListener(null);
-        view.setChecked(AppPrefs.getBool(this, key));
+        view.setChecked(AppPrefs.settings(this).getBoolean(key, defaultValue));
         view.setOnCheckedChangeListener((buttonView, isChecked) ->
                 AppPrefs.setBool(MainActivity.this, key, isChecked));
     }
