@@ -69,6 +69,7 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 | `COOKIE` | WebView / X5 Cookie 读写快照 |
 | `ACTIVITY` | 原生页面打开与新 Intent（含 extras） |
 | `CRASH` | 未捕获异常：线程、进程、完整堆栈（排查闪退） |
+| `EXIT` | `System.exit` / `Process.killProcess` / `Runtime.halt` 的调用堆栈 |
 | `HOOK` | 晚加载类探测结果（OkHttp / X5 是否补装成功） |
 
 日志保存在 App 私有目录，单文件上限 10 MB，超出后自动轮转为 `hook.log.1`；导出的 txt 是可读全量文本。

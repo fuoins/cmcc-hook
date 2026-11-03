@@ -71,6 +71,72 @@ final class CrashHooks {
         }
 
         ensureDefaultHandler();
+        hookProcessExit();
+    }
+
+    /**
+     * 很多加固 / 风控在判定异常后会主动杀掉进程。这里记录调用方堆栈，
+     * 用于区分「App 自己退出」和「Java 崩溃」。
+     */
+    private static void hookProcessExit() {
+        try {
+            XposedBridge.hookAllMethods(android.os.Process.class, "killProcess",
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            Object pid = param.args != null && param.args.length > 0
+                                    ? param.args[0] : "?";
+                            logExit("Process.killProcess(" + pid + ")");
+                        }
+                    });
+            HookLog.logcat("Process.killProcess watcher installed");
+        } catch (Throwable e) {
+            HookLog.logcat("killProcess hook failed: " + e);
+        }
+
+        try {
+            XposedBridge.hookAllMethods(System.class, "exit", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object code = param.args != null && param.args.length > 0
+                            ? param.args[0] : "?";
+                    logExit("System.exit(" + code + ")");
+                }
+            });
+            HookLog.logcat("System.exit watcher installed");
+        } catch (Throwable e) {
+            HookLog.logcat("System.exit hook failed: " + e);
+        }
+
+        try {
+            XposedBridge.hookAllMethods(Runtime.class, "halt", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object code = param.args != null && param.args.length > 0
+                            ? param.args[0] : "?";
+                    logExit("Runtime.halt(" + code + ")");
+                }
+            });
+            HookLog.logcat("Runtime.halt watcher installed");
+        } catch (Throwable e) {
+            HookLog.logcat("Runtime.halt hook failed: " + e);
+        }
+    }
+
+    private static void logExit(String call) {
+        try {
+            Thread thread = Thread.currentThread();
+            StringBuilder detail = new StringBuilder();
+            detail.append("调用: ").append(call).append('\n');
+            detail.append("进程: ").append(HookLog.processName()).append('\n');
+            detail.append("线程: ").append(thread.getName())
+                    .append(" (id=").append(thread.getId()).append(")\n");
+            detail.append("模块: ").append(HookLog.MODULE_VERSION).append('\n');
+            detail.append("--- 调用堆栈 ---\n");
+            detail.append(Log.getStackTraceString(new Throwable("process exit")));
+            HookLog.log("EXIT", "进程退出调用 · " + call, detail.toString());
+        } catch (Throwable ignored) {
+        }
     }
 
     /** App 可能自己设置默认 handler，这里再包一层，确保启动早期也能捕获。 */
