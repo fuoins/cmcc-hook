@@ -20,6 +20,7 @@ final class AppPrefs {
     static final String KEY_CAPTURE_STORAGE = "capture_storage";
     static final String KEY_FILTER_10086 = "filter_10086";
     static final String KEY_HOOK_SECONDARY = "hook_secondary";
+    static final String KEY_FILTER_H5_NOISE = "filter_h5_noise";
 
     private AppPrefs() {
     }

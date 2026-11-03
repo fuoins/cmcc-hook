@@ -242,6 +242,26 @@
                         android:paddingBottom="10dp"
                         android:text="@string/capture_filter_desc" />
 
+                    <com.google.android.material.switchmaterial.SwitchMaterial
+                        android:id="@+id/switchH5Noise"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="8dp"
+                        android:checked="true"
+                        android:paddingTop="4dp"
+                        android:paddingBottom="2dp"
+                        android:text="@string/capture_h5_noise"
+                        android:textColor="@color/text_primary"
+                        android:textSize="14sp" />
+
+                    <TextView
+                        style="@style/Caption"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginStart="2dp"
+                        android:paddingBottom="10dp"
+                        android:text="@string/capture_h5_noise_desc" />
+
                     <View
                         android:layout_width="match_parent"
                         android:layout_height="1dp"

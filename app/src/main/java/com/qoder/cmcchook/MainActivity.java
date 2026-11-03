@@ -57,6 +57,7 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchUi, AppPrefs.KEY_CAPTURE_UI);
         bindSwitch(R.id.switchStorage, AppPrefs.KEY_CAPTURE_STORAGE);
         bindSwitch(R.id.switchFilter, AppPrefs.KEY_FILTER_10086);
+        bindSwitch(R.id.switchH5Noise, AppPrefs.KEY_FILTER_H5_NOISE);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
 
         MaterialButton openCmcc = findViewById(R.id.openCmccButton);

@@ -24,6 +24,8 @@
     <string name="capture_storage_desc">WebView Cookie、localStorage、sessionStorage</string>
     <string name="capture_filter">仅记录 10086 / cmcc 域名</string>
     <string name="capture_filter_desc">关闭后会记录目标 App 的更多请求，日志会明显变多</string>
+    <string name="capture_h5_noise">过滤 H5 埋点噪音</string>
+    <string name="capture_h5_noise_desc">屏蔽 psie 曝光埋点等第三方 SDK 的重复报错，每 60 秒汇总一条。关闭后原样记录每一条。</string>
     <string name="capture_secondary">注入其他进程（默认关闭）</string>
     <string name="capture_secondary_desc">加固壳的 :tools 安全进程始终跳过。只有需要抓取推送 / X5 沙盒等进程时才打开，平时保持关闭更稳定。</string>
 

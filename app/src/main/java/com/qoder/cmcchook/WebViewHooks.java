@@ -2,11 +2,13 @@ package com.qoder.cmcchook;
 
 import android.webkit.CookieManager;
 
+import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -21,8 +23,13 @@ final class WebViewHooks {
     private static final String X5_CHROME = "com.tencent.smtt.sdk.WebChromeClient";
     private static final String X5_COOKIE = "com.tencent.smtt.sdk.CookieManager";
     private static final long DEDUPE_MS = 1500L;
+    private static final long H5_DEDUPE_MS = 10_000L;
+    private static final long NOISE_REPORT_MS = 60_000L;
 
     private static final Map<String, Long> RECENT = new ConcurrentHashMap<>();
+    private static final Map<String, long[]> H5_SEEN = new ConcurrentHashMap<>();
+    private static final AtomicLong NOISE_DROPPED = new AtomicLong();
+    private static final AtomicLong NOISE_REPORTED_AT = new AtomicLong();
     private static final Map<String, Long> COOKIE_RECENT = new ConcurrentHashMap<>();
     private static final ThreadLocal<Boolean> COOKIE_GUARD = new ThreadLocal<>();
     private static final Map<String, Boolean> REPORTED = new ConcurrentHashMap<>();
@@ -325,45 +332,184 @@ final class WebViewHooks {
         }
         hookAll(clazz, "onConsoleMessage", new XC_MethodHook() {
             @Override
-            protected void afterHookedMethod(MethodHookParam param) {
+            protected void beforeHookedMethod(MethodHookParam param) {
                 try {
-                    if (!HookPrefs.ui() || param.args.length == 0) {
+                    if (param.args.length == 0) {
                         return;
                     }
-                    Object message = param.args[0];
-                    if (message == null) {
+                    ConsoleText console = readConsole(param.args);
+                    // 埋点 SDK 每次 DOM 变化都刷同一条 TypeError，先吞掉再谈记录。
+                    if (HookPrefs.h5NoiseFilter() && isH5Noise(console.text, console.source)) {
+                        long dropped = NOISE_DROPPED.incrementAndGet();
+                        reportNoise(dropped, console.text, console.source);
+                        swallowConsole(param);
                         return;
                     }
-                    String text = "";
-                    String level = "";
-                    String source = "";
-                    int line = 0;
-                    try {
-                        text = String.valueOf(XposedHelpers.callMethod(message, "message"));
-                        Object l = XposedHelpers.callMethod(message, "messageLevel");
-                        level = l == null ? "" : l.toString();
-                        Object sourceId = XposedHelpers.callMethod(message, "sourceId");
-                        source = sourceId == null ? "" : sourceId.toString();
-                        Object lineNumber = XposedHelpers.callMethod(message, "lineNumber");
-                        if (lineNumber instanceof Number) {
-                            line = ((Number) lineNumber).intValue();
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                    String lower = (level + " " + text).toLowerCase(Locale.US);
-                    if (!lower.contains("error") && !lower.contains("warn")
-                            && !lower.contains("fail") && !lower.contains("token")
-                            && !lower.contains("auth")) {
+                    if (!HookPrefs.ui()) {
                         return;
                     }
-                    HookLog.log("H5-CONSOLE", "H5 控制台 · " + level + " · "
-                                    + UrlFilter.shortForTitle(text),
-                            "消息: " + text + "\n来源: " + source + ":" + line
-                                    + "\n级别: " + level);
+                    recordConsole(console);
                 } catch (Throwable ignored) {
                 }
             }
         });
+    }
+
+    /** onConsoleMessage 有两个重载：ConsoleMessage 对象版和已废弃的 (String, int, String) 版。 */
+    private static ConsoleText readConsole(Object[] args) {
+        String text = "";
+        String source = "";
+        String level = "";
+        int line = 0;
+        Object first = args[0];
+        if (first instanceof String) {
+            text = (String) first;
+            if (args.length > 1 && args[1] instanceof Number) {
+                line = ((Number) args[1]).intValue();
+            }
+            if (args.length > 2 && args[2] != null) {
+                source = String.valueOf(args[2]);
+            }
+            return new ConsoleText(text, source, level, line);
+        }
+        if (first == null) {
+            return new ConsoleText("", "", "", 0);
+        }
+        try {
+            Object value = XposedHelpers.callMethod(first, "message");
+            if (value != null) {
+                text = String.valueOf(value);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object value = XposedHelpers.callMethod(first, "messageLevel");
+            if (value != null) {
+                level = value.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object value = XposedHelpers.callMethod(first, "sourceId");
+            if (value != null) {
+                source = value.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Object value = XposedHelpers.callMethod(first, "lineNumber");
+            if (value instanceof Number) {
+                line = ((Number) value).intValue();
+            }
+        } catch (Throwable ignored) {
+        }
+        return new ConsoleText(text, source, level, line);
+    }
+
+    private static void recordConsole(ConsoleText console) {
+        String lower = (console.level + " " + console.text).toLowerCase(Locale.US);
+        if (!lower.contains("error") && !lower.contains("warn")
+                && !lower.contains("fail") && !lower.contains("token")
+                && !lower.contains("auth")) {
+            return;
+        }
+        String key = console.source + "|" + console.text;
+        long now = System.currentTimeMillis();
+        long[] seen = H5_SEEN.get(key);
+        int repeat = 0;
+        if (seen == null) {
+            H5_SEEN.put(key, new long[]{now, 0L});
+        } else {
+            synchronized (seen) {
+                if (now - seen[0] < H5_DEDUPE_MS) {
+                    seen[1]++;
+                    return;
+                }
+                repeat = (int) seen[1];
+                seen[0] = now;
+                seen[1] = 0L;
+            }
+        }
+        if (H5_SEEN.size() > 300) {
+            H5_SEEN.clear();
+        }
+        String detail = "消息: " + console.text + "\n来源: " + console.source + ":" + console.line
+                + "\n级别: " + console.level;
+        if (repeat > 0) {
+            detail += "\n期间重复: " + repeat + " 次（已省略）";
+        }
+        HookLog.log("H5-CONSOLE", "H5 控制台 · " + console.level + " · "
+                + UrlFilter.shortForTitle(console.text), detail);
+    }
+
+    /**
+     * psie 曝光埋点 SDK 注册了 MutationObserver，DOM 一变就拿节点调 getAttribute，
+     * 节点已被移除时抛 TypeError，SDK 自己 catch 后打一条 WARNING。属于 SDK 自身缺陷，
+     * 和页面功能无关，只是把日志刷满。
+     */
+    private static boolean isH5Noise(String text, String source) {
+        String src = source == null ? "" : source.toLowerCase(Locale.US);
+        if (src.contains("psie")) {
+            return true;
+        }
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        String msg = text.toLowerCase(Locale.US);
+        if (msg.contains("初始化曝光失败")) {
+            return true;
+        }
+        return msg.contains("cannot read") && msg.contains("undefined")
+                && msg.contains("getattribute");
+    }
+
+    private static void reportNoise(long dropped, String text, String source) {
+        long now = System.currentTimeMillis();
+        long last = NOISE_REPORTED_AT.get();
+        if (last != 0L && now - last < NOISE_REPORT_MS) {
+            return;
+        }
+        if (!NOISE_REPORTED_AT.compareAndSet(last, now)) {
+            return;
+        }
+        HookLog.log("H5-NOISE", "已忽略 H5 埋点噪音 · 累计 " + dropped + " 条",
+                "最后一条: " + shortText(text) + "\n来源: " + source
+                        + "\n说明: psie 曝光埋点 SDK 在 DOM 变化时读不到节点，属 SDK 自身缺陷"
+                        + "\n关闭过滤: 设置 → 过滤 H5 埋点噪音");
+    }
+
+    private static void swallowConsole(XC_MethodHook.MethodHookParam param) {
+        try {
+            Class<?> type = param.method instanceof Method
+                    ? ((Method) param.method).getReturnType() : boolean.class;
+            if (type == void.class) {
+                param.setResult(null);
+            } else if (type == boolean.class || type == Boolean.class) {
+                param.setResult(Boolean.TRUE);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String shortText(String text) {
+        if (text == null) {
+            return "";
+        }
+        return text.length() > 300 ? text.substring(0, 300) + "…" : text;
+    }
+
+    private static final class ConsoleText {
+        final String text;
+        final String source;
+        final String level;
+        final int line;
+
+        ConsoleText(String text, String source, String level, int line) {
+            this.text = text == null ? "" : text;
+            this.source = source == null ? "" : source;
+            this.level = level == null ? "" : level;
+            this.line = line;
+        }
     }
 
     private static void hookCookieManager(ClassLoader classLoader, String className) {

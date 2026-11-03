@@ -54,6 +54,28 @@ update hook com.cmccit.appupgrade.utils.AppUpgradeDialogManager x1 showDialog=1
 update hooks ready, classes=4
 ```
 
+## H5 埋点噪音
+
+H5 控制台经常刷这一条：
+
+```
+监听到dom改变后初始化曝光失败 TypeError: Cannot read properties of undefined (reading 'getAttribute')
+来源：https://h.app.coc.10086.cn/ngpsie/psieappaijssdk/collectData/1.0.0/index.js
+```
+
+这是中国移动的 psie 曝光埋点 SDK：它注册 MutationObserver 监听 DOM，节点被移除后仍拿旧引用调
+`getAttribute`，自己 catch 住再打一条 WARNING。**属于 SDK 自身缺陷，不影响页面功能**，
+但 DOM 每变一次就刷一条，会把有用日志淹掉。
+
+v1.4 起默认过滤：
+
+- 来源含 `psie`、消息含 `初始化曝光失败`、或 `Cannot read … undefined … getAttribute` 的，
+  直接丢弃，并让 `onConsoleMessage` 返回 true —— 连 App 自己打到 logcat 的 `chromium` 也一起消掉；
+- 被丢弃的条数每 60 秒汇总一条 `H5-NOISE`，不会让你误以为 Hook 失效；
+- 其余 H5 console 同一条消息 10 秒内只记一次，重复次数写在详情里。
+
+设置页的「过滤 H5 埋点噪音」可以关掉，关掉后逐条原样记录。
+
 ## 抓取步骤（请按这个顺序操作）
 
 1. 打开中国移动 App，进入 **我的 → 福利中心**（或你平时领奖励的入口）。
@@ -97,6 +119,7 @@ update hooks ready, classes=4
 | `H5-CLICK` | H5 点击的控件文本 / id / class / href |
 | `H5-ROUTE` | 单页应用路由变化 |
 | `H5-ERROR` | H5 脚本错误 |
+| `H5-NOISE` | 被过滤的 H5 埋点噪音汇总，每 60 秒一条（v1.4+） |
 | `COOKIE` | WebView / X5 Cookie 读写快照 |
 | `ACTIVITY` | 原生页面打开与新 Intent（含 extras） |
 | `CRASH` | 未捕获异常：线程、进程、完整堆栈（排查闪退） |
@@ -139,6 +162,7 @@ update hooks ready, classes=4
 app/src/main/java/com/qoder/cmcchook/
   HookEntry.java         模块入口，按进程安装 Hook
   UpdateHooks.java       升级弹窗 / 版本检查拦截（11.9.1）
+  WebViewHooks.java      WebView / X5 抓取，含 H5 埋点噪音过滤
   ClassLoaderHooks.java  后台探测晚加载的 OkHttp / X5 类并补装 Hook
   ActivityHooks.java     Application / Activity / Intent
   CrashHooks.java        未捕获异常捕获（CRASH 堆栈）
