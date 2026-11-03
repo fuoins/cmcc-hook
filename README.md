@@ -13,7 +13,9 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 
 ## 安装与启用
 
-1. 安装 `cmcc-hook-v1.1-capture.apk`（debug 签名，可直接安装）。
+1. 安装 `cmcc-hook-v1.1-capture.apk`（固定签名，可直接安装）。
+   - v1.1 起使用仓库内固定 keystore 签名，之后的版本都能直接覆盖安装。
+   - 如果系统提示「签名不一致」，说明旧版是临时 CI 调试签名：先卸载旧版再安装 v1.1 即可（旧日志已导出，不影响）。
 2. 打开 LSPosed 管理器 → 模块 → 启用「移动签到助手」。
 3. 点开作用域，**只勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。
 4. 在系统设置里强制停止中国移动 App，或重启手机，让模块重新注入。
@@ -87,7 +89,8 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 
 - push 到 `main` 或手动触发 `Build APK`；
 - 自动使用 JDK 17 + Gradle 8.10 + Android SDK 34 构建；
-- 构建产物在 Actions 运行页面的 `cmcc-hook-debug-apk` artifact 中，保留 30 天。
+- 构建产物在 Actions 运行页面的 `cmcc-hook-debug-apk` artifact 中，保留 30 天；
+- 使用仓库内 `keystore/cmcc-hook.jks` 固定签名，连续构建可互相覆盖安装。
 
 ### 本地构建
 

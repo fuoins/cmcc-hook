@@ -15,9 +15,24 @@ android {
         versionName = "1.1"
     }
 
+    signingConfigs {
+        // 固定签名，保证 GitHub Actions 每次构建都能覆盖安装。
+        // 仅用于本工具的调试分发，不是敏感密钥。
+        create("stable") {
+            storeFile = file("../keystore/cmcc-hook.jks")
+            storePassword = "cmcchook2026"
+            keyAlias = "cmcc"
+            keyPassword = "cmcchook2026"
+        }
+    }
+
     buildTypes {
+        debug {
+            signingConfig = signingConfigs.getByName("stable")
+        }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("stable")
         }
     }
 
