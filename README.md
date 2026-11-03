@@ -1,14 +1,16 @@
 # 移动签到助手（第一阶段：抓取版）
 
-LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.activity`，测试版本 12.5.6）里
+LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.activity`）里
 签到、福利中心、任务中心相关的页面与接口，为下一阶段的自动签到 / 一键领奖励提供依据。
+
+v1.3 起内置**去升级弹窗**，适配 11.9.1（versionCode 119101）；抓取相关 Hook 不区分版本，12.x 同样可用。
 
 **当前版本只抓取、不改动 App 行为**。首页是模块状态与抓取开关，日志页支持刷新、清空、导出到 Download。
 
 ## 环境要求
 
 - Android 8.1 及以上，已安装并激活 LSPosed（或兼容的 Xposed 框架）
-- 中国移动 App 12.5.6（其他版本大多也能用，但接口可能不同）
+- 中国移动 App 11.9.1 或 12.x（接口可能随版本变化）
 - 不需要 root 权限给本 App；root/LSPosed 由框架提供
 
 ## 安装与启用
@@ -22,6 +24,35 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 5. 打开一次中国移动 App，再回到本模块首页：
    - 状态显示「运行中」，并且有「最近心跳」，说明注入成功；
    - 若一直「等待中国移动 App 启动」，检查 LSPosed 作用域、模块是否启用、系统是否限制后台。
+
+## 去升级弹窗
+
+v1.3 起自动拦截升级弹窗，不需要额外配置。
+
+11.9.1 的升级对话框有个已知问题：`AppUpgradeDialogManager.showDialog` 最终会走到
+`android.media.QuourstGlaernong.<init>`，这个类被改名后构造函数直接抛异常，**弹窗一创建就闪退**。
+模块不去修那个类，而是在调用链的四层入口全部设卡：
+
+| 层级 | 类#方法 |
+| --- | --- |
+| ① | `UpgradeDialogChecker#process` |
+| ② | `CheckVersionHelper#showUpgradeDialog` |
+| ③ | `AppUpgradeManager#showUpgradeDialog` |
+| ④ | `AppUpgradeDialogManager#showDialog` |
+
+任意一层命中就 return，所以首页滑动触发的自动检查、设置页手动点「检查更新」都不会漏，
+也不会再走到那个会崩的构造函数。
+
+同时 `CheckVersionHelper#checkVersion` 等检查入口也被挡掉，「发现新版本」的红点不会出现。
+如果发现「关于」页版本号显示异常，把 `UpdateHooks` 里的 `CHECK_ENTRIES` 循环注释掉即可，
+只保留弹窗拦截。
+
+日志里搜 `update hook` 可以看到命中情况：
+
+```
+update hook ok: com.cmccit.appupgrade.utils.AppUpgradeDialogManager#showDialog x1
+update hooks installed, methods=7
+```
 
 ## 抓取步骤（请按这个顺序操作）
 
@@ -107,6 +138,7 @@ LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.
 ```
 app/src/main/java/com/qoder/cmcchook/
   HookEntry.java         模块入口，按进程安装 Hook
+  UpdateHooks.java       升级弹窗 / 版本检查拦截（11.9.1）
   ClassLoaderHooks.java  后台探测晚加载的 OkHttp / X5 类并补装 Hook
   ActivityHooks.java     Application / Activity / Intent
   CrashHooks.java        未捕获异常捕获（CRASH 堆栈）

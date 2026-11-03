@@ -33,6 +33,8 @@ public final class HookEntry implements IXposedHookLoadPackage {
 
         // 先装崩溃捕获，后续任何 hook 出问题都能留下堆栈。
         install("Crash", CrashHooks::install);
+        // 先于业务 Hook 安装：升级弹窗一旦创建就会崩，必须尽早拦截。
+        install("Update", () -> UpdateHooks.install(lpparam.classLoader));
         install("Activity", () -> ActivityHooks.install(lpparam.classLoader));
         install("WebView", () -> WebViewHooks.install(lpparam.classLoader));
         // 加固壳晚加载的类由 ClassLoaderHooks 的后台探测补装。
