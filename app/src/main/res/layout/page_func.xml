@@ -120,9 +120,9 @@
                     android:paddingEnd="0dp"
                     android:text="@string/btn_sign"
                     android:textAllCaps="false"
-                    android:textColor="@color/on_primary"
+                    android:textColor="@color/on_secondary_container"
                     android:textSize="13sp"
-                    app:backgroundTint="@color/primary"
+                    app:backgroundTint="@color/secondary_container"
                     app:cornerRadius="999dp"
                     app:elevation="0dp" />
             </LinearLayout>
@@ -174,9 +174,9 @@
                     android:paddingEnd="0dp"
                     android:text="@string/btn_egg"
                     android:textAllCaps="false"
-                    android:textColor="@color/on_primary"
+                    android:textColor="@color/on_secondary_container"
                     android:textSize="13sp"
-                    app:backgroundTint="@color/primary"
+                    app:backgroundTint="@color/secondary_container"
                     app:cornerRadius="999dp"
                     app:elevation="0dp" />
             </LinearLayout>
@@ -228,9 +228,9 @@
                     android:paddingEnd="0dp"
                     android:text="@string/btn_goose"
                     android:textAllCaps="false"
-                    android:textColor="@color/on_primary"
+                    android:textColor="@color/on_secondary_container"
                     android:textSize="13sp"
-                    app:backgroundTint="@color/primary"
+                    app:backgroundTint="@color/secondary_container"
                     app:cornerRadius="999dp"
                     app:elevation="0dp" />
             </LinearLayout>
