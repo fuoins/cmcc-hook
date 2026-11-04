@@ -156,6 +156,18 @@ final class JsInjector {
                     h.forEach(function(p) { if (p && p.length >= 2) out[p[0]] = cut(p[1], 2000); });
                     return out;
                   }
+                  if (typeof h === 'string') {
+                    var lines = h.split(/\\r?\\n/);
+                    for (var i = 0; i < lines.length; i++) {
+                      var line = lines[i];
+                      if (!line) continue;
+                      var idx = line.indexOf(':');
+                      if (idx <= 0) continue;
+                      out[line.substring(0, idx).trim().toLowerCase()] =
+                        cut(line.substring(idx + 1).trim(), 2000);
+                    }
+                    return out;
+                  }
                   for (var k in h) {
                     if (Object.prototype.hasOwnProperty.call(h, k)) out[k] = cut(h[k], 2000);
                   }

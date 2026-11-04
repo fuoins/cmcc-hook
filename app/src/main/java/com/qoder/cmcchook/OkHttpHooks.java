@@ -102,8 +102,9 @@ final class OkHttpHooks {
         try {
             int code = intValue(call(response, "code"), 0);
             String body = responseBody(response);
-            String key = requestMethod(request) + " " + url + "|" + code + "|"
-                    + (body == null ? 0 : body.hashCode());
+            // 不把 body 放进 key：body 读不出来时两次 hash 不同，去重会失效，
+            // 日志里同一请求就会出现两遍。
+            String key = requestMethod(request) + " " + url + "|" + code;
             long now = System.currentTimeMillis();
             Long previous = RECENT.put(key, now);
             if (previous != null && now - previous < DEDUPE_MS) {
