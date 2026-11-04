@@ -9,6 +9,8 @@ import java.util.HashSet;
 import java.util.Set;
 import java.util.WeakHashMap;
 
+import de.robv.android.xposed.XposedHelpers;
+
 final class JsInjector {
     static final String BRIDGE_NAME = "__qoder_capture_7f3a";
     private static final Handler MAIN = new Handler(Looper.getMainLooper());

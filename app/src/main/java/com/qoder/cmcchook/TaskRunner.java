@@ -184,8 +184,14 @@ final class TaskRunner {
                     result = Result.fail("任务异常：" + e, android.util.Log.getStackTraceString(e),
                             "把日志发我。");
                 }
-                finish(activity, cmd, result);
-                RUNNING.set(false);
+                try {
+                    finish(activity, cmd, result);
+                } catch (Throwable e) {
+                    HookLog.logcat("task finish failed: " + e);
+                } finally {
+                    // 不管 finish 出什么问题，锁都要放掉，否则后面所有任务都被跳过。
+                    RUNNING.set(false);
+                }
             }
         });
     }
