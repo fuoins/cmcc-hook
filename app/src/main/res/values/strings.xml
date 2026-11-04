@@ -22,17 +22,16 @@
     <string name="log_count_home">已抓取 %1$d 条日志</string>
 
     <string name="task_title">活动任务</string>
-    <string name="task_all">一键过全部</string>
-    <string name="task_all_desc">签到有礼 + 天天砸金蛋 + 收鹅蛋换好礼，串行执行</string>
+    <string name="task_hint">下面是三个活动的自动开关。打开对应的活动页，等 2～3 秒，模块自己把该活动的任务跑一遍；当天成功过就不再自动跑。</string>
     <string name="task_sign">签到有礼</string>
-    <string name="task_sign_desc">每日签到，领累计 / 连签 / 组队 / 月签奖励</string>
+    <string name="task_sign_desc">进页面自动签到，领累计 / 连签 / 组队 / 月签，再领任务奖励、做浏览任务</string>
     <string name="task_egg">天天砸金蛋</string>
-    <string name="task_egg_desc">先做浏览任务换次数，再把剩余次数全部抽掉</string>
+    <string name="task_egg_desc">进页面自动把浏览任务全部做完换次数，再把次数一次抽完</string>
     <string name="task_goose">收鹅蛋换好礼</string>
-    <string name="task_goose_desc">在活动页里自动打卡、领饲料、投喂、收蛋，需先打开该页面</string>
-    <string name="task_auto">启动时自动过任务</string>
-    <string name="task_auto_desc">打开中国移动后自动跑一次三个活动；当天成功过就不再跑</string>
-    <string name="btn_all">全部</string>
+    <string name="task_goose_desc">进页面自动打卡、领饲料、投喂、收蛋，并把能领的任务奖励领掉</string>
+    <string name="task_auto">打开 App 就跑全部</string>
+    <string name="task_auto_desc">不依赖活动页，冷启动后串行跑三个活动；当天成功过就不再跑</string>
+    <string name="btn_all">立即全部跑一次</string>
     <string name="btn_sign">签到</string>
     <string name="btn_egg">砸蛋</string>
     <string name="btn_goose">收蛋</string>

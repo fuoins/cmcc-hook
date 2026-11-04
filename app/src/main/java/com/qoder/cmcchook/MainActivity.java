@@ -149,14 +149,11 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchVerboseRaw, AppPrefs.KEY_VERBOSE_RAW, false);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN, false);
+        bindSwitch(R.id.switchPageSign, AppPrefs.KEY_PAGE_SIGN);
+        bindSwitch(R.id.switchPageEgg, AppPrefs.KEY_PAGE_EGG);
+        bindSwitch(R.id.switchPageGoose, AppPrefs.KEY_PAGE_GOOSE);
         findViewById(R.id.btnRunAll).setOnClickListener(
                 v -> runTask(TaskRunner.CMD_ALL, "过任务"));
-        findViewById(R.id.btnSign).setOnClickListener(
-                v -> runTask(TaskRunner.CMD_SIGN, "签到有礼"));
-        findViewById(R.id.btnEgg).setOnClickListener(
-                v -> runTask(TaskRunner.CMD_EGG, "天天砸金蛋"));
-        findViewById(R.id.btnGoose).setOnClickListener(
-                v -> runTask(TaskRunner.CMD_GOOSE, "收鹅蛋"));
 
         setupLogPage();
         selectTab(TAB_HOME);

@@ -11,8 +11,8 @@ android {
         applicationId = "com.qoder.cmcchook"
         minSdk = 23
         targetSdk = 30
-        versionCode = 9
-        versionName = "1.8"
+        versionCode = 10
+        versionName = "1.9"
     }
 
     signingConfigs {

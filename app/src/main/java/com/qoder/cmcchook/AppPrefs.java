@@ -23,6 +23,9 @@ final class AppPrefs {
     static final String KEY_FILTER_H5_NOISE = "filter_h5_noise";
     static final String KEY_VERBOSE_RAW = "verbose_raw";
     static final String KEY_AUTO_SIGN = "auto_sign";
+    static final String KEY_PAGE_SIGN = "auto_page_sign";
+    static final String KEY_PAGE_EGG = "auto_page_egg";
+    static final String KEY_PAGE_GOOSE = "auto_page_goose";
 
     private AppPrefs() {
     }

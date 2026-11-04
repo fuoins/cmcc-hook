@@ -19,10 +19,12 @@ import de.robv.android.xposed.XSharedPreferences;
 /**
  * 任务调度。
  *
- * 触发方式两种，都靠模块的 settings 传令（xposedsharedprefs 已开启，可在目标进程读）：
- *   1. 模块界面点「一键签到」→ 写 task_cmd / task_cmd_seq → 唤起中国移动 →
+ * 触发方式三种：
+ *   1. 进活动页自动跑（v1.9 主路径）：WebView 发现进的是签到 / 砸蛋 / 鹅蛋页，
+ *      按该活动的开关自动执行一次，见 {@link PageAuto}；
+ *   2. 模块界面点按钮 → 写 task_cmd / task_cmd_seq → 唤起中国移动 →
  *      目标进程 onResume 时发现序号变化就执行；
- *   2. 打开 App 自动签到开关打开 → 每次冷启动补跑一次，当天成功过就不再跑。
+ *   3. 「打开 App 就跑全部」开关打开 → 冷启动补跑一次，当天成功过就不再跑。
  *
  * 执行放单线程池，串行、带随机间隔，避免像脚本那样一把并发把自己送进风控。
  */
@@ -129,7 +131,12 @@ final class TaskRunner {
         }
     }
 
-    private static void execute(final Activity activity, final String cmd, final String from) {
+    /** 进活动页触发：不依赖 Activity，用模块持有的 Context。 */
+    static void executeAuto(final String cmd, final String from) {
+        execute(HookLog.context(), cmd, from);
+    }
+
+    private static void execute(final Context activity, final String cmd, final String from) {
         if (!RUNNING.compareAndSet(false, true)) {
             HookLog.logcat("task already running, skip " + cmd);
             return;
@@ -229,7 +236,7 @@ final class TaskRunner {
         return Result.ok(summary, detail.toString(), userText);
     }
 
-    private static void finish(Activity activity, String cmd, Result result) {
+    private static void finish(Context activity, String cmd, Result result) {
         Context ctx = HookLog.context();
         if (ctx != null) {
             putString(ctx, KEY_LAST_RESULT, (result.ok ? "OK " : "FAIL ") + result.summary);
@@ -246,7 +253,7 @@ final class TaskRunner {
                 (result.ok ? "任务完成 · " : "任务失败 · ") + result.summary,
                 detail.toString());
         HookLog.logcat("task " + cmd + " finished ok=" + result.ok + " " + result.summary);
-        if (activity != null && !activity.isFinishing()) {
+        if (activity != null) {
             final String text = result.ok ? result.summary
                     : (result.userText == null || result.userText.isEmpty()
                     ? result.summary : result.userText);
@@ -262,7 +269,7 @@ final class TaskRunner {
         }
     }
 
-    private static String label(String cmd) {
+    static String label(String cmd) {
         if (CMD_ALL.equals(cmd)) {
             return "一键过全部";
         }

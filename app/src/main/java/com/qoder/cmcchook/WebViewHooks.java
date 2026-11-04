@@ -242,6 +242,7 @@ final class WebViewHooks {
                         return;
                     }
                     attachGoose(param, url);
+                    PageAuto.onPage(webViewOf(param), url);
                     if (!UrlFilter.interesting(url)) {
                         return;
                     }
@@ -266,6 +267,7 @@ final class WebViewHooks {
                         return;
                     }
                     attachGoose(param, url);
+                    PageAuto.onPage(webViewOf(param), url);
                     if (!UrlFilter.interesting(url)) {
                         return;
                     }
@@ -675,6 +677,24 @@ final class WebViewHooks {
             webView = param.thisObject;
         }
         GooseTask.attach(webView, url);
+    }
+
+    private static Object webViewOf(XC_MethodHook.MethodHookParam param) {
+        if (param.args != null) {
+            for (Object arg : param.args) {
+                if (arg == null || arg instanceof String) {
+                    continue;
+                }
+                if (arg.getClass().getName().contains("WebView")) {
+                    return arg;
+                }
+            }
+        }
+        Object self = param.thisObject;
+        if (self != null && self.getClass().getName().contains("WebView")) {
+            return self;
+        }
+        return null;
     }
 
     private static String firstWebUrl(Object[] args) {

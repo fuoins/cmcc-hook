@@ -21,6 +21,11 @@ final class SignTask {
     private static final String PATH_STATUS = "/qwhdhub/api/mark/mark31/markstatus";
     private static final String PATH_MARK = "/qwhdhub/api/mark/mark31/domark";
     private static final String PATH_AWARD = "/qwhdhub/api/mark/mark31/taskAward/";
+    private static final String PATH_TASKS = "/qwhdhub/api/mark/task/taskList";
+    private static final String PATH_TASK_AWARD = "/qwhdhub/api/mark/task/getTaskAward";
+
+    private static final int MAX_BROWSE = 5;
+    private static final long BROWSE_STAY_MS = 7_000L;
 
     private SignTask() {
     }
@@ -243,6 +248,42 @@ final class SignTask {
             detail.append("任务奖励异常: ").append(e).append('\n');
         }
 
+        // ---- 浏览类任务：在签到页 WebView 里逐个打开，停留 7 秒再回来 ----
+        int browsed = 0;
+        try {
+            JSONArray tasks = fetchTasks(referer);
+            int triedBrowse = 0;
+            for (int i = 0; i < tasks.length() && triedBrowse < MAX_BROWSE; i++) {
+                JSONObject task = tasks.optJSONObject(i);
+                if (!isBrowseTask(task)) {
+                    continue;
+                }
+                String name = task.optString("taskName", "浏览任务");
+                String jump = task.optString("jumpUrl", "");
+                triedBrowse++;
+                if (!PageAuto.visit(jump, referer, BROWSE_STAY_MS)) {
+                    detail.append("浏览 ").append(name).append(": 页面不可用，跳过\n");
+                    break;
+                }
+                detail.append("浏览 ").append(name).append(": 打开 ")
+                        .append(BROWSE_STAY_MS / 1000).append(" 秒\n");
+                sleep(BROWSE_STAY_MS + 900);
+                browsed++;
+            }
+            if (triedBrowse > 0) {
+                // 浏览完再拉一次，把变成「已完成」的奖励领掉
+                sleep(1_200);
+                JSONArray latest = fetchTasks(referer);
+                int got = claimFinished(latest, referer, detail, lines);
+                detail.append("浏览任务: 尝试 ").append(browsed)
+                        .append(" 个，新领 ").append(got).append(" 个奖励\n");
+            } else {
+                detail.append("浏览任务: 没有待做的\n");
+            }
+        } catch (Throwable e) {
+            detail.append("浏览任务异常: ").append(e).append('\n');
+        }
+
         String summary = "签到完成 · 累计 " + accumulated + " 天";
         if (lines.size() > 1) {
             summary += " · " + (lines.size() - 1) + " 项奖励/变化";
@@ -253,6 +294,77 @@ final class SignTask {
         }
         detail.append("--- 结果 ---\n").append(all);
         return TaskRunner.Result.ok(summary, detail.toString(), all.toString().trim());
+    }
+
+    private static JSONArray fetchTasks(String referer) throws TaskApi.TaskException {
+        JSONObject root = TaskApi.post(PATH_TASKS, "{}", referer);
+        JSONObject data = TaskApi.dataOf(root, "taskList");
+        JSONArray tasks = data.optJSONArray("tasks");
+        return tasks == null ? new JSONArray() : tasks;
+    }
+
+    /** 浏览类：status=0、分类 2、jumpUrl 是 http 页面。充值/办理/订阅一律跳过。 */
+    private static boolean isBrowseTask(JSONObject task) {
+        if (task == null) {
+            return false;
+        }
+        if (task.optInt("status", -1) != 0) {
+            return false;
+        }
+        if (!"2".equals(task.optString("taskCategory"))) {
+            return false;
+        }
+        if (!"1".equals(task.optString("jumpUrlType"))) {
+            return false;
+        }
+        String url = task.optString("jumpUrl", "");
+        if (!url.startsWith("http")) {
+            return false;
+        }
+        String name = task.optString("taskName", "");
+        String[] blocked = {"充值", "装宽带", "办理", "订购", "订阅", "开通", "购买", "申请"};
+        for (String word : blocked) {
+            if (name.contains(word)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static int claimFinished(JSONArray tasks, String referer,
+                                     StringBuilder detail, List<String> lines) {
+        int got = 0;
+        int tried = 0;
+        for (int i = 0; i < tasks.length() && tried < 12; i++) {
+            JSONObject task = tasks.optJSONObject(i);
+            if (task == null || task.optInt("status", 0) != 2) {
+                continue;
+            }
+            if (!"1".equals(task.optString("awardType"))) {
+                continue;
+            }
+            String id = task.optString("taskId", "");
+            if (id.isEmpty()) {
+                continue;
+            }
+            tried++;
+            try {
+                JSONObject resp = TaskApi.post(PATH_TASK_AWARD,
+                        "{\"taskId\":\"" + id + "\"}", referer);
+                if ("SUCCESS".equals(resp.optString("code"))) {
+                    got++;
+                    lines.add("任务「" + task.optString("taskName") + "」奖励已领");
+                }
+                detail.append("任务奖励 ").append(id).append(": ")
+                        .append(resp.optString("code")).append(' ')
+                        .append(resp.optString("msg")).append('\n');
+            } catch (TaskApi.TaskException e) {
+                detail.append("任务奖励 ").append(id).append(" 异常: ")
+                        .append(e.getMessage()).append('\n');
+            }
+            sleep(800);
+        }
+        return got;
     }
 
     private static boolean isSignedToday(JSONArray marks, String today) {

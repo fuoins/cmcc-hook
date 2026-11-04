@@ -26,59 +26,15 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
-            <LinearLayout
+            <TextView
+                style="@style/RowDesc"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:gravity="center_vertical"
-                android:orientation="horizontal"
                 android:paddingStart="16dp"
                 android:paddingTop="12dp"
-                android:paddingEnd="12dp"
-                android:paddingBottom="12dp">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:orientation="vertical">
-
-                    <TextView
-                        style="@style/RowTitle"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/task_all" />
-
-                    <TextView
-                        style="@style/RowDesc"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:text="@string/task_all_desc" />
-                </LinearLayout>
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnRunAll"
-                    android:layout_width="80dp"
-                    android:layout_height="36dp"
-                    android:layout_marginStart="8dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:paddingStart="0dp"
-                    android:paddingEnd="0dp"
-                    android:text="@string/btn_all"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_primary"
-                    android:textSize="13sp"
-                    app:backgroundTint="@color/primary"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp" />
-            </LinearLayout>
-
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:layout_marginStart="16dp"
-                android:layout_marginEnd="16dp"
-                android:background="@color/divider" />
+                android:paddingEnd="16dp"
+                android:paddingBottom="4dp"
+                android:text="@string/task_hint" />
 
             <LinearLayout
                 android:layout_width="match_parent"
@@ -109,22 +65,12 @@
                         android:text="@string/task_sign_desc" />
                 </LinearLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnSign"
-                    android:layout_width="80dp"
-                    android:layout_height="36dp"
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/switchPageSign"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:paddingStart="0dp"
-                    android:paddingEnd="0dp"
-                    android:text="@string/btn_sign"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_secondary_container"
-                    android:textSize="13sp"
-                    app:backgroundTint="@color/secondary_container"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp" />
+                    android:checked="true" />
             </LinearLayout>
 
             <View
@@ -163,22 +109,12 @@
                         android:text="@string/task_egg_desc" />
                 </LinearLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnEgg"
-                    android:layout_width="80dp"
-                    android:layout_height="36dp"
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/switchPageEgg"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:paddingStart="0dp"
-                    android:paddingEnd="0dp"
-                    android:text="@string/btn_egg"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_secondary_container"
-                    android:textSize="13sp"
-                    app:backgroundTint="@color/secondary_container"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp" />
+                    android:checked="true" />
             </LinearLayout>
 
             <View
@@ -217,22 +153,12 @@
                         android:text="@string/task_goose_desc" />
                 </LinearLayout>
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnGoose"
-                    android:layout_width="80dp"
-                    android:layout_height="36dp"
+                <com.google.android.material.switchmaterial.SwitchMaterial
+                    android:id="@+id/switchPageGoose"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
                     android:layout_marginStart="8dp"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:paddingStart="0dp"
-                    android:paddingEnd="0dp"
-                    android:text="@string/btn_goose"
-                    android:textAllCaps="false"
-                    android:textColor="@color/on_secondary_container"
-                    android:textSize="13sp"
-                    app:backgroundTint="@color/secondary_container"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp" />
+                    android:checked="true" />
             </LinearLayout>
 
             <View
@@ -248,9 +174,9 @@
                 android:gravity="center_vertical"
                 android:orientation="horizontal"
                 android:paddingStart="16dp"
-                android:paddingTop="12dp"
+                android:paddingTop="10dp"
                 android:paddingEnd="12dp"
-                android:paddingBottom="12dp">
+                android:paddingBottom="10dp">
 
                 <LinearLayout
                     android:layout_width="0dp"
@@ -278,7 +204,26 @@
                     android:layout_marginStart="8dp"
                     android:checked="false" />
             </LinearLayout>
+
+            <com.google.android.material.button.MaterialButton
+                android:id="@+id/btnRunAll"
+                android:layout_width="match_parent"
+                android:layout_height="44dp"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="4dp"
+                android:layout_marginEnd="16dp"
+                android:layout_marginBottom="14dp"
+                android:insetTop="0dp"
+                android:insetBottom="0dp"
+                android:text="@string/btn_all"
+                android:textAllCaps="false"
+                android:textColor="@color/on_primary"
+                android:textSize="14sp"
+                app:backgroundTint="@color/primary"
+                app:cornerRadius="999dp"
+                app:elevation="0dp" />
         </LinearLayout>
+
 
 
         <TextView
