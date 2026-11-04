@@ -296,6 +296,14 @@ final class SsoLogin {
             detail.append("用户信息: ").append(lastError).append('\n');
             return false;
         }
+        // App 刚冷启动时 WebView 可能还停在 about:blank，等它挂上真实页面再调。
+        for (int i = 0; i < 5; i++) {
+            String current = urlOf(wv);
+            if (current.startsWith("http")) {
+                break;
+            }
+            sleep(1_000L);
+        }
         for (int attempt = 0; attempt < 2; attempt++) {
             rawResult = "";
             lastError = "";
@@ -366,6 +374,22 @@ final class SsoLogin {
     private static void clearDeadWebView() {
         webView = new WeakReference<>(null);
         webViewAt = 0L;
+    }
+
+    private static String urlOf(Object wv) {
+        try {
+            Object value = de.robv.android.xposed.XposedHelpers.callMethod(wv, "getUrl");
+            return value == null ? "" : String.valueOf(value);
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ignored) {
+        }
     }
 
     private static String buildScript() {
