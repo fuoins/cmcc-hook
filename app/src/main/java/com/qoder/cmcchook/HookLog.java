@@ -17,9 +17,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 final class HookLog {
     static final String MODULE_PACKAGE = "com.qoder.cmcchook";
     static final String TARGET_PACKAGE = "com.greenpoint.android.mc10086.activity";
-    static final String MODULE_VERSION = "2.3";
+    static final String MODULE_VERSION = "2.4";
     static final String ACTION_LOG = "com.qoder.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.qoder.cmcchook.action.HEARTBEAT";
+    static final String ACTION_STATE = "com.qoder.cmcchook.action.STATE";
     private static final String RECEIVER = "com.qoder.cmcchook.LogReceiver";
     private static final String TAG = "CmccHook";
     private static final int MAX_DETAIL_SHORT = 8_192;
@@ -110,6 +111,34 @@ final class HookLog {
     static void error(String summary, Throwable throwable) {
         String detail = throwable == null ? "" : Log.getStackTraceString(throwable);
         log("ERROR", summary, detail);
+    }
+
+    /**
+     * 把单个活动的当日结果告诉模块进程。
+     *
+     * 任务跑在目标 App 进程，结果写在它的 SharedPreferences 里，模块界面根本读不到 ——
+     * v2.3 首页的「今日」一直显示 ○ 就是这个原因。这里用广播同步一份回去。
+     */
+    static void state(String cmd, boolean ok, String summary, int attempts, String day) {
+        Context ctx = context();
+        if (ctx == null || cmd == null || cmd.isEmpty()) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(ACTION_STATE);
+            intent.setComponent(new ComponentName(MODULE_PACKAGE, RECEIVER));
+            intent.setPackage(MODULE_PACKAGE);
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                    | Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.putExtra("cmd", cmd);
+            intent.putExtra("ok", ok);
+            intent.putExtra("summary", cut(summary, 160));
+            intent.putExtra("attempts", attempts);
+            intent.putExtra("day", day);
+            ctx.sendBroadcast(intent);
+        } catch (Throwable e) {
+            logcat("state broadcast failed: " + e);
+        }
     }
 
     static String processName() {

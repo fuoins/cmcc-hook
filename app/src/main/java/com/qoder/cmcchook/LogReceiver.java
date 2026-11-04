@@ -8,6 +8,7 @@ import android.os.Bundle;
 public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_LOG = "com.qoder.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.qoder.cmcchook.action.HEARTBEAT";
+    static final String ACTION_STATE = "com.qoder.cmcchook.action.STATE";
 
     @Override
     public void onReceive(Context context, Intent intent) {
@@ -19,7 +20,26 @@ public final class LogReceiver extends BroadcastReceiver {
             handleHeartbeat(context, intent);
         } else if (ACTION_LOG.equals(action)) {
             handleLog(context, intent);
+        } else if (ACTION_STATE.equals(action)) {
+            handleState(context, intent);
         }
+    }
+
+    /** 目标进程跑完一个活动就报一次，模块首页据此显示 ✓ / ✗ / ○。 */
+    private void handleState(Context context, Intent intent) {
+        String cmd = intent.getStringExtra("cmd");
+        if (cmd == null || cmd.isEmpty()) {
+            return;
+        }
+        String day = intent.getStringExtra("day");
+        if (day == null || day.isEmpty()) {
+            day = AppPrefs.today();
+        }
+        AppPrefs.setTaskState(context, cmd,
+                day,
+                intent.getBooleanExtra("ok", false),
+                intent.getStringExtra("summary"),
+                intent.getIntExtra("attempts", 0));
     }
 
     private void handleHeartbeat(Context context, Intent intent) {

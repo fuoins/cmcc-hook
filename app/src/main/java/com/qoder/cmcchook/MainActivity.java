@@ -279,7 +279,9 @@ public final class MainActivity extends AppCompatActivity {
 
     /**
      * 今日三个活动的完成状态，一眼能看出哪个没跑。
-     * 数据来自 TaskRunner 按活动记的 result_<活动>_<日期>，不用翻日志。
+     *
+     * 任务跑在中国移动 App 进程里，结果写在那边；模块这边靠 STATE 广播同步，
+     * 所以读的是 AppPrefs 而不是 TaskRunner 的本地存储。
      */
     private String todayTasks() {
         StringBuilder sb = new StringBuilder("今日：");
@@ -290,11 +292,16 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     private String taskMark(String name, String cmd) {
-        String result = TaskRunner.resultToday(this, cmd);
-        if (result == null) {
-            return name + " ○";
+        String day = AppPrefs.today();
+        String result = AppPrefs.getTaskState(this, cmd, day);
+        int times = AppPrefs.getTaskAttempts(this, cmd, day);
+        if (result.isEmpty()) {
+            return name + (times > 0 ? " ✗" + times : " ○");
         }
-        return name + (result.startsWith("OK") ? " ✓" : " ✗");
+        if (result.startsWith("OK")) {
+            return name + " ✓";
+        }
+        return name + (times > 1 ? " ✗" + times : " ✗");
     }
 
     private void updateLogCount() {

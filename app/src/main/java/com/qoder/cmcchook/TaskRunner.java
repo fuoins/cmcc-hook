@@ -266,7 +266,9 @@ final class TaskRunner {
             return;
         }
         HookLog.log("TASK", "任务开始 · " + label(cmd) + "（" + from + "触发）",
-                "入口: " + TaskApi.ACT_SIGN + "\n砸金蛋: " + TaskApi.ACT_EGG
+                "今日: " + todayLine(HookLog.context()) + "\n"
+                        + "开关: " + switchLine() + "\n"
+                        + "入口: " + TaskApi.ACT_SIGN + "\n砸金蛋: " + TaskApi.ACT_EGG
                         + "\nCookie: " + CookieStore.summary());
         POOL.execute(new Runnable() {
             @Override
@@ -437,6 +439,13 @@ final class TaskRunner {
         if (result.userText != null && !result.userText.isEmpty()) {
             detail.append("\n--- 摘要 ---\n").append(result.userText);
         }
+        // 每次结束都带上三个活动的状态：只跑了一个时，能一眼看出另外两个是完成了
+        // 还是失败次数到顶被跳过，不用再猜「是不是漏做了」。
+        detail.append("\n--- 今日 ---\n").append(todayLine(ctx));
+        String note = skipNote(ctx);
+        if (!note.isEmpty()) {
+            detail.append('\n').append(note);
+        }
         HookLog.log(result.ok ? "TASK" : "TASK-FAIL",
                 (result.ok ? "任务完成 · " : "任务失败 · ") + result.summary,
                 detail.toString());
@@ -509,6 +518,8 @@ final class TaskRunner {
             }
             putString(ctx, KEY_PREFIX_RESULT + key + "_" + dayKey(), text);
             putLong(ctx, KEY_PREFIX_RESULT_AT + key, System.currentTimeMillis());
+            // 结果同时回传模块进程，首页「今日」才能显示出来。
+            HookLog.state(key, ok, text, attemptsToday(ctx, key), dayKey());
         }
     }
 
@@ -519,6 +530,67 @@ final class TaskRunner {
         }
         String value = getString(ctx, KEY_PREFIX_RESULT + cmd + "_" + dayKey(), "");
         return value.isEmpty() ? null : value;
+    }
+
+    /**
+     * 今日三个活动的一行状态：
+     * {@code 签到 ✓　砸蛋 ✗2　鹅蛋 ○}（✓ 成功 / ✗ 失败，数字是当天次数 / ○ 还没跑）。
+     */
+    static String todayLine(Context ctx) {
+        if (ctx == null) {
+            return "签到 ?　砸蛋 ?　鹅蛋 ?";
+        }
+        return "签到 " + dayMark(ctx, CMD_SIGN)
+                + "　砸蛋 " + dayMark(ctx, CMD_EGG)
+                + "　鹅蛋 " + dayMark(ctx, CMD_GOOSE);
+    }
+
+    private static String dayMark(Context ctx, String cmd) {
+        String result = resultToday(ctx, cmd);
+        int times = attemptsToday(ctx, cmd);
+        if (result != null && result.startsWith("OK")) {
+            return "✓";
+        }
+        if (times > 1) {
+            return "✗" + times;
+        }
+        return result != null ? "✗" : "○";
+    }
+
+    /** 三个开关的当前状态，写进任务日志抬头，省得怀疑「是不是关掉了」。 */
+    static String switchLine() {
+        return "自动" + onOff(HookPrefs.autoSign())
+                + " · 签到" + onOff(HookPrefs.pageSign())
+                + " · 砸蛋" + onOff(HookPrefs.pageEgg())
+                + " · 鹅蛋" + onOff(HookPrefs.pageGoose());
+    }
+
+    private static String onOff(boolean on) {
+        return on ? "开" : "关";
+    }
+
+    /** 被自动流程跳过、但用户可能会疑惑的活动，逐条说明原因。 */
+    static String skipNote(Context ctx) {
+        if (ctx == null) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        String[] cmds = {CMD_SIGN, CMD_EGG, CMD_GOOSE};
+        for (String cmd : cmds) {
+            String result = resultToday(ctx, cmd);
+            if (result != null && result.startsWith("OK")) {
+                continue;
+            }
+            int times = attemptsToday(ctx, cmd);
+            if (times >= MAX_ATTEMPT) {
+                if (sb.length() > 0) {
+                    sb.append('\n');
+                }
+                sb.append("提示: ").append(label(cmd)).append(" 今日已失败 ").append(times)
+                        .append(" 次，自动流程不再重试；可在模块里手动再点一次。");
+            }
+        }
+        return sb.toString();
     }
 
     static long resultAt(Context ctx, String cmd) {

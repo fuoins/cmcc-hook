@@ -42,6 +42,8 @@ final class PageAuto {
         }
         lastUrl = url;
         lastUrlAt = System.currentTimeMillis();
+        // 顺手记下带 pc/pk 的鹅蛋入口：下次自动跑就不用再让用户手动进页面。
+        GooseTask.rememberEntry(url);
         if (webView != null) {
             lastWebView = new WeakReference<>(webView);
         }

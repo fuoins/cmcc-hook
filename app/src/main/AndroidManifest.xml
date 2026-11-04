@@ -53,6 +53,7 @@
             <intent-filter>
                 <action android:name="com.qoder.cmcchook.action.LOG" />
                 <action android:name="com.qoder.cmcchook.action.HEARTBEAT" />
+                <action android:name="com.qoder.cmcchook.action.STATE" />
             </intent-filter>
         </receiver>
 

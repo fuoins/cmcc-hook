@@ -64,6 +64,33 @@ final class AppPrefs {
         return status(context).getLong("last_heartbeat", 0L);
     }
 
+    // ------------------------------------------------------- 今日任务状态
+    // 任务跑在目标进程，结果在那边写 SharedPreferences，模块界面读不到。
+    // 所以目标进程每跑完一个活动就发一条广播回来，这里按 (活动, 日期) 存一份。
+
+    static String today() {
+        return new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.US)
+                .format(new java.util.Date());
+    }
+
+    static void setTaskState(Context context, String cmd, String day,
+                             boolean ok, String summary, int attempts) {
+        status(context).edit()
+                .putString("task_state_" + cmd + "_" + day,
+                        (ok ? "OK " : "FAIL ") + (summary == null ? "" : summary))
+                .putInt("task_attempt_" + cmd + "_" + day, attempts)
+                .apply();
+    }
+
+    /** 某个活动今天的最近结果；空串表示今天没跑过。 */
+    static String getTaskState(Context context, String cmd, String day) {
+        return status(context).getString("task_state_" + cmd + "_" + day, "");
+    }
+
+    static int getTaskAttempts(Context context, String cmd, String day) {
+        return status(context).getInt("task_attempt_" + cmd + "_" + day, 0);
+    }
+
     static long getLastTick(Context context) {
         return status(context).getLong("last_tick", 0L);
     }
