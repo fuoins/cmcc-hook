@@ -14,6 +14,7 @@ final class HookPrefs {
     private static volatile boolean secondary = false;
     private static volatile boolean h5Noise = true;
     private static volatile boolean verboseRaw = false;
+    private static volatile boolean apiOnly = true;
     private static volatile boolean autoSign = true;
     private static volatile boolean pageSign = true;
     private static volatile boolean pageEgg = true;
@@ -73,6 +74,12 @@ final class HookPrefs {
         return verboseRaw;
     }
 
+    /** 只记录业务接口：埋点、广告、静态资源一律不写日志。 */
+    static boolean apiOnly() {
+        reload(false);
+        return apiOnly;
+    }
+
     static boolean autoSign() {
         reload(false);
         return autoSign;
@@ -116,6 +123,7 @@ final class HookPrefs {
             secondary = p.getBoolean("hook_secondary", false);
             h5Noise = p.getBoolean("filter_h5_noise", true);
             verboseRaw = p.getBoolean("verbose_raw", false);
+            apiOnly = p.getBoolean("api_only", true);
             autoSign = p.getBoolean("auto_sign", true);
             pageSign = p.getBoolean("auto_page_sign", true);
             pageEgg = p.getBoolean("auto_page_egg", true);

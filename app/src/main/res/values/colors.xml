@@ -30,5 +30,8 @@
     <color name="tag_ui">#7B1FA2</color>
     <color name="tag_system">#546E7A</color>
     <color name="tag_error">#B71C1C</color>
+    <color name="tag_api">#0D47A1</color>
+    <color name="tag_task">#2E7D32</color>
+    <color name="tag_task_fail">#C62828</color>
     <color name="code_background">#F3EDF7</color>
 </resources>

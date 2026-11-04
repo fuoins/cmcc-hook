@@ -44,6 +44,8 @@ final class TaskRunner {
     private static final String KEY_LAST_AUTO = "last_auto";
     private static final String KEY_PREFIX_DONE = "done_";
     private static final String KEY_PREFIX_ATTEMPT = "attempt_";
+    private static final String KEY_PREFIX_RESULT = "result_";
+    private static final String KEY_PREFIX_RESULT_AT = "result_at_";
 
     /** 单个活动当天最多自动尝试几次，超过就按天拉黑（手动仍可跑）。 */
     static final int MAX_ATTEMPT = 3;
@@ -317,9 +319,11 @@ final class TaskRunner {
     private static Result runList(String[] cmds) {
         StringBuilder detail = new StringBuilder();
         StringBuilder text = new StringBuilder();
+        StringBuilder brief = new StringBuilder();
         int okCount = 0;
         for (String cmd : cmds) {
             String name = label(cmd);
+            brief.append(name).append(' ');
             try {
                 Result one = CMD_SIGN.equals(cmd) ? SignTask.run()
                         : CMD_EGG.equals(cmd) ? EggTask.run()
@@ -328,6 +332,7 @@ final class TaskRunner {
                         .append(one.detail == null ? "" : one.detail).append('\n');
                 text.append(name).append("：")
                         .append(one.ok ? one.summary : "失败（" + one.summary + "）").append('\n');
+                brief.append(one.ok ? "✓" : "✗").append(' ');
                 if (one.ok) {
                     okCount++;
                     // 每个活动单独记完成，pendingAuto 才不会整组重跑。
@@ -336,13 +341,16 @@ final class TaskRunner {
                     // 失败按活动记一次，当天满 3 次就不再自动重试（手动不受限）。
                     markAttempt(HookLog.context(), cmd);
                 }
+                markResult(HookLog.context(), cmd, one.ok, one.summary);
             } catch (Throwable e) {
                 markAttempt(HookLog.context(), cmd);
+                brief.append("✗ ");
                 detail.append("=== ").append(name).append(" ===\n异常: ").append(e).append('\n');
                 text.append(name).append("：异常 ").append(e).append('\n');
             }
         }
-        String summary = "过任务 " + okCount + "/" + cmds.length + " 项成功";
+        String summary = "过任务 " + okCount + "/" + cmds.length + " · "
+                + brief.toString().trim();
         if (okCount == 0) {
             return Result.fail(summary, detail.toString(), text.toString().trim());
         }
@@ -421,6 +429,10 @@ final class TaskRunner {
             // 会把「1/3 成功」当成「三个都成功」，失败的活动当天再也不会重试。
             markDone(ctx, cmd);
         }
+        if (cmd.indexOf(',') < 0) {
+            // 列表的结果在 runList 里逐个记过了，这里不能覆盖成整组的摘要。
+            markResult(ctx, cmd, result.ok, result.summary);
+        }
         StringBuilder detail = new StringBuilder(result.detail == null ? "" : result.detail);
         if (result.userText != null && !result.userText.isEmpty()) {
             detail.append("\n--- 摘要 ---\n").append(result.userText);
@@ -479,6 +491,46 @@ final class TaskRunner {
             }
             putInt(ctx, KEY_PREFIX_DONE + key + "_" + dayKey(), 1);
         }
+    }
+
+    /**
+     * 记录单个活动的最近一次结果，首页「今日任务」直接读它。
+     * 值形如 {@code OK 签到成功 +8} / {@code FAIL 登录失败}。
+     */
+    static void markResult(Context ctx, String cmd, boolean ok, String summary) {
+        if (ctx == null || cmd == null || cmd.isEmpty()) {
+            return;
+        }
+        String text = (ok ? "OK " : "FAIL ") + shortText(summary);
+        for (String one : cmd.split(",")) {
+            String key = one.trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            putString(ctx, KEY_PREFIX_RESULT + key + "_" + dayKey(), text);
+            putLong(ctx, KEY_PREFIX_RESULT_AT + key, System.currentTimeMillis());
+        }
+    }
+
+    /** 某个活动今天的最近结果；null 表示今天没跑过。 */
+    static String resultToday(Context ctx, String cmd) {
+        if (ctx == null) {
+            return null;
+        }
+        String value = getString(ctx, KEY_PREFIX_RESULT + cmd + "_" + dayKey(), "");
+        return value.isEmpty() ? null : value;
+    }
+
+    static long resultAt(Context ctx, String cmd) {
+        return ctx == null ? 0L : getLong(ctx, KEY_PREFIX_RESULT_AT + cmd, 0L);
+    }
+
+    private static String shortText(String text) {
+        if (text == null) {
+            return "";
+        }
+        String value = text.replace('\n', ' ').trim();
+        return value.length() <= 40 ? value : value.substring(0, 40) + "…";
     }
 
     static String lastResult(Context ctx) {

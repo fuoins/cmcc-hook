@@ -53,7 +53,13 @@ public final class JsBridge {
         int status = json.optInt("status", 0);
         String statusText = json.optString("statusText", "");
         long duration = json.optLong("duration", 0L);
-        String summary = "H5 " + type.toUpperCase() + " " + method + " "
+        // 活动接口单独打 tag，日志页「接口」一筛就只剩业务请求，埋点名都不显示。
+        String tag = ApiSpy.tag(url, "H5");
+        if (HookPrefs.apiOnly() && "H5".equals(tag)) {
+            // 只抓业务接口：极光埋点、广告位、静态资源一律不写。
+            return;
+        }
+        String summary = ApiSpy.prefix(tag) + "H5 " + type.toUpperCase() + " " + method + " "
                 + UrlFilter.shortForTitle(url) + " → " + (status == 0 ? "ERR" : status)
                 + (duration > 0 ? " (" + duration + "ms)" : "");
 
@@ -68,7 +74,7 @@ public final class JsBridge {
         appendBlock(detail, "响应头", json.optJSONObject("respHeaders"));
         appendBody(detail, "响应体", json.optString("respBody", ""));
 
-        HookLog.log("H5", summary, detail.toString());
+        HookLog.log(tag, summary, detail.toString());
     }
 
     private void logPage(JSONObject json, String page) {

@@ -46,11 +46,13 @@ public final class MainActivity extends AppCompatActivity {
     private static final int REQUEST_STORAGE = 1001;
 
     private static final int FILTER_ALL = 0;
-    private static final int FILTER_HTTP = 1;
-    private static final int FILTER_H5 = 2;
-    private static final int FILTER_UI = 3;
-    private static final int FILTER_COOKIE = 4;
-    private static final int FILTER_ERROR = 5;
+    private static final int FILTER_TASK = 1;
+    private static final int FILTER_API = 2;
+    private static final int FILTER_HTTP = 3;
+    private static final int FILTER_H5 = 4;
+    private static final int FILTER_UI = 5;
+    private static final int FILTER_COOKIE = 6;
+    private static final int FILTER_ERROR = 7;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
@@ -70,6 +72,7 @@ public final class MainActivity extends AppCompatActivity {
     private TextView homeHeartbeat;
     private TextView homeTarget;
     private TextView homeLogCount;
+    private TextView homeTasks;
 
     private RecyclerView logList;
     private LogAdapter adapter;
@@ -77,6 +80,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextView logHint;
     private MaterialButton btnExport;
     private TextView chipAll;
+    private TextView chipTask;
+    private TextView chipApi;
     private TextView chipHttp;
     private TextView chipH5;
     private TextView chipUi;
@@ -129,6 +134,7 @@ public final class MainActivity extends AppCompatActivity {
         homeHeartbeat = findViewById(R.id.homeHeartbeat);
         homeTarget = findViewById(R.id.homeTarget);
         homeLogCount = findViewById(R.id.homeLogCount);
+        homeTasks = findViewById(R.id.homeTasks);
         TextView homeVersion = findViewById(R.id.homeVersion);
         homeVersion.setText(getString(R.string.app_name) + "  v" + versionName());
 
@@ -140,6 +146,7 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnCopyWelfare).setOnClickListener(v -> copyWelfareUrl());
         findViewById(R.id.btnOpenLogs).setOnClickListener(v -> selectTab(TAB_LOG));
 
+        bindSwitch(R.id.switchApiOnly, AppPrefs.KEY_API_ONLY);
         bindSwitch(R.id.switchH5, AppPrefs.KEY_CAPTURE_H5);
         bindSwitch(R.id.switchNative, AppPrefs.KEY_CAPTURE_NATIVE);
         bindSwitch(R.id.switchUi, AppPrefs.KEY_CAPTURE_UI);
@@ -267,6 +274,27 @@ public final class MainActivity extends AppCompatActivity {
             tickText = " · 自检 " + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(tick));
         }
         homeTarget.setText("目标：" + targetVersion() + tickText);
+        homeTasks.setText(todayTasks());
+    }
+
+    /**
+     * 今日三个活动的完成状态，一眼能看出哪个没跑。
+     * 数据来自 TaskRunner 按活动记的 result_<活动>_<日期>，不用翻日志。
+     */
+    private String todayTasks() {
+        StringBuilder sb = new StringBuilder("今日：");
+        sb.append(taskMark("签到", TaskRunner.CMD_SIGN)).append("   ");
+        sb.append(taskMark("砸蛋", TaskRunner.CMD_EGG)).append("   ");
+        sb.append(taskMark("鹅蛋", TaskRunner.CMD_GOOSE));
+        return sb.toString();
+    }
+
+    private String taskMark(String name, String cmd) {
+        String result = TaskRunner.resultToday(this, cmd);
+        if (result == null) {
+            return name + " ○";
+        }
+        return name + (result.startsWith("OK") ? " ✓" : " ✗");
     }
 
     private void updateLogCount() {
@@ -428,6 +456,8 @@ public final class MainActivity extends AppCompatActivity {
         logHint = findViewById(R.id.logHint);
         btnExport = findViewById(R.id.btnExport);
         chipAll = findViewById(R.id.chipAll);
+        chipTask = findViewById(R.id.chipTask);
+        chipApi = findViewById(R.id.chipApi);
         chipHttp = findViewById(R.id.chipHttp);
         chipH5 = findViewById(R.id.chipH5);
         chipUi = findViewById(R.id.chipUi);
@@ -444,6 +474,8 @@ public final class MainActivity extends AppCompatActivity {
         btnExport.setOnClickListener(v -> beginExport());
 
         chipAll.setOnClickListener(v -> setFilter(FILTER_ALL));
+        chipTask.setOnClickListener(v -> setFilter(FILTER_TASK));
+        chipApi.setOnClickListener(v -> setFilter(FILTER_API));
         chipHttp.setOnClickListener(v -> setFilter(FILTER_HTTP));
         chipH5.setOnClickListener(v -> setFilter(FILTER_H5));
         chipUi.setOnClickListener(v -> setFilter(FILTER_UI));
@@ -455,7 +487,7 @@ public final class MainActivity extends AppCompatActivity {
     private void setFilter(int value) {
         filter = value;
         TextView[] chips = new TextView[]{
-                chipAll, chipHttp, chipH5, chipUi, chipCookie, chipError
+                chipAll, chipTask, chipApi, chipHttp, chipH5, chipUi, chipCookie, chipError
         };
         for (int i = 0; i < chips.length; i++) {
             chips[i].setSelected(i == value);
@@ -524,6 +556,11 @@ public final class MainActivity extends AppCompatActivity {
             return filter == FILTER_ALL;
         }
         switch (filter) {
+            case FILTER_TASK:
+                return tag.startsWith("TASK") || tag.equals("SYSTEM")
+                        || tag.equals("APP-START");
+            case FILTER_API:
+                return tag.startsWith("API");
             case FILTER_HTTP:
                 return tag.startsWith("HTTP") || tag.startsWith("OKHTTP");
             case FILTER_H5:

@@ -91,6 +91,38 @@
                 android:textSize="12sp" />
 
             <TextView
+                android:id="@+id/chipTask"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_chip"
+                android:clickable="true"
+                android:focusable="true"
+                android:paddingStart="14dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="6dp"
+                android:text="@string/filter_task"
+                android:textColor="@color/chip_text"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/chipApi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="@drawable/bg_chip"
+                android:clickable="true"
+                android:focusable="true"
+                android:paddingStart="14dp"
+                android:paddingTop="6dp"
+                android:paddingEnd="14dp"
+                android:paddingBottom="6dp"
+                android:text="@string/filter_api"
+                android:textColor="@color/chip_text"
+                android:textSize="12sp" />
+
+            <TextView
                 android:id="@+id/chipHttp"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

@@ -1,10 +1,14 @@
 package com.qoder.cmcchook;
 
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import androidx.annotation.NonNull;
 import androidx.recyclerview.widget.RecyclerView;
@@ -73,6 +77,28 @@ final class LogAdapter extends RecyclerView.Adapter<LogAdapter.Holder> {
             }
             notifyItemChanged(current);
         });
+        // 抓包分析经常要单独把一条接口发给别人，长按直接复制完整请求/响应。
+        holder.itemView.setOnLongClickListener(v -> {
+            int current = holder.getAdapterPosition();
+            if (current == RecyclerView.NO_POSITION) {
+                return false;
+            }
+            LogEntry item = items.get(current);
+            String text = item.formatFullTime() + " [" + item.tag + "] " + item.summary
+                    + (item.detail.isEmpty() ? "" : "\n" + item.detail);
+            try {
+                ClipboardManager manager = (ClipboardManager) v.getContext()
+                        .getSystemService(Context.CLIPBOARD_SERVICE);
+                if (manager == null) {
+                    return false;
+                }
+                manager.setPrimaryClip(ClipData.newPlainText("log", text));
+                Toast.makeText(v.getContext(), "已复制这条日志", Toast.LENGTH_SHORT).show();
+                return true;
+            } catch (Throwable e) {
+                return false;
+            }
+        });
     }
 
     @Override
@@ -92,6 +118,15 @@ final class LogAdapter extends RecyclerView.Adapter<LogAdapter.Holder> {
     private int tagColor(View view, String tag) {
         if (tag == null) {
             return view.getResources().getColor(R.color.tag_system);
+        }
+        if (tag.startsWith("API")) {
+            return view.getResources().getColor(R.color.tag_api);
+        }
+        if (tag.startsWith("TASK-FAIL")) {
+            return view.getResources().getColor(R.color.tag_task_fail);
+        }
+        if (tag.startsWith("TASK")) {
+            return view.getResources().getColor(R.color.tag_task);
         }
         if (tag.startsWith("H5")) {
             return view.getResources().getColor(R.color.tag_h5);

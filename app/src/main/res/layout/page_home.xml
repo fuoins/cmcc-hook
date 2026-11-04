@@ -100,6 +100,15 @@
                         android:text="@string/log_count_placeholder"
                         android:textColor="@color/text_secondary"
                         android:textSize="12sp" />
+
+                    <TextView
+                        android:id="@+id/homeTasks"
+                        android:layout_width="match_parent"
+                        android:layout_height="wrap_content"
+                        android:layout_marginTop="4dp"
+                        android:text="@string/task_line_placeholder"
+                        android:textColor="@color/text_secondary"
+                        android:textSize="12sp" />
                 </LinearLayout>
             </LinearLayout>
         </LinearLayout>

@@ -31,13 +31,14 @@
     <string name="task_goose_desc">离屏加载活动页，页面内打卡、领饲料、投喂、收蛋、领任务</string>
     <string name="task_auto">自动补跑</string>
     <string name="task_auto_desc">上面开关打开的活动，每天自动补跑一次；关掉就只手动执行</string>
-    <string name="task_keepalive">定时自检</string>
-    <string name="task_keepalive_desc">每 30 分钟唤醒一次，解冻中国移动 App 并跑掉当天没完成的活动；不打开界面、不弹通知</string>
+    <string name="task_keepalive">定时自检</string>    <string name="task_keepalive_desc">每 30 分钟唤醒一次，解冻中国移动 App 并跑掉当天没完成的活动；不打开界面、不弹通知</string>
     <string name="btn_all">立即全部跑一次</string>
     <string name="btn_sign">签到</string>
     <string name="btn_egg">砸蛋</string>
     <string name="btn_goose">收蛋</string>
 
+    <string name="capture_api_only">只抓业务接口</string>
+    <string name="capture_api_only_desc">跳过极光埋点、广告位和静态资源，日志只剩签到 / 砸蛋 / 鹅蛋 / 登录这些真接口</string>
     <string name="capture_title">抓取范围</string>
     <string name="capture_h5">H5 请求（WebView / X5）</string>
     <string name="capture_h5_desc">页面地址、XHR / fetch、请求头、请求体、响应体</string>
@@ -69,6 +70,8 @@
     <string name="capture_verbose_raw_desc">关：每条原始返回截到 8 KB，日志不会暴涨、看日志也不卡；开：整段输出（对接接口、核对字段时才用，日志会非常大）</string>
 
     <string name="filter_all">全部</string>
+    <string name="filter_task">任务</string>
+    <string name="filter_api">接口</string>
     <string name="filter_http">原生接口</string>
     <string name="filter_h5">H5</string>
     <string name="filter_ui">页面</string>
@@ -76,6 +79,7 @@
     <string name="filter_error">错误</string>
     <string name="btn_export_short">导出</string>
     <string name="log_count_placeholder">暂无日志</string>
+    <string name="task_line_placeholder">今日任务：签到 ○ 砸蛋 ○ 鹅蛋 ○</string>
     <string name="log_hint_format">共 %1$d 条 · %2$s · 每 2.5 秒自动刷新</string>
     <string name="log_filtered_empty">当前筛选下没有日志</string>
 

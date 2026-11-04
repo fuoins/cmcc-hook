@@ -89,7 +89,8 @@ final class OkHttpHooks {
             return;
         }
         if (param.getThrowable() != null) {
-            HookLog.log("HTTP-ERROR", "HTTP 请求异常 · " + requestMethod(request) + " "
+            HookLog.log("HTTP-ERROR", ApiSpy.prefix(ApiSpy.tag(url, ""))
+                            + "HTTP 请求异常 · " + requestMethod(request) + " "
                             + UrlFilter.shortForTitle(url),
                     requestDetail(request, url) + "\n--- 异常 ---\n"
                             + android.util.Log.getStackTraceString(param.getThrowable()));
@@ -114,8 +115,8 @@ final class OkHttpHooks {
                 RECENT.clear();
             }
 
-            String summary = "HTTP " + requestMethod(request) + " "
-                    + UrlFilter.shortForTitle(url) + " → " + code;
+            String summary = ApiSpy.prefix(ApiSpy.tag(url, "")) + "HTTP " + requestMethod(request)
+                    + " " + UrlFilter.shortForTitle(url) + " → " + code;
             StringBuilder detail = new StringBuilder(requestDetail(request, url));
             detail.append("状态: ").append(code).append(' ')
                     .append(string(call(response, "message"))).append('\n');
@@ -125,7 +126,11 @@ final class OkHttpHooks {
             }
             appendBlock(detail, "响应头", responseHeaders(response));
             appendBody(detail, "响应体", body);
-            HookLog.log("HTTP", summary, detail.toString());
+            String tag = ApiSpy.tag(url, "HTTP");
+            if (HookPrefs.apiOnly() && "HTTP".equals(tag)) {
+                return;
+            }
+            HookLog.log(tag, summary, detail.toString());
         } catch (Throwable e) {
             reportOnce("response", "format HTTP response failed: " + e);
         }
