@@ -6,6 +6,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -17,6 +18,8 @@ import java.util.Map;
  *
  * 关键是请求头 —— Python 里必须原样还原才不会 403 的那几个：
  *   Origin / Referer / login-check / x-requested-with / Cookie / UA
+ * 砸金蛋那套接口走的又是另一组头（Hlwyxhd-Device-Code，不带 login-check），
+ * 所以额外头做成参数透传。
  */
 final class TaskNet {
     static final String BASE = "https://wx.10086.cn";
@@ -54,7 +57,11 @@ final class TaskNet {
         }
 
         boolean loginRedirect() {
-            return redirect() && location.contains("login");
+            if (!redirect()) {
+                return false;
+            }
+            String loc = location.toLowerCase();
+            return loc.contains("login") || loc.contains("qwhdsso");
         }
 
         String brief() {
@@ -70,14 +77,28 @@ final class TaskNet {
     }
 
     static Resp get(String url, String referer) {
-        return request("GET", url, null, referer);
+        return request("GET", url, null, referer, null);
     }
 
     static Resp post(String url, String json, String referer) {
-        return request("POST", url, json == null ? "{}" : json, referer);
+        return request("POST", url, json == null ? "{}" : json, referer, null);
     }
 
-    private static Resp request(String method, String url, String body, String referer) {
+    static Resp get(String url, String referer, Map<String, String> extra) {
+        return request("GET", url, null, referer, extra);
+    }
+
+    static Resp post(String url, String json, String referer, Map<String, String> extra) {
+        return request("POST", url, json == null ? "{}" : json, referer, extra);
+    }
+
+    /** 不跟随重定向，只为拿 302 的 Location（SSO 换 token 用）。 */
+    static Resp getRaw(String url, String referer) {
+        return request("GET", url, null, referer, null);
+    }
+
+    private static Resp request(String method, String url, String body, String referer,
+                                Map<String, String> extra) {
         HttpURLConnection conn = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
@@ -95,6 +116,11 @@ final class TaskNet {
             }
             conn.setRequestProperty("login-check", "1");
             conn.setRequestProperty("x-requested-with", "XMLHttpRequest");
+            if (extra != null) {
+                for (Map.Entry<String, String> e : extra.entrySet()) {
+                    conn.setRequestProperty(e.getKey(), e.getValue());
+                }
+            }
             String cookie = CookieStore.header(url);
             if (!cookie.isEmpty()) {
                 conn.setRequestProperty("Cookie", cookie);
@@ -162,5 +188,13 @@ final class TaskNet {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    static Map<String, String> headers(String... pairs) {
+        Map<String, String> map = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < pairs.length; i += 2) {
+            map.put(pairs[i], pairs[i + 1]);
+        }
+        return map;
     }
 }

@@ -21,12 +21,21 @@
     <string name="target_unknown">目标：中国移动 App</string>
     <string name="log_count_home">已抓取 %1$d 条日志</string>
 
-    <string name="task_title">任务</string>
-    <string name="task_sign">一键签到</string>
-    <string name="task_sign_desc">签到并领取累计 / 连签 / 组队 / 月签奖励，结果写进日志</string>
-    <string name="task_auto">启动时自动签到</string>
-    <string name="task_auto_desc">打开中国移动后自动跑一次；当天成功过就不再跑</string>
+    <string name="task_title">活动任务</string>
+    <string name="task_all">一键过全部</string>
+    <string name="task_all_desc">签到有礼 + 天天砸金蛋 + 收鹅蛋换好礼，串行执行</string>
+    <string name="task_sign">签到有礼</string>
+    <string name="task_sign_desc">每日签到，领累计 / 连签 / 组队 / 月签奖励</string>
+    <string name="task_egg">天天砸金蛋</string>
+    <string name="task_egg_desc">先做浏览任务换次数，再把剩余次数全部抽掉</string>
+    <string name="task_goose">收鹅蛋换好礼</string>
+    <string name="task_goose_desc">在活动页里自动打卡、领饲料、投喂、收蛋，需先打开该页面</string>
+    <string name="task_auto">启动时自动过任务</string>
+    <string name="task_auto_desc">打开中国移动后自动跑一次三个活动；当天成功过就不再跑</string>
+    <string name="btn_all">全部</string>
     <string name="btn_sign">签到</string>
+    <string name="btn_egg">砸蛋</string>
+    <string name="btn_goose">收蛋</string>
 
     <string name="capture_title">抓取范围</string>
     <string name="capture_h5">H5 请求（WebView / X5）</string>

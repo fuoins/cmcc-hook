@@ -108,6 +108,49 @@ final class JsInjector {
         return null;
     }
 
+    /**
+     * 业务脚本注入（收鹅蛋用）。
+     *
+     * 调用方多半在任务线程，evaluateJavascript 必须回主线程，所以这里切一下并等结果。
+     */
+    static boolean evaluateRaw(final Object webView, final String js) {
+        if (webView == null || js == null || js.isEmpty()) {
+            return false;
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            return rawOnMain(webView, js);
+        }
+        final java.util.concurrent.CountDownLatch wait =
+                new java.util.concurrent.CountDownLatch(1);
+        final boolean[] ok = {false};
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                ok[0] = rawOnMain(webView, js);
+                wait.countDown();
+            }
+        });
+        try {
+            wait.await(4, java.util.concurrent.TimeUnit.SECONDS);
+        } catch (InterruptedException ignored) {
+        }
+        return ok[0];
+    }
+
+    private static boolean rawOnMain(Object webView, String js) {
+        try {
+            Method method = findEvaluate(webView.getClass());
+            if (method == null) {
+                return false;
+            }
+            method.invoke(webView, js, null);
+            return true;
+        } catch (Throwable e) {
+            HookLog.logcat("evaluateRaw failed: " + e);
+            return false;
+        }
+    }
+
     private static void reportOnce(String key, String message) {
         if (REPORTED.add(key)) {
             HookLog.logcat(message);

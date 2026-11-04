@@ -32,6 +32,12 @@ public final class JsBridge {
         }
     }
 
+    /** 收鹅蛋自动化脚本的回调。 */
+    @JavascriptInterface
+    public void goose(String payload) {
+        GooseTask.onJsResult(payload);
+    }
+
     private void logNetwork(JSONObject json, String page, String type) {
         if (!HookPrefs.h5()) {
             return;

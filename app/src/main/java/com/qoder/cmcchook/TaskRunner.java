@@ -28,7 +28,11 @@ import de.robv.android.xposed.XSharedPreferences;
  */
 final class TaskRunner {
 
+    /** 一键过全部：签到有礼 + 天天砸金蛋 + 收鹅蛋换好礼。 */
+    static final String CMD_ALL = "all";
     static final String CMD_SIGN = "sign";
+    static final String CMD_EGG = "egg";
+    static final String CMD_GOOSE = "goose";
 
     private static final String STATE_FILE = "cmcc_hook_tasks";
     private static final String KEY_HANDLED_SEQ = "handled_seq";
@@ -83,7 +87,7 @@ final class TaskRunner {
             execute(activity, cmd, "手动");
             return;
         }
-        if (!HookPrefs.autoSign() || isDoneToday(activity, CMD_SIGN)) {
+        if (!HookPrefs.autoSign() || isDoneToday(activity, CMD_ALL)) {
             return;
         }
         int attempt = getInt(activity, KEY_PREFIX_ATTEMPT + dayKey(), 0);
@@ -95,7 +99,7 @@ final class TaskRunner {
         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
-                execute(activity, CMD_SIGN, "自动");
+                execute(activity, CMD_ALL, "自动");
             }
         }, delay);
     }
@@ -131,7 +135,8 @@ final class TaskRunner {
             return;
         }
         HookLog.log("TASK", "任务开始 · " + label(cmd) + "（" + from + "触发）",
-                "活动入口: " + TaskApi.ACT_SIGN + "\nCookie: " + CookieStore.summary());
+                "入口: " + TaskApi.ACT_SIGN + "\n砸金蛋: " + TaskApi.ACT_EGG
+                        + "\nCookie: " + CookieStore.summary());
         POOL.execute(new Runnable() {
             @Override
             public void run() {
@@ -149,10 +154,76 @@ final class TaskRunner {
     }
 
     private static Result dispatch(String cmd) {
+        if (CMD_ALL.equals(cmd)) {
+            return runAll();
+        }
         if (CMD_SIGN.equals(cmd)) {
             return SignTask.run();
         }
+        if (CMD_EGG.equals(cmd)) {
+            return EggTask.run();
+        }
+        if (CMD_GOOSE.equals(cmd)) {
+            return GooseTask.run();
+        }
         return Result.fail("未知任务：" + cmd, "", "");
+    }
+
+    /** 三个活动串行跑：单个失败不影响后面，最后合成一条结果。 */
+    private static Result runAll() {
+        StringBuilder detail = new StringBuilder();
+        StringBuilder text = new StringBuilder();
+        int okCount = 0;
+        int total = 0;
+
+        total++;
+        try {
+            Result sign = SignTask.run();
+            detail.append("=== 签到有礼 ===\n").append(sign.detail).append('\n');
+            text.append("签到：").append(sign.ok ? sign.summary : "失败（" + sign.summary + "）")
+                    .append('\n');
+            if (sign.ok) {
+                okCount++;
+            }
+        } catch (Throwable e) {
+            detail.append("=== 签到有礼 ===\n异常: ").append(e).append('\n');
+            text.append("签到：异常 ").append(e).append('\n');
+        }
+
+        total++;
+        try {
+            Result egg = EggTask.run();
+            detail.append("=== 天天砸金蛋 ===\n").append(egg.detail).append('\n');
+            text.append("砸金蛋：").append(egg.ok ? egg.summary : "失败（" + egg.summary + "）")
+                    .append('\n');
+            if (egg.ok) {
+                okCount++;
+            }
+        } catch (Throwable e) {
+            detail.append("=== 天天砸金蛋 ===\n异常: ").append(e).append('\n');
+            text.append("砸金蛋：异常 ").append(e).append('\n');
+        }
+
+        total++;
+        try {
+            Result goose = GooseTask.run();
+            detail.append("=== 收鹅蛋换好礼 ===\n").append(goose.detail).append('\n');
+            text.append("收鹅蛋：").append(goose.ok ? goose.summary : goose.summary)
+                    .append('\n');
+            if (goose.ok) {
+                okCount++;
+            }
+        } catch (Throwable e) {
+            detail.append("=== 收鹅蛋换好礼 ===\n异常: ").append(e).append('\n');
+            text.append("收鹅蛋：异常 ").append(e).append('\n');
+        }
+
+        String summary = "过任务 " + okCount + "/" + total + " 项成功";
+        String userText = text.toString().trim();
+        if (okCount == 0) {
+            return Result.fail(summary, detail.toString(), userText);
+        }
+        return Result.ok(summary, detail.toString(), userText);
     }
 
     private static void finish(Activity activity, String cmd, Result result) {
@@ -189,7 +260,19 @@ final class TaskRunner {
     }
 
     private static String label(String cmd) {
-        return CMD_SIGN.equals(cmd) ? "一键签到" : cmd;
+        if (CMD_ALL.equals(cmd)) {
+            return "一键过全部";
+        }
+        if (CMD_SIGN.equals(cmd)) {
+            return "签到有礼";
+        }
+        if (CMD_EGG.equals(cmd)) {
+            return "天天砸金蛋";
+        }
+        if (CMD_GOOSE.equals(cmd)) {
+            return "收鹅蛋换好礼";
+        }
+        return cmd;
     }
 
     // ------------------------------------------------------------ 状态

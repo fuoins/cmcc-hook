@@ -100,7 +100,11 @@ final class WebViewHooks {
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
-                    if (url == null || !UrlFilter.interesting(url)) {
+                    if (url == null) {
+                        return;
+                    }
+                    attachGoose(param, url);
+                    if (!UrlFilter.interesting(url)) {
                         return;
                     }
                     Map<?, ?> headers = firstMap(param.args);
@@ -210,7 +214,11 @@ final class WebViewHooks {
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
-                    if (url == null || !UrlFilter.interesting(url)) {
+                    if (url == null) {
+                        return;
+                    }
+                    attachGoose(param, url);
+                    if (!UrlFilter.interesting(url)) {
                         return;
                     }
                     if (HookPrefs.ui()) {
@@ -230,7 +238,11 @@ final class WebViewHooks {
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
-                    if (url == null || !UrlFilter.interesting(url)) {
+                    if (url == null) {
+                        return;
+                    }
+                    attachGoose(param, url);
+                    if (!UrlFilter.interesting(url)) {
                         return;
                     }
                     if (HookPrefs.ui()) {
@@ -250,7 +262,11 @@ final class WebViewHooks {
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
-                    if (url == null || !UrlFilter.interesting(url)) {
+                    if (url == null) {
+                        return;
+                    }
+                    attachGoose(param, url);
+                    if (!UrlFilter.interesting(url)) {
                         return;
                     }
                     if (HookPrefs.ui()) {
@@ -269,7 +285,11 @@ final class WebViewHooks {
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
-                    if (url == null || !UrlFilter.interesting(url)) {
+                    if (url == null) {
+                        return;
+                    }
+                    attachGoose(param, url);
+                    if (!UrlFilter.interesting(url)) {
                         return;
                     }
                     if (HookPrefs.ui()) {
@@ -633,6 +653,28 @@ final class WebViewHooks {
             RECENT.clear();
         }
         HookLog.log(tag, summary, detail);
+    }
+
+    private static void attachGoose(XC_MethodHook.MethodHookParam param, String url) {
+        if (!GooseTask.isGoosePage(url)) {
+            return;
+        }
+        Object webView = null;
+        if (param.args != null) {
+            for (Object arg : param.args) {
+                if (arg == null || arg instanceof String) {
+                    continue;
+                }
+                if (arg.getClass().getName().contains("WebView")) {
+                    webView = arg;
+                    break;
+                }
+            }
+        }
+        if (webView == null) {
+            webView = param.thisObject;
+        }
+        GooseTask.attach(webView, url);
     }
 
     private static String firstWebUrl(Object[] args) {

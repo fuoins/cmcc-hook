@@ -30,14 +30,17 @@ final class SignTask {
         StringBuilder detail = new StringBuilder();
         List<String> lines = new ArrayList<>();
 
-        String warn = TaskApi.warmUp(referer);
-        detail.append("预热: ").append(warn == null ? "OK" : warn).append('\n');
-        detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
-        if (warn != null) {
-            return TaskRunner.Result.fail("会话不可用：" + warn, detail.toString(),
-                    "在 App 里打开一次「我的 → 签到领流量」，等页面加载完再点一键签到；"
+        String warmed = TaskApi.warmUp(referer);
+        if (warmed == null) {
+            detail.append("预热: SSO 跳转失败\n");
+            detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
+            return TaskRunner.Result.fail("签到会话不可用", detail.toString(),
+                    "在 App 里打开一次「我的 → 签到领流量」，等页面加载完再点一次；"
                             + "模块会自动把 Cookie 接过来，不用抓包。");
         }
+        referer = warmed;
+        detail.append("入口: ").append(referer).append('\n');
+        detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
 
         String today = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
 
@@ -191,6 +194,53 @@ final class SignTask {
             detail.append("月签: 领取 ").append(claimed).append(" 个\n");
         } catch (Throwable e) {
             detail.append("月签异常: ").append(e).append('\n');
+        }
+
+        // ---- 签到页任务奖励（已完成、标记可领的）----
+        try {
+            JSONObject taskRoot = TaskApi.post("/qwhdhub/api/mark/task/taskList", "{}", referer);
+            JSONObject tdata = TaskApi.dataOf(taskRoot, "taskList");
+            JSONArray tasks = tdata.optJSONArray("tasks");
+            int tried = 0;
+            int got = 0;
+            if (tasks != null) {
+                for (int i = 0; i < tasks.length() && tried < 8; i++) {
+                    JSONObject task = tasks.optJSONObject(i);
+                    if (task == null) {
+                        continue;
+                    }
+                    // status=2 已完成；awardType=1 表示奖励要手动领
+                    if (task.optInt("status", 0) != 2
+                            || !"1".equals(task.optString("awardType"))) {
+                        continue;
+                    }
+                    String taskId = task.optString("taskId", "");
+                    if (taskId.isEmpty()) {
+                        continue;
+                    }
+                    tried++;
+                    try {
+                        JSONObject resp = TaskApi.post("/qwhdhub/api/mark/task/getTaskAward",
+                                "{\"taskId\":\"" + taskId + "\"}", referer);
+                        if ("SUCCESS".equals(resp.optString("code"))) {
+                            got++;
+                            lines.add("任务「" + task.optString("taskName") + "」奖励已领");
+                            detail.append("任务奖励 ").append(taskId).append(": OK\n");
+                        } else {
+                            detail.append("任务奖励 ").append(taskId).append(": ")
+                                    .append(resp.optString("code")).append(' ')
+                                    .append(resp.optString("msg")).append('\n');
+                        }
+                    } catch (TaskApi.TaskException e) {
+                        detail.append("任务奖励 ").append(taskId).append(" 异常: ")
+                                .append(e.getMessage()).append('\n');
+                    }
+                    sleep(900);
+                }
+            }
+            detail.append("任务奖励: 尝试 ").append(tried).append("，成功 ").append(got).append('\n');
+        } catch (Throwable e) {
+            detail.append("任务奖励异常: ").append(e).append('\n');
         }
 
         String summary = "签到完成 · 累计 " + accumulated + " 天";

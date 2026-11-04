@@ -94,10 +94,10 @@ v1.5 起按「首页 / 功能 / 日志」三个 tab 组织，M3 卡片布局：
 对接新接口、核对字段时才打开。平时关着，单个大响应不会把日志文件撑爆，
 列表也不会因为一条几十万字的 JSON 卡住。
 
-## 任务引擎（v1.6 起）
+## 任务引擎（v1.8 起）
 
-抓包只是手段，真正想要的是「不用管，它自己签」。v1.6 起模块自带任务引擎，
-第一个移植的是签到 —— 和仓库里 `cmcc_sign.py` 同一套接口、同一套幂等判断。
+抓包只是手段，真正想要的是「不用管，它自己跑」。v1.6 起模块自带任务引擎，
+v1.8 把三个活动都接了进来。
 
 ### 为什么不再需要 Python 那一套
 
@@ -106,57 +106,96 @@ Python 版的复杂度其实分四层，只有前两层是「环境问题」：
 | 层 | Python 怎么做 | 模块里怎么做 |
 |---|---|---|
 | 凭证 | 开 ProxyPin 抓 `cmccssotoken`，粘进 `config.json` | App 自己发请求时顺手截下来，存本地 |
-| 会话 | `QWHD_SESSION_TOKEN` 30 分钟过期，脚本自己 GET 活动页续 | 同样 GET 一次活动页，`Set-Cookie` 直接收 |
+| 会话 | `QWHD_SESSION_TOKEN` 30 分钟过期，脚本自己 GET 活动页续 | 走一遍 `/qwhdsso/login?actUrl=` 换新 token |
 | 传输 | 必须伪造 UA、走 `DEFAULT@SECLEVEL=1` 老 TLS 套件 | 用 App 自己的网络栈，本来就是通的 |
 | 业务 | 签到、领奖、任务、抽奖的编排与幂等 | **一样要写**，一行没少 |
 
 前两层在模块里基本消失了：不用抓包、不用填 token、不用管 UA、不用管 TLS。
 后两层搬不过来也省不掉 —— 服务端认的是业务顺序和幂等，不是你怎么发的包。
 
-### 现在能做什么
+### 三个活动的实现方式
 
-「功能」页最上面多了「任务」卡片：
+| 活动 | 活动 ID | 怎么做的 | 依赖 |
+|---|---|---|---|
+| 签到有礼 | 1021122301 | 原生 HTTP 直连 `qwhdhub/api/mark/*` | Cookie + Referer |
+| 天天砸金蛋 | 1026071510 | 原生 HTTP 直连 `qwhdhub/lottery/*` + `task/*` | Cookie + `Hlwyxhd-Device-Code` |
+| 收鹅蛋换好礼 | goose2025 | WebView 内注入脚本，点页面按钮 | 必须先在 App 里打开活动页 |
 
-- **一键签到**：唤起中国移动 → 模块在 App 进程里跑完签到 + 领奖 → 结果写进日志；
-- **启动时自动签到**：打开 App 后自动跑一次，当天成功过就不再跑（失败最多重试 3 次）。
+前两个是明文 JSON，服务端只校验会话和 Referer，模块直接发就行。
+第三个不是同一个体系：接口在 `lyh.lncmcc.com/huodong-portal`，
+请求体是国密加密后的 `sinoEnParams`、响应是 `dataEn`，URL 上还有瑞数（`$_ts`）动态签名，
+每次请求的 `LJRkIeoW` 都不一样。要本地重放，得把整套瑞数 VM 一起搬过来 ——
+成本远大于收益，而且风控一升级就全废。
 
-签到做的事，和 `cmcc_sign.py` 默认行为一致：
+所以收鹅蛋换了个思路：不自己发请求，等页面打开后注入脚本，
+让页面自己去点「打卡 / 领饲料 / 投喂 / 收蛋」。加密和签名全交给页面自己的 JS，
+模块只负责触发和收结果。
+
+### 界面上怎么用
+
+「功能」页最上面的「活动任务」卡片有四行：
+
+- **一键过全部**：签到有礼 → 天天砸金蛋 → 收鹅蛋换好礼，串行跑一遍；
+- **签到有礼**：单独跑签到；
+- **天天砸金蛋**：单独跑砸蛋；
+- **收鹅蛋换好礼**：单独跑收蛋（需要活动页开着）；
+- **启动时自动过任务**：打开 App 后自动跑一次「全部」，当天成功过就不再跑。
+
+### 签到有礼做什么
 
 ```
-预热活动页（拿 QWHD_SESSION_TOKEN）
+SSO 换 token（/qwhdsso/login?dlwmh=true&actUrl=…）
   → markstatus 查状态
   → domark 签到（HAVE_MARKED 视为已签）
   → 再查一次，领 taskAwardChance 里的累计/连签奖励
   → 组团共签（status=3 才领）
   → 连续月签（monthStatus=UNDO 且 hasPrize）
+  → 签到页任务里 status=2 且 awardType=1 的，补领一次
 ```
 
-日志里按 `TASK` 过滤能看到每次的完整链路：
+### 天天砸金蛋做什么
 
 ```
-TASK        任务开始 · 一键签到（手动触发）
-TASK        任务完成 · 签到完成 · 累计 4 天 · 2 项奖励/变化
+lottery/remain 查剩余次数
+  → task/list 拿任务清单，对 taskStage=UNDO 的逐个 GET startBrowse（+1 次）
+  → 重新查次数
+  → 按次数循环 lottery/lotterySafely，直到次数用完
+```
+
+`startBrowse` 是服务端 302 到落地页，模块只要把请求发出去就登记成功了，
+不用真的把落地页加载出来。抽奖之间带 1.8 秒随机间隔，最多 15 次。
+
+### 收鹅蛋换好礼做什么
+
+注入脚本按语义找按钮，串行点四下：**打卡 → 领饲料 → 投喂 → 收蛋**。
+只碰这四类动作，兑换、分享、跳转一律不点。
+
+页面没开着的时候不会瞎跑，会直接返回：
+
+```
+收鹅蛋需要在活动页里执行
+先在 App 里打开「收鹅蛋换好礼」，停在活动页，再回来点一次。
 ```
 
 ### 会话过期怎么办
 
-模块不存死 Cookie，每次跑之前都会用 `cmccssotoken` 重新拉一次活动页换
-`QWHD_SESSION_TOKEN`。只有 `cmccssotoken` 本身失效（通常是 App 里退出登录、
-或者长时间没用）才会失败，这时日志会直接说：
+模块不存死 Cookie，每次跑之前都会重新走一遍 SSO 换 token。只有 `cmccssotoken`
+本身失效（通常是 App 里退出登录、或者长时间没用）才会失败，这时日志会直接说：
 
 ```
-任务失败 · 会话不可用：登录已失效（活动页被重定向到登录页）
+任务失败 · 签到会话不可用
 ```
 
 在 App 里打开一次「我的 → 签到领流量」，等页面加载完，模块会把新 Cookie 收进来，
-再点一次一键签到就行 —— **不需要重新抓包**。
+再点一次就行 —— **不需要重新抓包**。
 
 ### 还没移植的
 
-| Python 脚本 | 状态 | 说明 |
+| 活动 | 状态 | 说明 |
 |---|---|---|
-| `cmcc_sign.py` | ✅ v1.6 | 签到 + 累计/连签/组队/月签 |
-| `cmcc_egg.py` 砸金蛋 | 下一步 | 纯明文接口，`startBrowse` + `lotterySafely` |
+| 签到有礼 | ✅ v1.6 | 签到 + 累计/连签/组队/月签 + 签到页任务奖励 |
+| 天天砸金蛋 | ✅ v1.8 | 浏览任务换次数 + 全部抽掉 |
+| 收鹅蛋换好礼 | ✅ v1.8 | WebView 注入，打卡/领饲料/投喂/收蛋 |
 | `cmcc_extra.py` 游戏中心/追剧 | 下一步 | diy-client，同样的明文 JSON |
 | `cmcc_coc3.py` / `cmcc_seed.py` | 待评估 | 要 `phone` 头，可以 hook 请求头自动收，但要先确认 11.9.1 还带 |
 | `cmcc_wed.py` 周三充值日 | 待评估 | 5 个任务会被 160005 风控，网页端做不了，模块同样做不了 |
@@ -268,9 +307,11 @@ app/src/main/java/com/qoder/cmcchook/
   LogAdapter.java        日志列表与展开详情
   CookieStore.java       10086 系 Cookie 汇总（OkHttp / WebView 两处截取）
   TaskNet.java           任务接口的极简 HTTP 客户端（HttpURLConnection）
-  TaskApi.java           qwhdhub 接口封装、会话预热、code 校验
-  SignTask.java          签到 + 领奖流程
-  TaskRunner.java        任务调度：手动触发 / 启动自动跑 / 幂等
+  TaskApi.java           qwhdhub 接口封装、SSO 预热、code 校验、设备码
+  SignTask.java          签到有礼：签到 + 累计/连签/组队/月签 + 任务奖励
+  EggTask.java           天天砸金蛋：浏览任务换次数 + 抽奖
+  GooseTask.java         收鹅蛋换好礼：WebView 注入，页面内点按钮
+  TaskRunner.java        任务调度：单活动 / 一键全部 / 启动自动跑 / 幂等
 ```
 
 `res/layout/` 里 `page_home.xml`、`page_func.xml`、`page_log.xml` 分别是三个 tab 的页面，
