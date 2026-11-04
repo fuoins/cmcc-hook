@@ -1,6 +1,5 @@
 package com.qoder.cmcchook;
 
-import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -124,7 +123,8 @@ final class LogAdapter extends RecyclerView.Adapter<LogAdapter.Holder> {
             summaryText = itemView.findViewById(R.id.summaryText);
             expandText = itemView.findViewById(R.id.expandText);
             detailText = itemView.findViewById(R.id.detailText);
-            detailText.setTextColor(Color.rgb(36, 49, 61));
+            detailText.setTextColor(androidx.core.content.ContextCompat.getColor(
+                    itemView.getContext(), R.color.text_primary));
         }
     }
 }

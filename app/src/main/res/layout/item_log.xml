@@ -9,8 +9,8 @@
     android:clickable="true"
     android:focusable="true"
     android:foreground="?attr/selectableItemBackground"
-    app:cardBackgroundColor="@color/surface"
-    app:cardCornerRadius="11dp"
+    app:cardBackgroundColor="@color/container"
+    app:cardCornerRadius="10dp"
     app:cardElevation="0dp"
     app:strokeColor="@color/divider"
     app:strokeWidth="1dp">
@@ -77,7 +77,7 @@
             android:background="@color/code_background"
             android:fontFamily="monospace"
             android:padding="9dp"
-            android:textColor="#24313D"
+            android:textColor="@color/text_primary"
             android:textIsSelectable="true"
             android:textSize="10.5sp"
             android:visibility="gone" />

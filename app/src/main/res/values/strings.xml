@@ -1,6 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">移动签到助手</string>
+    <string name="tab_home">首页</string>
+    <string name="tab_func">功能</string>
+    <string name="tab_log">日志</string>
+    <string name="about_title">关于</string>
+    <string name="about_desc">LSPosed 模块 · 抓取 + 自动化</string>
+    <string name="filter_title">过滤</string>
+    <string name="debug_title">调试</string>
+    <string name="module_title">模块</string>
     <string name="home_subtitle">LSPosed 抓取 / 自动化</string>
     <string name="log_title">抓取日志</string>
 
@@ -39,6 +47,20 @@
     <string name="howto_title">抓取步骤</string>
     <string name="howto_body">1. 在 LSPosed 中启用本模块，作用域只勾选「中国移动」，然后强制停止中国移动 App。\n2. 打开中国移动 App，进入福利中心页面。\n3. 按顺序点一遍需要自动化的签到、领奖、任务按钮。\n4. 回到本页，点「查看日志」，再点「刷新」检查是否抓到了接口。\n5. 点「导出到 Download」，把导出的 txt 文件发回来。导出的日志包含账号凭据，请只发给可信的人。</string>
     <string name="capture_warning">日志可能包含 Cookie、Token、Authorization、手机号等敏感信息，仅保存在本机。导出后请勿上传到公开网盘或群聊。</string>
+
+    <string name="capture_verbose_raw">详细原始返回</string>
+    <string name="capture_verbose_raw_desc">关：每条原始返回截到 8 KB，日志不会暴涨、看日志也不卡；开：整段输出（对接接口、核对字段时才用，日志会非常大）</string>
+
+    <string name="filter_all">全部</string>
+    <string name="filter_http">原生接口</string>
+    <string name="filter_h5">H5</string>
+    <string name="filter_ui">页面</string>
+    <string name="filter_cookie">Cookie</string>
+    <string name="filter_error">错误</string>
+    <string name="btn_export_short">导出</string>
+    <string name="log_count_placeholder">暂无日志</string>
+    <string name="log_hint_format">共 %1$d 条 · %2$s · 每 2.5 秒自动刷新</string>
+    <string name="log_filtered_empty">当前筛选下没有日志</string>
 
     <string name="btn_refresh">刷新</string>
     <string name="btn_clear">清空</string>

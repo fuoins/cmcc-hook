@@ -76,6 +76,24 @@ v1.4 起默认过滤：
 
 设置页的「过滤 H5 埋点噪音」可以关掉，关掉后逐条原样记录。
 
+## 界面
+
+v1.5 起按「首页 / 功能 / 日志」三个 tab 组织，M3 卡片布局：
+
+- **首页**：运行状态（心跳、目标版本、已抓条数）、快捷操作、使用说明、关于
+- **功能**：抓取范围、过滤、调试、模块四组开关，行内开关下方带说明，改动即时生效
+- **日志**：顶部「刷新 / 清空 / 导出」，下方按 tag 筛选（全部 / 原生接口 / H5 / 页面 / Cookie / 错误），
+  点条目展开完整请求响应；每 2.5 秒自动刷新，往上翻历史时不会被拉回底部
+
+深色模式自动跟随系统。
+
+### 详细原始返回
+
+默认关闭，单条 detail 截到 **8 KB**；打开后整段输出（最多 160 KB）。
+
+对接新接口、核对字段时才打开。平时关着，单个大响应不会把日志文件撑爆，
+列表也不会因为一条几十万字的 JSON 卡住。
+
 ## 抓取步骤（请按这个顺序操作）
 
 1. 打开中国移动 App，进入 **我的 → 福利中心**（或你平时领奖励的入口）。
@@ -162,21 +180,23 @@ v1.4 起默认过滤：
 app/src/main/java/com/qoder/cmcchook/
   HookEntry.java         模块入口，按进程安装 Hook
   UpdateHooks.java       升级弹窗 / 版本检查拦截（11.9.1）
-  WebViewHooks.java      WebView / X5 抓取，含 H5 埋点噪音过滤
   ClassLoaderHooks.java  后台探测晚加载的 OkHttp / X5 类并补装 Hook
   ActivityHooks.java     Application / Activity / Intent
   CrashHooks.java        未捕获异常捕获（CRASH 堆栈）
-  WebViewHooks.java      WebView / X5 的加载、页面回调、Cookie
+  WebViewHooks.java      WebView / X5 的加载、页面回调、Cookie、H5 噪音过滤
   JsInjector.java        注入 H5 抓取脚本与 JS Bridge
   JsBridge.java          把 H5 数据转成日志
   OkHttpHooks.java       OkHttp 2/3 请求响应（不再 hook 系统 com.android.okhttp）
-  HookLog.java           通过显式广播把日志送到模块 App
+  HookLog.java           通过显式广播把日志送到模块 App，按开关截断 detail
   LogReceiver.java       接收日志并落盘
   LogStore.java          日志存储 / 轮转 / 读取
-  LogActivity.java       日志页：刷新 / 清空 / 导出
   LogExporter.java       导出到 Download/CmccHook
-  MainActivity.java      首页：状态、抓取开关、快捷入口
+  MainActivity.java      三 tab：首页 / 功能 / 日志（含筛选、清空、导出）
+  LogAdapter.java        日志列表与展开详情
 ```
+
+`res/layout/` 里 `page_home.xml`、`page_func.xml`、`page_log.xml` 分别是三个 tab 的页面，
+配色走 `values/` + `values-night/` 两套 Material 3 色板，跟随系统深色模式。
 
 ## 下一阶段
 

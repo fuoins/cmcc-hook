@@ -44,12 +44,6 @@
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".LogActivity"
-            android:exported="false"
-            android:launchMode="singleTop"
-            android:parentActivityName=".MainActivity" />
-
         <receiver
             android:name=".LogReceiver"
             android:enabled="true"

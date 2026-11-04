@@ -17,12 +17,13 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 final class HookLog {
     static final String MODULE_PACKAGE = "com.qoder.cmcchook";
     static final String TARGET_PACKAGE = "com.greenpoint.android.mc10086.activity";
-    static final String MODULE_VERSION = "1.4";
+    static final String MODULE_VERSION = "1.5";
     static final String ACTION_LOG = "com.qoder.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.qoder.cmcchook.action.HEARTBEAT";
     private static final String RECEIVER = "com.qoder.cmcchook.LogReceiver";
     private static final String TAG = "CmccHook";
-    private static final int MAX_DETAIL = 160_000;
+    private static final int MAX_DETAIL_SHORT = 8_192;
+    private static final int MAX_DETAIL_FULL = 160_000;
     private static final int MAX_SUMMARY = 600;
     private static final long HEARTBEAT_INTERVAL_MS = 45_000L;
 
@@ -93,7 +94,8 @@ final class HookLog {
             intent.putExtra("ts", System.currentTimeMillis());
             intent.putExtra("tag", cut(tag, 40));
             intent.putExtra("summary", cut(summary, MAX_SUMMARY));
-            intent.putExtra("detail", cut(detail, MAX_DETAIL));
+            int maxDetail = HookPrefs.verboseRaw() ? MAX_DETAIL_FULL : MAX_DETAIL_SHORT;
+            intent.putExtra("detail", cut(detail, maxDetail));
             intent.putExtra("process", processName);
             intent.putExtra("module_version", MODULE_VERSION);
             intent.putExtra("target_version", targetVersion);

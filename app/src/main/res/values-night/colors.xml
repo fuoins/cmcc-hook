@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="primary">#D0BCFF</color>
+    <color name="on_primary">#381E72</color>
+    <color name="primary_dark">#B69DF8</color>
+    <color name="primary_container">#4F378B</color>
+    <color name="on_primary_container">#EADDFF</color>
+    <color name="secondary">#CCC2DC</color>
+    <color name="secondary_container">#4A4458</color>
+    <color name="on_secondary_container">#E8DEF8</color>
+
+    <color name="surface">#141218</color>
+    <color name="background">#141218</color>
+    <color name="container_low">#1D1B20</color>
+    <color name="container">#211F26</color>
+    <color name="container_high">#2B2930</color>
+
+    <color name="text_primary">#E6E0E9</color>
+    <color name="text_secondary">#CAC4D0</color>
+    <color name="outline">#938F99</color>
+    <color name="divider">#49454F</color>
+
+    <color name="success">#81C784</color>
+    <color name="warning">#FFB74D</color>
+    <color name="error">#F2B8B5</color>
+
+    <color name="tag_h5">#4DB6AC</color>
+    <color name="tag_http">#9FA8DA</color>
+    <color name="tag_ui">#CE93D8</color>
+    <color name="tag_system">#90A4AE</color>
+    <color name="tag_error">#EF9A9A</color>
+    <color name="code_background">#211F26</color>
+</resources>
