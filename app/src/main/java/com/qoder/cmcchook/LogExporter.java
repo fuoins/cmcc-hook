@@ -104,7 +104,12 @@ final class LogExporter {
         sb.append("Android: ").append(Build.VERSION.RELEASE)
                 .append(" (API ").append(Build.VERSION.SDK_INT).append(")\n");
         sb.append("目标应用: ").append(targetVersion(context)).append('\n');
-        sb.append("模块版本: 1.0\n");
+        // 以前这里写死 1.0，导出的日志永远显示「模块版本: 1.0」，
+        // 排查时分不清装的是哪一版。改成读目标进程心跳里带回的真实版本。
+        String moduleVersion = AppPrefs.getLastModuleVersion(context);
+        sb.append("模块版本: ")
+                .append(moduleVersion == null || moduleVersion.isEmpty() ? "未知" : moduleVersion)
+                .append('\n');
         sb.append("日志条数: ").append(entries.size()).append('\n');
         long heartbeat = AppPrefs.getLastHeartbeat(context);
         if (heartbeat > 0) {
