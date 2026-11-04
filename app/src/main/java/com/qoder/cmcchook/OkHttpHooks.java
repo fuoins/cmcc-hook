@@ -80,6 +80,11 @@ final class OkHttpHooks {
             return;
         }
         String url = requestUrl(request);
+        // 先把 Cookie 存下来：任务接口要用，否则又得让用户手动抓包。
+        try {
+            CookieStore.capture(url, headerValue(request, "Cookie"));
+        } catch (Throwable ignored) {
+        }
         if (!UrlFilter.interesting(url)) {
             return;
         }
@@ -320,6 +325,20 @@ final class OkHttpHooks {
             return;
         }
         sb.append("--- ").append(name).append(" ---\n").append(value).append('\n');
+    }
+
+    /** 取单个请求头的原始值（Cookie 要原样，不能走格式化后的 headers() 文本）。 */
+    private static String headerValue(Object request, String name) {
+        try {
+            Object headers = call(request, "headers");
+            if (headers == null) {
+                return null;
+            }
+            Object value = callWith(headers, "get", new Class<?>[]{String.class}, name);
+            return value == null ? null : String.valueOf(value);
+        } catch (Throwable e) {
+            return null;
+        }
     }
 
     private static Object call(Object target, String method) {

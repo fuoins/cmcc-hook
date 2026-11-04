@@ -14,6 +14,7 @@ final class HookPrefs {
     private static volatile boolean secondary = false;
     private static volatile boolean h5Noise = true;
     private static volatile boolean verboseRaw = false;
+    private static volatile boolean autoSign = false;
 
     private HookPrefs() {
     }
@@ -69,6 +70,11 @@ final class HookPrefs {
         return verboseRaw;
     }
 
+    static boolean autoSign() {
+        reload(false);
+        return autoSign;
+    }
+
     private static void reload(boolean force) {
         long now = System.currentTimeMillis();
         if (!force && now - lastReload < 1500L) {
@@ -89,6 +95,7 @@ final class HookPrefs {
             secondary = p.getBoolean("hook_secondary", false);
             h5Noise = p.getBoolean("filter_h5_noise", true);
             verboseRaw = p.getBoolean("verbose_raw", false);
+            autoSign = p.getBoolean("auto_sign", false);
         } catch (Throwable e) {
             HookLog.logcat("reload prefs failed: " + e);
         }

@@ -21,6 +21,13 @@
     <string name="target_unknown">目标：中国移动 App</string>
     <string name="log_count_home">已抓取 %1$d 条日志</string>
 
+    <string name="task_title">任务</string>
+    <string name="task_sign">一键签到</string>
+    <string name="task_sign_desc">签到并领取累计 / 连签 / 组队 / 月签奖励，结果写进日志</string>
+    <string name="task_auto">启动时自动签到</string>
+    <string name="task_auto_desc">打开中国移动后自动跑一次；当天成功过就不再跑</string>
+    <string name="btn_sign">签到</string>
+
     <string name="capture_title">抓取范围</string>
     <string name="capture_h5">H5 请求（WebView / X5）</string>
     <string name="capture_h5_desc">页面地址、XHR / fetch、请求头、请求体、响应体</string>

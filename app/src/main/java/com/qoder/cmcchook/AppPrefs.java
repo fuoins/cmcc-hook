@@ -22,6 +22,7 @@ final class AppPrefs {
     static final String KEY_HOOK_SECONDARY = "hook_secondary";
     static final String KEY_FILTER_H5_NOISE = "filter_h5_noise";
     static final String KEY_VERBOSE_RAW = "verbose_raw";
+    static final String KEY_AUTO_SIGN = "auto_sign";
 
     private AppPrefs() {
     }
@@ -40,6 +41,17 @@ final class AppPrefs {
 
     static void setBool(Context context, String key, boolean value) {
         settings(context).edit().putBoolean(key, value).apply();
+    }
+
+    /**
+     * 给目标进程下指令。模块和目标 App 不是同一个进程，Broadcast 在 App 被冻结时
+     * 会丢，所以走 settings 文件 + 序号：目标进程 onResume 时比对序号，没执行过就跑。
+     */
+    static void triggerTask(Context context, String cmd) {
+        settings(context).edit()
+                .putString("task_cmd", cmd)
+                .putLong("task_cmd_seq", System.currentTimeMillis())
+                .apply();
     }
 
     static long getLastHeartbeat(Context context) {

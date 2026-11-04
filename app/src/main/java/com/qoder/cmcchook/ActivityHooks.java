@@ -90,6 +90,24 @@ final class ActivityHooks {
         } catch (Throwable e) {
             reportOnce("activity:newintent", "Activity.onNewIntent hook failed: " + e);
         }
+
+        // 任务触发点：每次页面回到前台都看一眼有没有待执行的指令。
+        // 模块界面点「一键签到」会先写 settings 序号再把 App 拉到前台，
+        // 所以这里的 onResume 一定会被触发；自动签到也挂在这。
+        try {
+            XposedBridge.hookAllMethods(Activity.class, "onResume", new XC_MethodHook() {
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    try {
+                        TaskRunner.onForeground((Activity) param.thisObject);
+                    } catch (Throwable e) {
+                        HookLog.logcat("task trigger failed: " + e);
+                    }
+                }
+            });
+        } catch (Throwable e) {
+            reportOnce("activity:resume", "Activity.onResume hook failed: " + e);
+        }
     }
 
     private static void logAppStart(Application app) {

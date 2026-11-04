@@ -148,6 +148,8 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchH5Noise, AppPrefs.KEY_FILTER_H5_NOISE);
         bindSwitch(R.id.switchVerboseRaw, AppPrefs.KEY_VERBOSE_RAW, false);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
+        bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN, false);
+        findViewById(R.id.btnSign).setOnClickListener(v -> runSignTask());
 
         setupLogPage();
         selectTab(TAB_HOME);
@@ -256,6 +258,25 @@ public final class MainActivity extends AppCompatActivity {
 
     private void tintDot(View view, int color) {
         view.setBackgroundTintList(ColorStateList.valueOf(color));
+    }
+
+    /** 把指令写进 settings，再把目标 App 拉到前台；目标进程 onResume 时执行。 */
+    private void runSignTask() {
+        AppPrefs.triggerTask(this, "sign");
+        Intent intent = getPackageManager().getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
+        if (intent == null) {
+            Toast.makeText(this, "没有找到中国移动 App", Toast.LENGTH_LONG).show();
+            return;
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+        try {
+            startActivity(intent);
+            Toast.makeText(this, "已唤起中国移动，签到结果看日志页", Toast.LENGTH_LONG).show();
+            handler.postDelayed(() -> selectTab(TAB_LOG), 1200);
+        } catch (Throwable e) {
+            Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void bindSwitch(int viewId, String key) {
