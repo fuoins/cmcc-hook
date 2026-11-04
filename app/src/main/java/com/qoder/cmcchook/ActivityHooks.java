@@ -46,6 +46,7 @@ final class ActivityHooks {
                                 HookLog.setApplication(app);
                                 CrashHooks.ensureDefaultHandler();
                                 logAppStart(app);
+                                TaskReceiver.install(app);
                             }
                         }
                     });
@@ -76,6 +77,13 @@ final class ActivityHooks {
             XposedBridge.hookAllMethods(Activity.class, "onNewIntent", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
+                    // App 已经在前台时，startActivity 走的是 onNewIntent，onResume 不会再触发，
+                    // v1.8 的按钮就是卡在这里。补一次触发。
+                    try {
+                        TaskRunner.onForeground((Activity) param.thisObject);
+                    } catch (Throwable e) {
+                        HookLog.logcat("task trigger on new intent failed: " + e);
+                    }
                     if (!HookPrefs.ui()) {
                         return;
                     }

@@ -148,7 +148,7 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchH5Noise, AppPrefs.KEY_FILTER_H5_NOISE);
         bindSwitch(R.id.switchVerboseRaw, AppPrefs.KEY_VERBOSE_RAW, false);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
-        bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN, false);
+        bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
         bindSwitch(R.id.switchPageSign, AppPrefs.KEY_PAGE_SIGN);
         bindSwitch(R.id.switchPageEgg, AppPrefs.KEY_PAGE_EGG);
         bindSwitch(R.id.switchPageGoose, AppPrefs.KEY_PAGE_GOOSE);
@@ -264,9 +264,39 @@ public final class MainActivity extends AppCompatActivity {
         view.setBackgroundTintList(ColorStateList.valueOf(color));
     }
 
-    /** 把指令写进 settings，再把目标 App 拉到前台；目标进程 onResume 时执行。 */
+    /**
+     * 下指令。
+     *
+     * 优先后台广播：中国移动进程还活着（90 秒内有心跳）就直接在它进程里跑，
+     * 模块界面不动、也不切 App。只有进程不在了才退回到「拉起 App」。
+     */
     private void runTask(String cmd, String label) {
         AppPrefs.triggerTask(this, cmd);
+        boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
+        if (alive && sendTaskBroadcast(cmd)) {
+            String hint = TaskRunner.CMD_GOOSE.equals(cmd)
+                    ? "已发到后台；收鹅蛋要等页面注入，结果看日志页"
+                    : "已发到后台执行，" + label + "结果看日志页";
+            Toast.makeText(this, hint, Toast.LENGTH_LONG).show();
+            handler.postDelayed(() -> selectTab(TAB_LOG), 800);
+            return;
+        }
+        launchTarget(cmd, label);
+    }
+
+    private boolean sendTaskBroadcast(String cmd) {
+        try {
+            Intent intent = new Intent(TaskReceiver.ACTION_RUN);
+            intent.setPackage(AppPrefs.TARGET_PACKAGE);
+            intent.putExtra("cmd", cmd);
+            sendBroadcast(intent);
+            return true;
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    private void launchTarget(String cmd, String label) {
         Intent intent = getPackageManager().getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
         if (intent == null) {
             Toast.makeText(this, "没有找到中国移动 App", Toast.LENGTH_LONG).show();
@@ -276,10 +306,8 @@ public final class MainActivity extends AppCompatActivity {
                 | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         try {
             startActivity(intent);
-            String hint = TaskRunner.CMD_GOOSE.equals(cmd)
-                    ? "已唤起中国移动；收鹅蛋需要活动页停留，结果看日志页"
-                    : "已唤起中国移动，" + label + "结果看日志页";
-            Toast.makeText(this, hint, Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "中国移动没在运行，已拉起，" + label + "结果看日志页",
+                    Toast.LENGTH_LONG).show();
             handler.postDelayed(() -> selectTab(TAB_LOG), 1200);
         } catch (Throwable e) {
             Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_LONG).show();

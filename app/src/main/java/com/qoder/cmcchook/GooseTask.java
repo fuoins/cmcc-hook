@@ -60,12 +60,24 @@ final class GooseTask {
     static TaskRunner.Result run() {
         Object webView = webViewRef.get();
         long age = System.currentTimeMillis() - attachedAt;
+        boolean offscreen = false;
         if (webView == null || age > 10 * 60_000L) {
-            return TaskRunner.Result.fail("收鹅蛋需要在活动页里执行",
-                    "没有找到最近打开的收鹅蛋页面（10 分钟内）。\n"
-                            + "这个活动是国密加密 + 瑞数签名，模块没法在后台直连，"
+            // 没进过活动页：自己开一个离屏 WebView 把页面加载起来，
+            // 加密和签名让页面自己算，用户界面不动。
+            HookLog.logcat("goose: no attached page, trying offscreen");
+            webView = OffscreenWeb.open(TaskApi.ACT_GOOSE, 8_000L);
+            if (webView != null) {
+                offscreen = true;
+                attachedUrl = TaskApi.ACT_GOOSE;
+                sleep(9_000L);
+            }
+        }
+        if (webView == null) {
+            return TaskRunner.Result.fail("收鹅蛋页面加载失败",
+                    "离屏 WebView 没建起来，也没找到最近打开的活动页。\n"
+                            + "这个活动是国密加密 + 瑞数签名，模块没法后台直连，"
                             + "只能在页面里让页面自己去点。",
-                    "先在 App 里打开「收鹅蛋换好礼」，停在活动页，再回来点一次。");
+                    "先在 App 里打开一次「收鹅蛋换好礼」，再回来点。");
         }
 
         latch = new CountDownLatch(1);
@@ -91,6 +103,9 @@ final class GooseTask {
             return TaskRunner.Result.fail("收鹅蛋超时",
                     "脚本已注入，但 42 秒内没有收到页面回报。\n页面: " + attachedUrl,
                     "页面可能被切到后台了。保持活动页在前台再点一次。");
+        }
+        if (offscreen) {
+            OffscreenWeb.close();
         }
         if (resultOk) {
             return TaskRunner.Result.ok(resultText, resultDetail, resultText);
@@ -133,6 +148,13 @@ final class GooseTask {
      *   打卡 / 领饲料 / 投喂 / 收蛋
      * 兑换、分享、跳转一律不点。
      */
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ignored) {
+        }
+    }
+
     private static String buildScript(String runId) {
         return "(function(){"
                 + "var RUN='" + runId + "';"

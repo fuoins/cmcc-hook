@@ -89,7 +89,13 @@ final class TaskRunner {
             execute(activity, cmd, "手动");
             return;
         }
-        if (!HookPrefs.autoSign() || isDoneToday(activity, CMD_ALL)) {
+        // 三个开关各自管一个活动：开着且今天没成功过就补跑。
+        // 不需要用户进活动页，App 被拉到前台（哪怕在后台）就够。
+        if (!HookPrefs.autoSign()) {
+            return;
+        }
+        final String pending = pendingAuto(activity);
+        if (pending.isEmpty()) {
             return;
         }
         int attempt = getInt(activity, KEY_PREFIX_ATTEMPT + dayKey(), 0);
@@ -101,9 +107,33 @@ final class TaskRunner {
         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
-                execute(activity, CMD_ALL, "自动");
+                execute(activity, pending, "自动");
             }
         }, delay);
+    }
+
+    /** 按三个开关算出今天还没跑的活动，逗号分隔。 */
+    static String pendingAuto(Context ctx) {
+        StringBuilder sb = new StringBuilder();
+        if (!HookPrefs.autoSign()) {
+            return "";
+        }
+        if (HookPrefs.pageSign() && !isDoneToday(ctx, CMD_SIGN)) {
+            sb.append(CMD_SIGN);
+        }
+        if (HookPrefs.pageEgg() && !isDoneToday(ctx, CMD_EGG)) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(CMD_EGG);
+        }
+        if (HookPrefs.pageGoose() && !isDoneToday(ctx, CMD_GOOSE)) {
+            if (sb.length() > 0) {
+                sb.append(',');
+            }
+            sb.append(CMD_GOOSE);
+        }
+        return sb.toString();
     }
 
     private static String pendingCommand() {
@@ -164,6 +194,9 @@ final class TaskRunner {
         if (CMD_ALL.equals(cmd)) {
             return runAll();
         }
+        if (cmd.indexOf(',') > 0) {
+            return runList(cmd.split(","));
+        }
         if (CMD_SIGN.equals(cmd)) {
             return SignTask.run();
         }
@@ -174,6 +207,36 @@ final class TaskRunner {
             return GooseTask.run();
         }
         return Result.fail("未知任务：" + cmd, "", "");
+    }
+
+    /** 按顺序跑指定的几个活动。 */
+    private static Result runList(String[] cmds) {
+        StringBuilder detail = new StringBuilder();
+        StringBuilder text = new StringBuilder();
+        int okCount = 0;
+        for (String cmd : cmds) {
+            String name = label(cmd);
+            try {
+                Result one = CMD_SIGN.equals(cmd) ? SignTask.run()
+                        : CMD_EGG.equals(cmd) ? EggTask.run()
+                        : CMD_GOOSE.equals(cmd) ? GooseTask.run() : Result.fail("未知任务", "", "");
+                detail.append("=== ").append(name).append(" ===\n")
+                        .append(one.detail == null ? "" : one.detail).append('\n');
+                text.append(name).append("：")
+                        .append(one.ok ? one.summary : "失败（" + one.summary + "）").append('\n');
+                if (one.ok) {
+                    okCount++;
+                }
+            } catch (Throwable e) {
+                detail.append("=== ").append(name).append(" ===\n异常: ").append(e).append('\n');
+                text.append(name).append("：异常 ").append(e).append('\n');
+            }
+        }
+        String summary = "过任务 " + okCount + "/" + cmds.length + " 项成功";
+        if (okCount == 0) {
+            return Result.fail(summary, detail.toString(), text.toString().trim());
+        }
+        return Result.ok(summary, detail.toString(), text.toString().trim());
     }
 
     /** 三个活动串行跑：单个失败不影响后面，最后合成一条结果。 */

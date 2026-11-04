@@ -41,6 +41,7 @@ public final class HookEntry implements IXposedHookLoadPackage {
         install("LateProbe", () -> ClassLoaderHooks.install(lpparam.classLoader));
 
         scheduleHeartbeat();
+        scheduleAutoTask();
         HookLog.logcat("hooks installed in " + process);
     }
 
@@ -65,6 +66,42 @@ public final class HookEntry implements IXposedHookLoadPackage {
             }, 60_000L);
         } catch (Throwable e) {
             HookLog.logcat("heartbeat schedule failed: " + e);
+        }
+    }
+
+    /**
+     * 目标进程里每 30 分钟看一次：开关开着、今天还没跑的活动，就补跑。
+     * 这样不用打开中国移动、更不用进活动页，只要进程还活着就会自己跑。
+     */
+    private static void scheduleAutoTask() {
+        try {
+            android.os.Looper main = Looper.getMainLooper();
+            if (main == null) {
+                return;
+            }
+            Handler handler = new Handler(main);
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        android.content.Context ctx = HookLog.context();
+                        if (ctx != null) {
+                            int hour = java.util.Calendar.getInstance()
+                                    .get(java.util.Calendar.HOUR_OF_DAY);
+                            String pending = TaskRunner.pendingAuto(ctx);
+                            if (!pending.isEmpty() && hour >= 7 && hour < 23) {
+                                HookLog.logcat("scheduled auto task: " + pending);
+                                TaskRunner.executeAuto(pending, "定时");
+                            }
+                        }
+                    } catch (Throwable e) {
+                        HookLog.logcat("scheduled auto task failed: " + e);
+                    }
+                    handler.postDelayed(this, 30 * 60_000L);
+                }
+            }, 90_000L);
+        } catch (Throwable e) {
+            HookLog.logcat("auto task schedule failed: " + e);
         }
     }
 

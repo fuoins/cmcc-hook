@@ -14,7 +14,7 @@ final class HookPrefs {
     private static volatile boolean secondary = false;
     private static volatile boolean h5Noise = true;
     private static volatile boolean verboseRaw = false;
-    private static volatile boolean autoSign = false;
+    private static volatile boolean autoSign = true;
     private static volatile boolean pageSign = true;
     private static volatile boolean pageEgg = true;
     private static volatile boolean pageGoose = true;
@@ -116,7 +116,7 @@ final class HookPrefs {
             secondary = p.getBoolean("hook_secondary", false);
             h5Noise = p.getBoolean("filter_h5_noise", true);
             verboseRaw = p.getBoolean("verbose_raw", false);
-            autoSign = p.getBoolean("auto_sign", false);
+            autoSign = p.getBoolean("auto_sign", true);
             pageSign = p.getBoolean("auto_page_sign", true);
             pageEgg = p.getBoolean("auto_page_egg", true);
             pageGoose = p.getBoolean("auto_page_goose", true);

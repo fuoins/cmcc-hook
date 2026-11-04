@@ -261,13 +261,22 @@ final class SignTask {
                 String name = task.optString("taskName", "浏览任务");
                 String jump = task.optString("jumpUrl", "");
                 triedBrowse++;
-                if (!PageAuto.visit(jump, referer, BROWSE_STAY_MS)) {
-                    detail.append("浏览 ").append(name).append(": 页面不可用，跳过\n");
+                // 优先离屏加载：界面完全不动，用户不用待在活动页
+                OffscreenWeb.close();
+                Object offscreen = OffscreenWeb.open(jump, 6_000L);
+                if (offscreen != null) {
+                    detail.append("浏览 ").append(name).append(": 离屏停留 ")
+                            .append(BROWSE_STAY_MS / 1000).append(" 秒\n");
+                    sleep(BROWSE_STAY_MS);
+                    OffscreenWeb.close();
+                } else if (PageAuto.visit(jump, referer, BROWSE_STAY_MS)) {
+                    detail.append("浏览 ").append(name).append(": 页面内停留 ")
+                            .append(BROWSE_STAY_MS / 1000).append(" 秒\n");
+                    sleep(BROWSE_STAY_MS + 900);
+                } else {
+                    detail.append("浏览 ").append(name).append(": 没有可用 WebView，跳过\n");
                     break;
                 }
-                detail.append("浏览 ").append(name).append(": 打开 ")
-                        .append(BROWSE_STAY_MS / 1000).append(" 秒\n");
-                sleep(BROWSE_STAY_MS + 900);
                 browsed++;
             }
             if (triedBrowse > 0) {
