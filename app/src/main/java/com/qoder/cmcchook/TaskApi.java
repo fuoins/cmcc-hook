@@ -63,39 +63,26 @@ final class TaskApi {
     }
 
     /**
-     * 预热：走一遍 SSO 登录跳转，拿到带 token 的活动页地址。
+     * 换一份可用的活动会话。
      *
-     * App 里打开签到页的实际链路是
-     *   /qwhdsso/login?dlwmh=true&actUrl=<活动页>  →  302  →  /qwhdhub/qwhdmark/1021122301?token=QWHDSSOD...
-     * 服务端在这一步按 cmccssotoken 重建 qwhd 会话并下发 Cookie。
-     * 少了这一步 markstatus 会 302 到登录页，和 Python 里踩过的坑一致。
+     * v2.0 这里是纯 HTTP 走 SSO 跳转，但服务端只认 WebView 里的登录态，
+     * 结果每次都 302 回登录页 → markstatus 直接 GOTO_LOGIN。
+     * v2.1 交给 {@link SsoLogin}：先从 App 的 JSBridge 取 SSO token，
+     * 再走 appTokenLogin 换 QWHD_SESSION_TOKEN，全程不打开页面。
      *
-     * @return 带 token 的 Referer；null 表示会话不可用
+     * @return 带 token 的活动页 Referer；null 表示换不到
      */
+    static String warmUp(String activityUrl, StringBuilder detail) {
+        if (detail == null) {
+            detail = new StringBuilder();
+        }
+        String url = SsoLogin.ensure(activityUrl, detail);
+        HookLog.logcat("warmUp: " + (url == null ? "failed" : "ok") + " " + trim(url));
+        return url;
+    }
+
     static String warmUp(String activityUrl) {
-        String encoded = encode(activityUrl);
-        String login = TaskNet.BASE + "/qwhdsso/login?dlwmh=true&actUrl=" + encoded;
-        TaskNet.Resp resp = TaskNet.getRaw(login, activityUrl);
-        if (resp.status < 0) {
-            HookLog.logcat("warmUp: network " + resp.body);
-            return null;
-        }
-        if (resp.redirect()) {
-            String loc = resp.location;
-            if (loc.contains("qwhdsso") && loc.contains("login")) {
-                return null;
-            }
-            if (loc.startsWith("http")) {
-                HookLog.logcat("warmUp: sso -> " + trim(loc));
-                // 跟随一次，让服务端把 Set-Cookie 写完
-                TaskNet.get(loc, activityUrl);
-                return loc;
-            }
-        }
-        // 没有跳转：说明当前 Cookie 已经够用，直接用原地址
-        String token = CookieStore.get("QWHD_SESSION_TOKEN");
-        HookLog.logcat("warmUp: no redirect (token=" + (token == null ? "null" : "set") + ")");
-        return activityUrl;
+        return warmUp(activityUrl, new StringBuilder());
     }
 
     static JSONObject post(String path, String body, String referer) throws TaskException {

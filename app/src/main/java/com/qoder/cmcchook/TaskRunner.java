@@ -226,6 +226,8 @@ final class TaskRunner {
                         .append(one.ok ? one.summary : "失败（" + one.summary + "）").append('\n');
                 if (one.ok) {
                     okCount++;
+                    // 每个活动单独记完成，pendingAuto 才不会整组重跑。
+                    markDone(HookLog.context(), cmd);
                 }
             } catch (Throwable e) {
                 detail.append("=== ").append(name).append(" ===\n异常: ").append(e).append('\n');
@@ -304,9 +306,9 @@ final class TaskRunner {
         if (ctx != null) {
             putString(ctx, KEY_LAST_RESULT, (result.ok ? "OK " : "FAIL ") + result.summary);
             putLong(ctx, KEY_LAST_TIME, System.currentTimeMillis());
-            if (result.ok) {
-                putInt(ctx, KEY_PREFIX_DONE + cmd + "_" + dayKey(), 1);
-            }
+        }
+        if (result.ok) {
+            markDone(ctx, cmd);
         }
         StringBuilder detail = new StringBuilder(result.detail == null ? "" : result.detail);
         if (result.userText != null && !result.userText.isEmpty()) {
@@ -352,6 +354,20 @@ final class TaskRunner {
 
     static boolean isDoneToday(Context ctx, String cmd) {
         return getInt(ctx, KEY_PREFIX_DONE + cmd + "_" + dayKey(), 0) == 1;
+    }
+
+    /** 标记某个活动今天已完成；cmd 可能是逗号列表，拆开逐个记。 */
+    static void markDone(Context ctx, String cmd) {
+        if (ctx == null || cmd == null || cmd.isEmpty()) {
+            return;
+        }
+        for (String one : cmd.split(",")) {
+            String key = one.trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            putInt(ctx, KEY_PREFIX_DONE + key + "_" + dayKey(), 1);
+        }
     }
 
     static String lastResult(Context ctx) {

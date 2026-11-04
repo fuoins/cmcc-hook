@@ -140,13 +140,19 @@ final class JsInjector {
     private static boolean rawOnMain(Object webView, String js) {
         try {
             Method method = findEvaluate(webView.getClass());
-            if (method == null) {
-                return false;
+            if (method != null) {
+                method.invoke(webView, js, null);
+                return true;
             }
-            method.invoke(webView, js, null);
-            return true;
         } catch (Throwable e) {
             HookLog.logcat("evaluateRaw failed: " + e);
+        }
+        // X5 在个别版本上 evaluateJavascript 会抛 NPE，退回 javascript: 伪协议。
+        try {
+            XposedHelpers.callMethod(webView, "loadUrl", "javascript:" + js);
+            return true;
+        } catch (Throwable e) {
+            HookLog.logcat("evaluateRaw loadUrl failed: " + e);
             return false;
         }
     }

@@ -123,6 +123,47 @@ final class PageAuto {
     }
 
     /**
+     * 在 App 当前 WebView 里打开任意页面，不自动回退。
+     *
+     * 收鹅蛋只能走这条路：裸地址交给 App 的 H5 容器后，页面会自己用原生登录态
+     * 补出 pc/pk 参数再渲染，离屏 WebView 没有这套东西，打开是一片空白。
+     *
+     * @return 是否成功发起加载
+     */
+    static boolean load(final String url) {
+        final Object wv = webView();
+        if (wv == null || url == null || url.isEmpty()) {
+            return false;
+        }
+        final boolean[] ok = {false};
+        final java.util.concurrent.CountDownLatch wait =
+                new java.util.concurrent.CountDownLatch(1);
+        Runnable load = new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    XposedHelpers.callMethod(wv, "loadUrl", url);
+                    ok[0] = true;
+                } catch (Throwable e) {
+                    HookLog.logcat("page load failed: " + e);
+                } finally {
+                    wait.countDown();
+                }
+            }
+        };
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            load.run();
+        } else {
+            MAIN.post(load);
+            try {
+                wait.await(4, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
+            }
+        }
+        return ok[0];
+    }
+
+    /**
      * 在活动页 WebView 里打开一个任务页，停留 ms 毫秒，再打开 backUrl 回活动页。
      * 只用于「浏览 5 秒」这类任务：页面自己会上报埋点，模块不伪造请求。
      *

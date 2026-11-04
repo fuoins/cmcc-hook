@@ -181,11 +181,16 @@ final class WebViewHooks {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
-                    if (!HookPrefs.ui() || param.args.length < 2) {
+                    if (param.args.length < 2) {
                         return;
                     }
                     String name = String.valueOf(param.args[1]);
                     if (JsInjector.BRIDGE_NAME.equals(name)) {
+                        return;
+                    }
+                    // 记下带 App H5 SDK 的 WebView：换 SSO 票据要靠它执行 JS。
+                    SsoLogin.onBridge(param.thisObject, name);
+                    if (!HookPrefs.ui()) {
                         return;
                     }
                     Object object = param.args[0];
@@ -360,6 +365,11 @@ final class WebViewHooks {
                         return;
                     }
                     ConsoleText console = readConsole(param.args);
+                    // 换 SSO 票据时页面回传的结果，从这里截走，不进日志。
+                    if (SsoLogin.onConsole(console.text)) {
+                        swallowConsole(param);
+                        return;
+                    }
                     // 埋点 SDK 每次 DOM 变化都刷同一条 TypeError，先吞掉再谈记录。
                     if (HookPrefs.h5NoiseFilter() && isH5Noise(console.text, console.source)) {
                         long dropped = NOISE_DROPPED.incrementAndGet();

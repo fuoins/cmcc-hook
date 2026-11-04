@@ -35,16 +35,16 @@ final class SignTask {
         StringBuilder detail = new StringBuilder();
         List<String> lines = new ArrayList<>();
 
-        String warmed = TaskApi.warmUp(referer);
+        detail.append("入口: ").append(referer).append('\n');
+        String warmed = TaskApi.warmUp(referer, detail);
         if (warmed == null) {
-            detail.append("预热: SSO 跳转失败\n");
             detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
-            return TaskRunner.Result.fail("签到会话不可用", detail.toString(),
-                    "在 App 里打开一次「我的 → 签到领流量」，等页面加载完再点一次；"
-                            + "模块会自动把 Cookie 接过来，不用抓包。");
+            return TaskRunner.Result.fail("拿不到签到会话", detail.toString(),
+                    "App 的登录态没取到。确认中国移动 App 是登录状态、"
+                            + "并且冷启动后加载过首页，再试一次。");
         }
         referer = warmed;
-        detail.append("入口: ").append(referer).append('\n');
+        detail.append("会话地址: ").append(referer).append('\n');
         detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
 
         String today = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
@@ -53,9 +53,27 @@ final class SignTask {
         try {
             data = TaskApi.dataOf(TaskApi.post(PATH_STATUS, "{}", referer), "markstatus");
         } catch (TaskApi.TaskException e) {
-            detail.append("markstatus 失败: ").append(e.getMessage()).append('\n');
-            return TaskRunner.Result.fail("查询签到状态失败：" + e.getMessage(),
-                    detail.toString(), hintFor(e));
+            if (!e.sessionLost()) {
+                detail.append("markstatus 失败: ").append(e.getMessage()).append('\n');
+                return TaskRunner.Result.fail("查询签到状态失败：" + e.getMessage(),
+                        detail.toString(), hintFor(e));
+            }
+            // 会话被服务端判死：清缓存重换一次，避免一次失效整天不跑。
+            detail.append("markstatus 首次失败: ").append(e.getMessage()).append("，重新换会话\n");
+            SsoLogin.invalidate();
+            String again = TaskApi.warmUp(TaskApi.ACT_SIGN, detail);
+            if (again == null) {
+                return TaskRunner.Result.fail("签到会话失效且重换失败",
+                        detail.toString(), hintFor(e));
+            }
+            referer = again;
+            try {
+                data = TaskApi.dataOf(TaskApi.post(PATH_STATUS, "{}", referer), "markstatus");
+            } catch (TaskApi.TaskException e2) {
+                detail.append("markstatus 重试失败: ").append(e2.getMessage()).append('\n');
+                return TaskRunner.Result.fail("查询签到状态失败：" + e2.getMessage(),
+                        detail.toString(), hintFor(e2));
+            }
         }
 
         JSONObject userinfo = data.optJSONObject("userinfo");

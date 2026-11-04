@@ -36,14 +36,16 @@ final class EggTask {
         StringBuilder detail = new StringBuilder();
         List<String> lines = new ArrayList<>();
 
-        String warn = TaskApi.warmUp(referer);
+        detail.append("入口: ").append(referer).append('\n');
+        String warn = TaskApi.warmUp(referer, detail);
         if (warn == null) {
-            return TaskRunner.Result.fail("砸金蛋会话不可用",
-                    "SSO 跳转失败，Cookie 里没有有效登录态。",
-                    "先在 App 里打开一次「天天砸金蛋」，再回来点一次。");
+            detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
+            return TaskRunner.Result.fail("拿不到砸金蛋会话", detail.toString(),
+                    "App 的登录态没取到。确认中国移动 App 是登录状态、"
+                            + "并且冷启动后加载过首页，再试一次。");
         }
         referer = warn;
-        detail.append("入口: ").append(referer).append('\n');
+        detail.append("会话地址: ").append(referer).append('\n');
         detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
 
         int remain = readRemain(referer, detail);

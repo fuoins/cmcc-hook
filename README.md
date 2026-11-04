@@ -323,15 +323,34 @@ app/src/main/java/com/qoder/cmcchook/
   CookieStore.java       10086 系 Cookie 汇总（OkHttp / WebView 两处截取）
   TaskNet.java           任务接口的极简 HTTP 客户端（HttpURLConnection）
   TaskApi.java           qwhdhub 接口封装、SSO 预热、code 校验、设备码
+  SsoLogin.java          用 App 的 JSBridge 取 SSO token，换 QWHD_SESSION_TOKEN
   SignTask.java          签到有礼：签到 + 累计/连签/组队/月签 + 任务奖励
   EggTask.java           天天砸金蛋：浏览任务换次数 + 抽奖
   GooseTask.java         收鹅蛋换好礼：WebView 注入，页面内点按钮
   PageAuto.java          进活动页自动触发：URL 匹配 + 去重 + WebView 浏览任务
   TaskRunner.java        任务调度：单活动 / 一键全部 / 进页面触发 / 启动跑 / 幂等
+  TaskReceiver.java      常驻广播接收：模块界面点按钮直接投递给目标进程
+  OffscreenWeb.java      离屏 WebView（浏览任务用；鹅蛋用不了，缺登录态）
 ```
 
 `res/layout/` 里 `page_home.xml`、`page_func.xml`、`page_log.xml` 分别是三个 tab 的页面，
 配色走 `values/` + `values-night/` 两套 Material 3 色板，跟随系统深色模式。
+
+## 版本
+
+### v2.1
+- 新增 `SsoLogin`：在 App 的 WebView 里执行 JS 调 `newSdkInterface.getUserInfo()`，
+  拿手机号和 SSO token，再走 `qwhdsso/appTokenLogin` 换 `QWHD_SESSION_TOKEN`。
+  这是签到 / 砸金蛋能后台跑的前提——纯 HTTP 走 SSO 只会 302 回登录页。
+- `TaskApi.warmUp` 改为走 `SsoLogin`，失败时把「登录页 / sid / 用户信息 / appTokenLogin」
+  每一步写进任务详情，方便定位。
+- 完成标记按单个活动记录（`markDone`），`pendingAuto` 不会再因为一次失败整天重跑整组。
+- 收鹅蛋改用 App 当前 WebView 打开活动页。离屏 WebView 里页面拿不到 `pc`/`pk` 登录参数，
+  渲染出来是空壳，v2.0 的「一个按钮都找不到」就是这么来的。
+- 鹅蛋脚本加页面文本快照，找不到按钮时日志里直接能看到页面上真实文案。
+
+### v2.0
+- 常驻广播 + 30 分钟定时补跑 + 离屏 WebView + onNewIntent 修复。
 
 ## 下一阶段
 
