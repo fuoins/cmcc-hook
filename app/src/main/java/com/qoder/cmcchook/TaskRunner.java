@@ -9,6 +9,7 @@ import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -40,8 +41,14 @@ final class TaskRunner {
     private static final String KEY_HANDLED_SEQ = "handled_seq";
     private static final String KEY_LAST_RESULT = "last_result";
     private static final String KEY_LAST_TIME = "last_time";
+    private static final String KEY_LAST_AUTO = "last_auto";
     private static final String KEY_PREFIX_DONE = "done_";
     private static final String KEY_PREFIX_ATTEMPT = "attempt_";
+
+    /** 单个活动当天最多自动尝试几次，超过就按天拉黑（手动仍可跑）。 */
+    static final int MAX_ATTEMPT = 3;
+    /** 两次自动跑之间的最小间隔，防止多个触发源叠加。 */
+    private static final long AUTO_GAP_MS = 8 * 60_000L;
 
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
@@ -98,12 +105,12 @@ final class TaskRunner {
         if (pending.isEmpty()) {
             return;
         }
-        int attempt = getInt(activity, KEY_PREFIX_ATTEMPT + dayKey(), 0);
-        if (attempt >= 3) {
+        if (tooSoon(activity)) {
+            HookLog.logcat("auto task skipped: last run was too recent");
             return;
         }
-        putInt(activity, KEY_PREFIX_ATTEMPT + dayKey(), attempt + 1);
-        long delay = attempt == 0 ? 4_000L : 20_000L;
+        markAutoRun(activity);
+        long delay = 4_000L;
         new Handler(Looper.getMainLooper()).postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -114,26 +121,98 @@ final class TaskRunner {
 
     /** 按三个开关算出今天还没跑的活动，逗号分隔。 */
     static String pendingAuto(Context ctx) {
-        StringBuilder sb = new StringBuilder();
         if (!HookPrefs.autoSign()) {
             return "";
         }
-        if (HookPrefs.pageSign() && !isDoneToday(ctx, CMD_SIGN)) {
-            sb.append(CMD_SIGN);
-        }
-        if (HookPrefs.pageEgg() && !isDoneToday(ctx, CMD_EGG)) {
-            if (sb.length() > 0) {
-                sb.append(',');
-            }
-            sb.append(CMD_EGG);
-        }
-        if (HookPrefs.pageGoose() && !isDoneToday(ctx, CMD_GOOSE)) {
-            if (sb.length() > 0) {
-                sb.append(',');
-            }
-            sb.append(CMD_GOOSE);
-        }
+        StringBuilder sb = new StringBuilder();
+        addPending(sb, ctx, CMD_SIGN, HookPrefs.pageSign());
+        addPending(sb, ctx, CMD_EGG, HookPrefs.pageEgg());
+        addPending(sb, ctx, CMD_GOOSE, HookPrefs.pageGoose());
         return sb.toString();
+    }
+
+    /**
+     * 单个活动是否还该跑：开关开着、今天没成功过、今天失败次数没到上限。
+     *
+     * 失败按天拉黑是抄小黄鱼的做法：任何任务失败一次就按天记着，绝不无限重试。
+     * 否则每轮自检都会把它捡回来，同一个任务反复报错，既刷日志又攒风控。
+     */
+    private static void addPending(StringBuilder sb, Context ctx, String cmd, boolean on) {
+        if (!on || isDoneToday(ctx, cmd)) {
+            return;
+        }
+        if (attemptsToday(ctx, cmd) >= MAX_ATTEMPT) {
+            return;
+        }
+        if (sb.length() > 0) {
+            sb.append(',');
+        }
+        sb.append(cmd);
+    }
+
+    static int attemptsToday(Context ctx, String cmd) {
+        if (ctx == null) {
+            return 0;
+        }
+        return getInt(ctx, KEY_PREFIX_ATTEMPT + cmd + "_" + dayKey(), 0);
+    }
+
+    static void markAttempt(Context ctx, String cmd) {
+        if (ctx == null || cmd == null || cmd.isEmpty()) {
+            return;
+        }
+        for (String one : cmd.split(",")) {
+            String key = one.trim();
+            if (key.isEmpty()) {
+                continue;
+            }
+            String name = KEY_PREFIX_ATTEMPT + key + "_" + dayKey();
+            putInt(ctx, name, getInt(ctx, name, 0) + 1);
+        }
+    }
+
+    /** 距上次自动跑不足这个间隔就跳过，避免多个触发源叠加把任务连跑好几遍。 */
+    static boolean tooSoon(Context ctx) {
+        if (ctx == null) {
+            return false;
+        }
+        long last = getLong(ctx, KEY_LAST_AUTO, 0L);
+        return System.currentTimeMillis() - last < AUTO_GAP_MS;
+    }
+
+    static void markAutoRun(Context ctx) {
+        if (ctx != null) {
+            putLong(ctx, KEY_LAST_AUTO, System.currentTimeMillis());
+        }
+    }
+
+    /**
+     * 目标 App 是否在前台（含小窗 / 可见）。
+     *
+     * 抄小黄鱼的 importance 判断：<= 250 算可见。
+     * 后台不硬跑——Android 12+ 会限制 cached 进程的网络，跑了也是全部失败，
+     * 还会把本来能做的任务白白记成失败。
+     */
+    static boolean hostVisible(Context ctx) {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager)
+                    ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) {
+                return true;
+            }
+            int pid = android.os.Process.myPid();
+            List<android.app.ActivityManager.RunningAppProcessInfo> list = am.getRunningAppProcesses();
+            if (list == null) {
+                return true;
+            }
+            for (android.app.ActivityManager.RunningAppProcessInfo info : list) {
+                if (info.pid == pid) {
+                    return info.importance <= 250;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return true;
     }
 
     private static String pendingCommand() {
@@ -163,12 +242,25 @@ final class TaskRunner {
 
     /** 进活动页触发：不依赖 Activity，用模块持有的 Context。 */
     static void executeAuto(final String cmd, final String from) {
-        execute(HookLog.context(), cmd, from);
+        executeAuto(cmd, from, null);
+    }
+
+    /** 带结束回调的版本：广播触发的路径要等任务跑完才能 finish 掉 goAsync。 */
+    static void executeAuto(final String cmd, final String from, final Runnable done) {
+        execute(HookLog.context(), cmd, from, done);
     }
 
     private static void execute(final Context activity, final String cmd, final String from) {
+        execute(activity, cmd, from, null);
+    }
+
+    private static void execute(final Context activity, final String cmd, final String from,
+                                final Runnable done) {
         if (!RUNNING.compareAndSet(false, true)) {
             HookLog.logcat("task already running, skip " + cmd);
+            if (done != null) {
+                done.run();
+            }
             return;
         }
         HookLog.log("TASK", "任务开始 · " + label(cmd) + "（" + from + "触发）",
@@ -191,6 +283,12 @@ final class TaskRunner {
                 } finally {
                     // 不管 finish 出什么问题，锁都要放掉，否则后面所有任务都被跳过。
                     RUNNING.set(false);
+                    if (done != null) {
+                        try {
+                            done.run();
+                        } catch (Throwable ignored) {
+                        }
+                    }
                 }
             }
         });
@@ -234,8 +332,12 @@ final class TaskRunner {
                     okCount++;
                     // 每个活动单独记完成，pendingAuto 才不会整组重跑。
                     markDone(HookLog.context(), cmd);
+                } else {
+                    // 失败按活动记一次，当天满 3 次就不再自动重试（手动不受限）。
+                    markAttempt(HookLog.context(), cmd);
                 }
             } catch (Throwable e) {
+                markAttempt(HookLog.context(), cmd);
                 detail.append("=== ").append(name).append(" ===\n异常: ").append(e).append('\n');
                 text.append(name).append("：异常 ").append(e).append('\n');
             }
@@ -313,7 +415,10 @@ final class TaskRunner {
             putString(ctx, KEY_LAST_RESULT, (result.ok ? "OK " : "FAIL ") + result.summary);
             putLong(ctx, KEY_LAST_TIME, System.currentTimeMillis());
         }
-        if (result.ok) {
+        if (result.ok && cmd.indexOf(',') < 0) {
+            // 只有单个活动才在这里记完成。
+            // 逗号列表的成功数是 runList 逐个记的——以前这里再 markDone 一次，
+            // 会把「1/3 成功」当成「三个都成功」，失败的活动当天再也不会重试。
             markDone(ctx, cmd);
         }
         StringBuilder detail = new StringBuilder(result.detail == null ? "" : result.detail);

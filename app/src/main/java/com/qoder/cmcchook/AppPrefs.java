@@ -26,6 +26,8 @@ final class AppPrefs {
     static final String KEY_PAGE_SIGN = "auto_page_sign";
     static final String KEY_PAGE_EGG = "auto_page_egg";
     static final String KEY_PAGE_GOOSE = "auto_page_goose";
+    static final String KEY_KEEPALIVE = "keep_alive";
+    static final String KEY_KEEP_GAP = "keep_gap";
 
     private AppPrefs() {
     }
@@ -59,6 +61,22 @@ final class AppPrefs {
 
     static long getLastHeartbeat(Context context) {
         return status(context).getLong("last_heartbeat", 0L);
+    }
+
+    static long getLastTick(Context context) {
+        return status(context).getLong("last_tick", 0L);
+    }
+
+    static void setLastTick(Context context, long value) {
+        status(context).edit().putLong("last_tick", value).apply();
+    }
+
+    static String getLastTickResult(Context context) {
+        return status(context).getString("last_tick_result", "");
+    }
+
+    static void setLastTickResult(Context context, String value) {
+        status(context).edit().putString("last_tick_result", value == null ? "" : value).apply();
     }
 
     static String getLastProcess(Context context) {

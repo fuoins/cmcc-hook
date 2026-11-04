@@ -189,7 +189,7 @@ final class WebViewHooks {
                         return;
                     }
                     // 记下带 App H5 SDK 的 WebView：换 SSO 票据要靠它执行 JS。
-                    SsoLogin.onBridge(param.thisObject, name);
+                    SsoLogin.onBridge(param.thisObject, param.args[0], name);
                     if (!HookPrefs.ui()) {
                         return;
                     }

@@ -31,6 +31,8 @@
     <string name="task_goose_desc">离屏加载活动页，页面内打卡、领饲料、投喂、收蛋、领任务</string>
     <string name="task_auto">自动补跑</string>
     <string name="task_auto_desc">上面开关打开的活动，每天自动补跑一次；关掉就只手动执行</string>
+    <string name="task_keepalive">定时自检</string>
+    <string name="task_keepalive_desc">每 30 分钟唤醒一次，解冻中国移动 App 并跑掉当天没完成的活动；不打开界面、不弹通知</string>
     <string name="btn_all">立即全部跑一次</string>
     <string name="btn_sign">签到</string>
     <string name="btn_egg">砸蛋</string>

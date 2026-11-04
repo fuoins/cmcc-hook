@@ -149,11 +149,15 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchVerboseRaw, AppPrefs.KEY_VERBOSE_RAW, false);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
+        bindSwitch(R.id.switchKeepAlive, AppPrefs.KEY_KEEPALIVE);
         bindSwitch(R.id.switchPageSign, AppPrefs.KEY_PAGE_SIGN);
         bindSwitch(R.id.switchPageEgg, AppPrefs.KEY_PAGE_EGG);
         bindSwitch(R.id.switchPageGoose, AppPrefs.KEY_PAGE_GOOSE);
         findViewById(R.id.btnRunAll).setOnClickListener(
                 v -> runTask(TaskRunner.CMD_ALL, "过任务"));
+
+        // 每次进界面都按当前开关重排一次，版本升级 / 清数据后也能自动恢复。
+        TaskAlarm.sync(this);
 
         setupLogPage();
         selectTab(TAB_HOME);
@@ -252,7 +256,17 @@ public final class MainActivity extends AppCompatActivity {
             homeHeartbeat.setText(R.string.heartbeat_never);
         }
 
-        homeTarget.setText("目标：" + targetVersion());
+        // 目标版本 + 定时自检状态（用户不用抓日志就能判断保活有没有在跑）
+        long tick = AppPrefs.getLastTick(this);
+        String tickText;
+        if (!AppPrefs.getBool(this, AppPrefs.KEY_KEEPALIVE)) {
+            tickText = " · 自检已关";
+        } else if (tick <= 0) {
+            tickText = " · 自检待触发";
+        } else {
+            tickText = " · 自检 " + new SimpleDateFormat("HH:mm", Locale.US).format(new Date(tick));
+        }
+        homeTarget.setText("目标：" + targetVersion() + tickText);
     }
 
     private void updateLogCount() {
@@ -324,6 +338,17 @@ public final class MainActivity extends AppCompatActivity {
         view.setChecked(AppPrefs.settings(this).getBoolean(key, defaultValue));
         view.setOnCheckedChangeListener((buttonView, isChecked) -> {
             AppPrefs.setBool(MainActivity.this, key, isChecked);
+            if (AppPrefs.KEY_AUTO_SIGN.equals(key) || AppPrefs.KEY_KEEPALIVE.equals(key)) {
+                // 总开关或定时自检一变，立刻重排闹钟，不用等下次进界面。
+                TaskAlarm.sync(MainActivity.this);
+                if (AppPrefs.KEY_KEEPALIVE.equals(key)) {
+                    Toast.makeText(MainActivity.this,
+                            isChecked ? "定时自检已开启（"
+                                    + TaskAlarm.describe(MainActivity.this) + "，不打开界面）"
+                                    : "已关闭定时自检",
+                            Toast.LENGTH_SHORT).show();
+                }
+            }
             if (AppPrefs.KEY_FILTER_H5_NOISE.equals(key)) {
                 Toast.makeText(MainActivity.this,
                         isChecked ? "已过滤 H5 埋点噪音" : "已关闭过滤，H5 日志将逐条记录",

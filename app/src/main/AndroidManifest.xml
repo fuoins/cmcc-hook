@@ -5,6 +5,8 @@
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
 
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <queries>
         <package android:name="com.greenpoint.android.mc10086.activity" />
         <package android:name="org.lsposed.manager" />
@@ -51,6 +53,16 @@
             <intent-filter>
                 <action android:name="com.qoder.cmcchook.action.LOG" />
                 <action android:name="com.qoder.cmcchook.action.HEARTBEAT" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".TaskAlarmReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.qoder.cmcchook.action.ALARM_TICK" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
     </application>

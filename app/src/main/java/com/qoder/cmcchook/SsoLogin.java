@@ -51,6 +51,17 @@ final class SsoLogin {
     private static volatile WeakReference<Object> webView = new WeakReference<>(null);
     private static volatile long webViewAt;
 
+    /**
+     * App 自己的 JSBridge 对象（newSdkInterface）。
+     *
+     * App 用 addJavascriptInterface 把它挂到自己的 WebView 上，所以只有它创建的 WebView
+     * 才有 window.newSdkInterface。把这个对象留一份，就能重新注入到我们自己的离屏 WebView，
+     * 让页面在后台也能走完 leadeon.getUserInfo → appTokenLogin 这套登录。
+     */
+    private static volatile WeakReference<Object> bridge = new WeakReference<>(null);
+    private static volatile String bridgeName = "";
+    private static volatile long bridgeAt;
+
     private static volatile String token = "";
     private static volatile String phone = "";
     private static volatile String province = "240";
@@ -74,15 +85,38 @@ final class SsoLogin {
 
     /** WebViewHooks 在 addJavascriptInterface 里回调：记下带 SDK 的 WebView。 */
     static void onBridge(Object wv, String name) {
-        if (wv == null || name == null) {
+        onBridge(wv, null, name);
+    }
+
+    /** 同上，同时留下注入对象本身，供离屏 WebView 复用。 */
+    static void onBridge(Object wv, Object bridgeObject, String name) {
+        if (name == null) {
             return;
         }
-        if (!name.contains("newSdkInterface") && !name.contains("SdkInterface")) {
-            return;
+        if (wv != null && (name.contains("newSdkInterface") || name.contains("SdkInterface"))) {
+            webView = new WeakReference<>(wv);
+            webViewAt = System.currentTimeMillis();
+            HookLog.logcat("sso: bridge webview captured " + wv.getClass().getName());
         }
-        webView = new WeakReference<>(wv);
-        webViewAt = System.currentTimeMillis();
-        HookLog.logcat("sso: bridge webview captured " + wv.getClass().getName());
+        if (bridgeObject != null && hasGetUserInfo(bridgeObject)) {
+            bridge = new WeakReference<>(bridgeObject);
+            bridgeName = name;
+            bridgeAt = System.currentTimeMillis();
+            HookLog.logcat("sso: js interface captured " + name
+                    + " (" + bridgeObject.getClass().getName() + ")");
+        }
+    }
+
+    private static boolean hasGetUserInfo(Object object) {
+        try {
+            for (java.lang.reflect.Method m : object.getClass().getMethods()) {
+                if ("getUserInfo".equals(m.getName())) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     /** WebViewHooks 在 onConsoleMessage 里回调；返回 true 表示这条是内部的，不用记日志。 */
@@ -182,6 +216,11 @@ final class SsoLogin {
 
         // 第二步：从 App 的 JSBridge 取登录态。
         if (!fetchUserInfo(detail)) {
+            // 手上没有可用的 WebView（冷启动、App 在后台被回收）：
+            // 用离屏 WebView 复用 App 的 JS 桥，让页面自己把登录走完。
+            if (loginViaOffscreen(actUrl, detail)) {
+                return actUrl;
+            }
             return null;
         }
 
@@ -339,8 +378,44 @@ final class SsoLogin {
         return false;
     }
 
-    private static boolean parseUserInfo(String raw, StringBuilder detail) {
-        try {
+    /**
+     * 离屏登录：把 App 的 JS 接口重新注入到一个不挂窗口的 WebView，
+     * 打开 SSO 登录页，让页面自己跑 leadeon.getUserInfo → appTokenLogin。
+     *
+     * 这条只为「换出 QWHD_SESSION_TOKEN」服务：Cookie 一到手，后面所有接口
+     * 都能直连，不需要页面活着。冷启动后第一次自检走的就是这条路。
+     */
+    private static boolean loginViaOffscreen(String actUrl, StringBuilder detail) {
+        Object api = bridge.get();
+        if (api == null || System.currentTimeMillis() - bridgeAt > 30 * 60_000L) {
+            detail.append("离屏登录: 没有捕获到 JS 接口\n");
+            return false;
+        }
+        String url = LOGIN_BASE + "/login?dlwmh=true&actUrl=" + enc(actUrl);
+        detail.append("离屏登录: 复用 ").append(bridgeName).append(" 打开登录页\n");
+        Object wv = OffscreenWeb.open(url, api, bridgeName, 10_000L);
+        if (wv == null) {
+            detail.append("离屏登录: WebView 创建失败\n");
+            return false;
+        }
+        // 页面加载完会自动调 getUserInfo，再走 appTokenLogin；给足 15 秒。
+        for (int i = 0; i < 15; i++) {
+            sleep(1_000L);
+            // header() 会把 WebView CookieManager 的当前值刷进 MAP。
+            CookieStore.header(actUrl);
+            String cookie = CookieStore.get("QWHD_SESSION_TOKEN");
+            if (cookie != null && cookie.length() > 8) {
+                sessionUrl = actUrl;
+                sessionAt = System.currentTimeMillis();
+                detail.append("离屏登录: OK, cookie=").append(mask(cookie)).append('\n');
+                return true;
+            }
+        }
+        detail.append("离屏登录: 15 秒内没拿到 Cookie\n");
+        return false;
+    }
+
+    private static boolean parseUserInfo(String raw, StringBuilder detail) {        try {
             JSONObject json = new JSONObject(raw);
             String tk = json.optString("token", "");
             String phoneNumber = json.optString("phoneNumber", "");
@@ -397,7 +472,7 @@ final class SsoLogin {
                 + "var T='" + CONSOLE_PREFIX + "';"
                 + "function out(d){try{console.log(T+(typeof d==='string'?d:JSON.stringify(d)))}catch(e){}}"
                 + "try{"
-                + "  var b=window.newSdkInterface;"
+                + "  var b=window." + bridgeVar() + ";"
                 + "  if(!b){out('{\"err\":\"no_bridge\"}');return;}"
                 + "  var sdk=window.leadeon||window.cmcc||(window.leadeon=window.cmcc={});"
                 + "  sdk.callbackSuccess_getUserInfo=function(d){out(d)};"
@@ -413,6 +488,12 @@ final class SsoLogin {
 
     private static String enc(String text) {
         return TaskApi.encode(text);
+    }
+
+    /** 注入时用的变量名：App 那边叫什么，JS 里就用什么。 */
+    private static String bridgeVar() {
+        String name = bridgeName;
+        return name == null || name.isEmpty() ? "newSdkInterface" : name;
     }
 
     private static String mask(String value) {

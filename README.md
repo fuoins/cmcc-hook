@@ -329,7 +329,9 @@ app/src/main/java/com/qoder/cmcchook/
   GooseTask.java         收鹅蛋换好礼：WebView 注入，页面内点按钮
   PageAuto.java          进活动页自动触发：URL 匹配 + 去重 + WebView 浏览任务
   TaskRunner.java        任务调度：单活动 / 一键全部 / 进页面触发 / 启动跑 / 幂等
-  TaskReceiver.java      常驻广播接收：模块界面点按钮直接投递给目标进程
+  TaskReceiver.java      常驻广播接收：模块界面点按钮 / 定时自检广播都在这里落地
+  TaskAlarm.java         模块进程里的定时自检：AlarmManager 唤醒 + 解冻目标 App
+  TaskAlarmReceiver.java 定时广播与开机广播的落点
   OffscreenWeb.java      离屏 WebView（浏览任务用；鹅蛋用不了，缺登录态）
 ```
 
@@ -337,6 +339,24 @@ app/src/main/java/com/qoder/cmcchook/
 配色走 `values/` + `values-night/` 两套 Material 3 色板，跟随系统深色模式。
 
 ## 版本
+
+### v2.2
+- 新增 `TaskAlarm`：定时自检改到模块进程里跑。`AlarmManager.setAndAllowWhileIdle`
+  每 30 分钟唤醒一次，执行 `cmd activity unfreeze --sticky <目标包>` 把中国移动
+  从 cached 组里捞出来，再发 `PING` 广播让它跑一轮。不打开界面、不弹通知。
+  目标进程里的 Handler 定时只作为「进程还活着」时的快速通道。
+- `TaskReceiver` 接 `PING`，并用 `goAsync()` 让广播在任务跑完前保持 pending，
+  避免 onReceive 一返回进程又被冻住、任务做到一半被掐断。
+- 失败按活动拉黑：`attempt_<活动>_<日期>`，单个活动当天满 3 次不再自动重试。
+  以前是一个全局计数，三个活动共用，一个失败三次全体停摆。
+- 修 `finish()` 的完成标记：逗号列表只在 `runList` 里逐个记成功，
+  以前 1/3 成功也会调 `markDone(cmd)` 把三个全标成完成，失败的活动当天再也不重试。
+- 新增 `hostVisible()`：用 `RunningAppProcessInfo.importance` 判断前后台，日志里能看出
+  这次是前台还是后台触发。
+- 登录补一条离屏兜底：把 App 的 `newSdkInterface` 对象重新注入到不挂窗口的 WebView，
+  打开 SSO 登录页让页面自己走 `getUserInfo → appTokenLogin`。冷启动、App 在后台、
+  手上没有任何可用页面时也能换出 `QWHD_SESSION_TOKEN`。
+- 间隔节流：两次自动跑之间至少 8 分钟，多个触发源不会叠加重复跑。
 
 ### v2.1
 - 新增 `SsoLogin`：在 App 的 WebView 里执行 JS 调 `newSdkInterface.getUserInfo()`，

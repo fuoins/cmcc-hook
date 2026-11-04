@@ -70,8 +70,12 @@ public final class HookEntry implements IXposedHookLoadPackage {
     }
 
     /**
-     * 目标进程里每 30 分钟看一次：开关开着、今天还没跑的活动，就补跑。
-     * 这样不用打开中国移动、更不用进活动页，只要进程还活着就会自己跑。
+     * 进程内兜底定时：每 30 分钟看一次，有没有今天还没跑的活动。
+     *
+     * 这条只在目标进程还活着、没被系统冻结时有效。Android 11+ 的 cgroup freezer
+     * 会把后台进程的 Handler 定时器整个停掉，所以真正的主路径是模块进程里的
+     * {@link TaskAlarm}（AlarmManager 唤醒 + 解冻 + PING 广播）。两条一起用：
+     * 进程活着时这里最快，被冻住时那边兜底。
      */
     private static void scheduleAutoTask() {
         try {
@@ -89,9 +93,16 @@ public final class HookEntry implements IXposedHookLoadPackage {
                             int hour = java.util.Calendar.getInstance()
                                     .get(java.util.Calendar.HOUR_OF_DAY);
                             String pending = TaskRunner.pendingAuto(ctx);
-                            if (!pending.isEmpty() && hour >= 7 && hour < 23) {
+                            if (pending.isEmpty()) {
+                                HookLog.logcat("scheduled check: nothing pending today");
+                            } else if (hour < 7 || hour >= 23) {
+                                HookLog.logcat("scheduled check: outside 7-23, skip " + pending);
+                            } else if (TaskRunner.tooSoon(ctx)) {
+                                HookLog.logcat("scheduled check: too soon, skip " + pending);
+                            } else {
                                 HookLog.logcat("scheduled auto task: " + pending);
-                                TaskRunner.executeAuto(pending, "定时");
+                                TaskRunner.markAutoRun(ctx);
+                                TaskRunner.executeAuto(pending, "进程内定时");
                             }
                         }
                     } catch (Throwable e) {

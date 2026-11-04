@@ -35,6 +35,19 @@ final class OffscreenWeb {
 
     /** 建一个离屏 WebView 并开始加载，返回实例；失败返回 null。 */
     static Object open(final String url, final long timeoutMs) {
+        return open(url, null, null, timeoutMs);
+    }
+
+    /**
+     * 建一个离屏 WebView，并在 loadUrl **之前**注入一个 JS 接口对象。
+     *
+     * App 的 newSdkInterface 是它自己 addJavascriptInterface 注入的，只存在于它创建的
+     * WebView 上。把捕获到的同一个对象重新注入到我们这个离屏 WebView，
+     * 页面里的 leadeon.getUserInfo() 就又能拿到登录态 —— 冷启动、App 在后台、
+     * 手上没有任何可用页面时，靠这条把 SSO 会话换出来。
+     */
+    static Object open(final String url, final Object bridge, final String bridgeName,
+                       final long timeoutMs) {
         final Context ctx = HookLog.context();
         if (ctx == null || url == null || url.isEmpty()) {
             return null;
@@ -61,6 +74,15 @@ final class OffscreenWeb {
                     try {
                         XposedHelpers.callMethod(webView, "setWebViewClient", new WebViewClient());
                     } catch (Throwable ignored) {
+                    }
+                    if (bridge != null && bridgeName != null && !bridgeName.isEmpty()) {
+                        try {
+                            XposedHelpers.callMethod(webView, "addJavascriptInterface", bridge,
+                                    bridgeName);
+                            HookLog.logcat("offscreen bridge injected: " + bridgeName);
+                        } catch (Throwable e) {
+                            HookLog.logcat("offscreen bridge inject failed: " + e);
+                        }
                     }
                     XposedHelpers.callMethod(webView, "loadUrl", url);
                     holder[0] = webView;
