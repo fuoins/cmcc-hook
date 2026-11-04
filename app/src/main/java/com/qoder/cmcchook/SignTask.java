@@ -38,6 +38,20 @@ final class SignTask {
         detail.append("入口: ").append(referer).append('\n');
         String warmed = TaskApi.warmUp(referer, detail);
         if (warmed == null) {
+            // JSBridge 换票失败时的兜底：借 App 的 WebView 打开一次签到页，
+            // 页面里的 qwhdsso/login 会自己用原生登录态换出 QWHD_SESSION_TOKEN，
+            // 之后再走一遍纯 HTTP 就能捡到 Cookie。
+            detail.append("换票失败，改用页面登录兜底\n");
+            String back = PageAuto.currentUrl();
+            if (PageAuto.load(referer)) {
+                sleep(12_000L);
+                if (!back.isEmpty()) {
+                    PageAuto.load(back);
+                }
+                warmed = TaskApi.warmUp(referer, detail);
+            }
+        }
+        if (warmed == null) {
             detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
             return TaskRunner.Result.fail("拿不到签到会话", detail.toString(),
                     "App 的登录态没取到。确认中国移动 App 是登录状态、"
