@@ -179,7 +179,8 @@ final class TaskRunner {
         total++;
         try {
             Result sign = SignTask.run();
-            detail.append("=== 签到有礼 ===\n").append(sign.detail).append('\n');
+            detail.append("=== 签到有礼 ===\n")
+                    .append(sign.detail == null ? "" : sign.detail).append('\n');
             text.append("签到：").append(sign.ok ? sign.summary : "失败（" + sign.summary + "）")
                     .append('\n');
             if (sign.ok) {
@@ -193,7 +194,8 @@ final class TaskRunner {
         total++;
         try {
             Result egg = EggTask.run();
-            detail.append("=== 天天砸金蛋 ===\n").append(egg.detail).append('\n');
+            detail.append("=== 天天砸金蛋 ===\n")
+                    .append(egg.detail == null ? "" : egg.detail).append('\n');
             text.append("砸金蛋：").append(egg.ok ? egg.summary : "失败（" + egg.summary + "）")
                     .append('\n');
             if (egg.ok) {
@@ -207,8 +209,9 @@ final class TaskRunner {
         total++;
         try {
             Result goose = GooseTask.run();
-            detail.append("=== 收鹅蛋换好礼 ===\n").append(goose.detail).append('\n');
-            text.append("收鹅蛋：").append(goose.ok ? goose.summary : goose.summary)
+            detail.append("=== 收鹅蛋换好礼 ===\n")
+                    .append(goose.detail == null ? "" : goose.detail).append('\n');
+            text.append("收鹅蛋：").append(goose.ok ? goose.summary : "未完成（" + goose.summary + "）")
                     .append('\n');
             if (goose.ok) {
                 okCount++;
