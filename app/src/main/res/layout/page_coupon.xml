@@ -166,19 +166,8 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
-        <!-- v4.0.7：前台真页是可靠现场，给一个直接打开卡券中心的入口。
-             点它用宿主 App 容器打开真页，等券列表渲染出来再点「一键扫描」。 -->
-        <TextView
-            android:id="@+id/couponOpenEntry"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:paddingStart="6dp"
-            android:paddingTop="6dp"
-            android:paddingEnd="6dp"
-            android:paddingBottom="4dp"
-            android:text="@string/coupon_open_entry"
-            android:textColor="@color/primary"
-            android:textSize="12sp" />
+        <!-- v4.0.8：一键扫描改为纯离屏（补齐 App 私有 JS 桥），不再需要
+             「先打开卡券中心」的前置入口，券页只留一个「一键扫描」按钮。 -->
 
         <!-- v4.0.4：小米 / HyperOS 短信验证码自检入口。
              系统级「验证码安全保护」模块不能代改，只能把步骤摆到用户面前。 -->

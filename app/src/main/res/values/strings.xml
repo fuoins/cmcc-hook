@@ -187,8 +187,7 @@
     <string name="flow_fail">读取失败：%1$s</string>
     <string name="flow_ok">读取完成：%1$d 项余量 · 点「流量详情」逐项展开</string>
     <string name="coupon_section">我的卡券</string>
-    <string name="coupon_open_entry">扫不到券？先点这里打开卡券中心（真页），再点「一键扫描」</string>
-    <string name="coupon_hint">「一键扫描」优先复用已打开的卡券中心真页（最可靠，能正常读到券）；没打开真页时才用离屏页兜底，而离屏页实测常读不到券。所以扫不到券时，先点下方「打开卡券中心」或在中国移动 App 里进一次卡券中心、等券列表加载出来，再回来点「一键扫描」。只有「流量券」和「话费兑换券」可勾选使用，其余置灰。默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
+    <string name="coupon_hint">点「一键扫描」即可：模块在中国移动进程里离屏打开卡券页读券，界面不动、不用手动点进卡券中心。模块已把 App 真页的私有 JS 桥装回离屏页，让离屏页也能正常渲染券列表。只有「流量券」和「话费兑换券」可勾选使用，其余置灰。默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
     <string name="coupon_title">卡券中心</string>
     <string name="coupon_summary_empty">还没扫描，点「一键扫描」读一次</string>
     <string name="coupon_scan">一键扫描</string>
@@ -216,7 +215,7 @@
     <string name="coupon_confirm_use">确认使用</string>
     <string name="coupon_done">批量结束：成功 %1$d 张，失败 %2$d 张</string>
     <string name="coupon_scanning">正在一键扫描…</string>
-    <string name="coupon_scan_fail">一键扫描没读到券：请点券页下方「打开卡券中心」或在中国移动 App 里进一次卡券中心，等券列表加载出来再点「一键扫描」（前台真页才是可靠现场，离屏页实测读不到券）；导出完整日志可看「卡券扫描 · 现场」诊断。</string>
+    <string name="coupon_scan_fail">一键扫描没读到券：先打开一次中国移动 App（让模块缓存到 App 的私有 JS 桥），再回来点「一键扫描」；导出完整日志可看「卡券扫描 · 离屏页现场」里的券列表渲染判定与桥清单诊断。</string>
     <!-- v4.0.4 小米 / HyperOS 短信验证码自检引导 -->
     <string name="sms_help_entry">小米 / HyperOS 读不到验证码？点这里看自检步骤</string>
     <string name="sms_help_title">小米读不到短信验证码 · 自检</string>

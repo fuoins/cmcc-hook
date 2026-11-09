@@ -219,6 +219,9 @@ final class WebViewHooks {
                     }
                     // 记下带 App H5 SDK 的 WebView：换 SSO 票据要靠它执行 JS。
                     SsoLogin.onBridge(param.thisObject, param.args[0], name);
+                    // v4.0.8：缓存 App 真页注册过的全部私有 JS 桥，离屏 WebView
+                    // 建好时会整套装回去。卡券页缺 cardInterface 会连 Vue 都不 mount。
+                    AppBridges.record(param.thisObject, param.args[0], name);
                     if (!HookPrefs.ui()) {
                         return;
                     }

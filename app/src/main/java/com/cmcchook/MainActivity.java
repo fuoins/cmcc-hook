@@ -275,11 +275,8 @@ public final class MainActivity extends AppCompatActivity {
         }
         btnCouponUseAll.setOnClickListener(v -> couponUse(true));
         btnCouponUse.setOnClickListener(v -> couponUse(false));
-        // v4.0.7：前台真页是唯一可靠现场，给一个直接打开卡券中心的入口。
-        TextView couponOpen = findViewById(R.id.couponOpenEntry);
-        if (couponOpen != null) {
-            couponOpen.setOnClickListener(v -> couponOpenCenter());
-        }
+        // v4.0.8：券页只留「一键扫描」，删掉 v4.0.7 的「打开卡券中心」前置入口。
+        // 扫描改为纯离屏，AppBridges 已把真页的私有 JS 桥装回离屏页。
         // v4.0.4：小米 / HyperOS 的「验证码安全保护」是系统开关，模块不能代改，
         // 只能把自检步骤摆到券页。点入口弹说明，可一键把说明写进日志页。
         TextView smsHelp = findViewById(R.id.smsHelpEntry);
@@ -1347,17 +1344,6 @@ public final class MainActivity extends AppCompatActivity {
             return ms + " 毫秒";
         }
         return String.format(Locale.US, "%.1f 秒", ms / 1000.0);
-    }
-
-    /**
-     * v4.0.7：恢复「打开卡券中心」入口。
-     *
-     * <p>21:32 真机日志证明前台真页是唯一能稳定读到券的现场（离屏页 Vue 列表
-     * 恒不渲染）。给用户一个一键打开真页的途径，不必去中国移动 App 里翻；
-     * 真页列表加载出来后再点「一键扫描」，即可复刻 v4.0.5 之前能出券的流程。
-     */
-    private void couponOpenCenter() {
-        sendCouponCmd(TaskRunner.CMD_OPEN + CouponTask.URL, "打开卡券中心");
     }
 
     private void couponScan() {

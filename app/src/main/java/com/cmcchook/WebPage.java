@@ -342,6 +342,12 @@ final class WebPage {
                 HookLog.log("TASK-DIAG", "登录桥注入失败", String.valueOf(e));
             }
         }
+        // v4.0.8：把 App 真页注册过的全部私有 JS 桥装回离屏页。
+        // 卡券页初始化依赖 cardInterface / androidJsInterface 等，只注入
+        // newSdkInterface 时页面脚本会在 Vue mount 前抛异常，body 停在
+        // {{item.title}} 模板原文、券列表接口一次都不发（22:05 真机日志实证）。
+        // 必须在 loadUrl 之前 addJavascriptInterface，页面脚本才看得到这些桥。
+        AppBridges.injectInto(webView, bridgeName);
         final Object target = webView;
         try {
             XposedHelpers.callMethod(webView, "loadUrl", url);

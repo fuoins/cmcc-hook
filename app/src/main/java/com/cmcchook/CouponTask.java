@@ -123,14 +123,25 @@ final class CouponTask {
                     + "return String(performance.timeOrigin||0)+'|'+String(location.href||'')"
                     + "}catch(e){return ''}})()";
 
-    /** 新页面上的券列表真的画出来了没有（不是「文档加载完」就算）。 */
+    /**
+     * 新页面上的券列表真的画出来了没有（不是「文档加载完」就算）。
+     * v4.0.8：不再只认 ul.cp-list / button.cp-btn —— 11.9.1 的卡券页把券卡片
+     * 换成了 div 列表、按钮也未必还带 cp-btn。改成「有券按钮文案、或正文里出现
+     * 有效期/面额」就算渲染出来，避免死等旧类名把可用页面误判成没起来。
+     */
     private static final String LIST_JS =
             "(function(){try{"
                     + "if(document.readyState!=='complete') return '0';"
-                    + "var n=document.querySelectorAll('ul.cp-list button.cp-btn,ul.cp-list .btn-style').length;"
-                    + "if(n>0) return '1';"
-                    + "var t=(document.body&&document.body.innerText)||'';"
-                    + "return t.indexOf('去使用')>=0?'1':'0';"
+                    + "var t=(document.body&&(document.body.innerText||document.body.textContent))||'';"
+                    + "if(t.indexOf('{{')>=0) return '0';"
+                    + "if(document.querySelectorAll('ul.cp-list button.cp-btn,ul.cp-list .btn-style').length>0) return '1';"
+                    + "var W=/^(去使用|去查看|立即使用|马上使用|去兑换|立即兑换|去充值)$/;"
+                    + "var bs=document.querySelectorAll('button,a,[role=button]');"
+                    + "for(var i=0;i<bs.length;i++){"
+                    + "  var x=(bs[i].innerText||bs[i].textContent||'').replace(/\\s+/g,'');"
+                    + "  if(W.test(x)) return '1';"
+                    + "}"
+                    + "return /有效期至|可使用\\s*\\(|￥\\s*[0-9]/.test(t)?'1':'0';"
                     + "}catch(e){return '0'}})()";
 
     /**
@@ -279,26 +290,29 @@ final class CouponTask {
     private static final long SCAN_LIST_WAIT_MS = 12_000L;
 
     /**
-     * v4.0.7：扫描的<b>兜底现场</b> —— 离屏页。
+     * v4.0.8：一键扫描的<b>唯一现场</b> —— 离屏页。
      *
      * <p>在中国移动进程里开一张不挂窗口的 WebView 加载卡券页，模块只读渲染好的 DOM，
-     * <b>不解密接口、不拼签名、不发业务请求</b>。
+     * <b>不解密接口、不拼签名、不发业务请求</b>。界面不动、不用手动点进卡券中心。
      *
-     * <p>21:32 真机日志实证：离屏页在这台设备上<b>读不到券</b> —— Vue 列表不渲染
-     * （body 里还是 {{item.title}} 模板原文），甚至跳 login.10086.cn 登录页。
-     * 原因是卡券页要 App 私有的一堆 JS 桥（cardInterface 等）才拿得到登录态。
-     * 所以 {@link #scan()} 改为<b>前台真页优先</b>，只有真页没读到时才来这里，
-     * 并把「离屏现场到底渲染没渲染」写进日志，按证据继续判断。
+     * <p>22:05 / 22:06 真机日志实证：离屏页过去读不到券的根因是
+     * {@code WebPage.build()} 只注入了 newSdkInterface 一个桥，而 App 给真页
+     * 注册了 cardInterface / androidJsInterface / RequestInspection 等十来个。
+     * 现在 {@link AppBridges} 在离屏 WebView 建好、loadUrl 之前把这一整套桥装回去，
+     * 离屏页具备真页同等的启动条件。这里额外把「页面实际看得到哪些桥、发了哪些
+     * 券列表接口、body 长什么样」写进日志 —— 万一仍 0 张，下一份日志能一次定位。
      */
     private static Host openHostForScan() {
-        HookLog.log("COUPON", "卡券扫描 · 离屏兜底",
+        HookLog.log("COUPON", "卡券扫描 · 离屏一键",
                 "入口: " + URL
-                        + "\n前台真页没读到券，改用离屏页试一次；用户界面不动。\n"
-                        + "离屏页实测常缺 App 私有 JS 桥、券列表不渲染，现场会写进日志。");
+                        + "\n模块在中国移动进程里离屏加载卡券页，用户界面不动、不用手动点进去。\n"
+                        + "已把 App 真页注册过的私有 JS 桥全量装回离屏页（见「App 私有 JS 桥」日志）。\n"
+                        + "页面自己登录、请求、渲染，模块只读现成的券列表 DOM。");
         WebPage page = WebPage.open(URL, 30_000L, HOSTS);
         if (page == null || page.raw() == null || !page.ok()) {
             HookLog.log("COUPON", "卡券扫描 · 离屏页没起来",
-                    "入口: " + URL + "\nWebView 建不起来或首屏没渲染，本轮离屏兜底跳过。");
+                    "入口: " + URL + "\nWebView 建不起来或首屏没渲染。\n"
+                            + "已缓存的 App 私有 JS 桥:\n" + AppBridges.describe());
             if (page != null) {
                 page.close();
             }
@@ -320,27 +334,58 @@ final class CouponTask {
                         + "\n地址: " + page.url()
                         + "\n标题: " + page.title()
                         + "\n券列表已渲染: " + ready
-                        + "\n（false 多半是离屏页缺 App 私有 JS 桥、拿不到登录态；"
-                        + "本轮会如实记为 0 张，不会把「没读到」误报成「账户里没有券」。）");
+                        + "\n已缓存的 App 私有 JS 桥:\n" + AppBridges.describe()
+                        + "\n页面现场:\n" + String.valueOf(off.eval(SITE_JS, 6_000L)));
         return off;
     }
 
     /**
-     * 前台真页（用户在中国移动里打开过卡券中心时）。v4.0.7 起恢复为<b>扫描首选现场</b>，
-     * 保持 v4.0.3 之前「能扫到 13/18/19 张」的能力不退化。
+     * v4.0.8：离屏页现场快照。页面到底拿到了哪些桥、发了哪些券列表接口、
+     * body 是模板还是渲染后的券，一次写进日志。这样 0 张时不用再猜。
      */
-    private static Host openLiveHost() {
-        Object live = CouponPage.get();
-        if (live != null) {
-            String href = CouponPage.eval(live,
-                    "(function(){try{return location.href}catch(e){return ''}})()");
-            if (href != null && href.contains("mycoupons")) {
-                return new LiveHost(live);
-            }
-            CouponPage.detach(live);
-        }
-        return null;
-    }
+    private static final String SITE_JS = """
+            (function(){
+              var out=[];
+              try{
+                var names=['cardInterface','androidJsInterface','newSdkInterface',
+                           'RequestInspection','newWindowInterface','androidIMScene',
+                           'nfcManager','fuJianFaceModel','cmcc','leadeon'];
+                var got=[],missing=[];
+                for(var i=0;i<names.length;i++){
+                  try{ if(typeof window[names[i]]!=='undefined') got.push(names[i]);
+                       else missing.push(names[i]); }catch(e){ missing.push(names[i]+'?') }
+                }
+                out.push('页面可见桥: '+(got.join(',')||'无'));
+                out.push('页面缺失桥: '+(missing.join(',')||'无'));
+              }catch(e){ out.push('桥探测异常: '+e) }
+              try{
+                var rs=performance.getEntriesByType('resource')||[],api=[];
+                for(var j=0;j<rs.length&&api.length<24;j++){
+                  var u=String(rs[j].name||'');
+                  if(/myCardVoucher|coupon|Coupon|voucher|mycoupons|cardVoucher/i.test(u)){
+                    api.push(u.split('?')[0].replace(/^https?:\\/\\/[^/]+/,''));
+                  }
+                }
+                out.push('券相关请求('+rs.length+' 条资源): '+(api.length?api.join(' | '):'无'));
+              }catch(e){ out.push('请求探测异常: '+e) }
+              try{
+                var t=(document.body?(document.body.innerText||document.body.textContent||''):'');
+                t=t.replace(/\\s+/g,' ').trim();
+                out.push('正文长度: '+t.length+' · 含Vue模板: '+(t.indexOf('{{')>=0));
+                out.push('正文前300: '+t.substring(0,300));
+                out.push('ul.cp-list='+document.querySelectorAll('ul.cp-list').length
+                         +' / button.cp-btn='+document.querySelectorAll('button.cp-btn').length
+                         +' / 任意按钮='+document.querySelectorAll('button,a,[role=button]').length);
+                var bs=document.querySelectorAll('button,a,[role=button]'),w=[];
+                for(var k=0;k<bs.length&&w.length<30;k++){
+                  var x=(bs[k].innerText||bs[k].textContent||'').replace(/\\s+/g,' ').trim();
+                  if(x&&x.length<16) w.push(x);
+                }
+                out.push('按钮文案: '+(w.join('|')||'无'));
+              }catch(e){ out.push('DOM 探测异常: '+e) }
+              return out.join('\\n');
+            })();
+            """;
 
     /** 在一个现场上跑一遍扫描脚本，返回 JSON；脚本没回报（超时）返回 null。 */
     private static String scanOnce(Host host) {
@@ -365,57 +410,31 @@ final class CouponTask {
         busy = true;
         Host host = null;
         try {
-            // v4.0.7：恢复「前台真页优先」。
+            // v4.0.8：一键扫描 = 纯离屏，界面不动、只按一下，不碰前台真页。
             //
-            // 21:32 真机日志实证：离屏页的 Vue 券列表恒不渲染（body 里还是
-            // {{item.title}} / {{totalNum||0}} 模板原文，甚至被重定向到
-            // login.10086.cn），只有用户在中国移动里打开的卡券中心真页带完整
-            // JS 桥、能真正读到券。v4.0.4 把顺序改成「离屏优先」后实际退化成恒 0 张。
+            // 22:05 / 22:06 真机日志定位到的真根因：离屏页 Vue 券列表恒不渲染
+            // （body 停在 {{item.title}} / {{totalNum||0}} 模板原文、券列表接口
+            // 一次都不发），不是「缺一张用户手动打开的真页」，而是 WebPage.build()
+            // 历来只注入 newSdkInterface 一个桥，缺 App 私有的 cardInterface /
+            // androidJsInterface / RequestInspection 等一整套 —— 卡券页脚本在
+            // Vue mount 之前就取不到桥、抛异常走降级。真页能看到券，正是因为
+            // App 容器给它注册了那十来个桥。
             //
-            // 更关键：离屏页 loadUrl 时 WebViewHooks 会把它误登记成「前台页」
-            // （X5 回调传的是 WebView$a 内部类，isOffscreenPage 的 == 判定漏掉），
-            // 覆盖掉真页登记；而离屏页在回退前被 close() 销毁，回退拿到的现场
-            // 已经失效。所以必须在打开任何离屏页之前就把真页引用抓在手里。
-            Host live = openLiveHost();
-            if (live != null && live.ok()) {
-                host = live;
-                HookLog.log("COUPON", "卡券扫描 · 复用前台真页",
-                        "现场: " + host.name()
-                                + "\n用户已打开卡券中心，优先用带完整 JS 桥的真页读券"
-                                + "（离屏页实测读不到券，详见「离屏页现场」）。");
-            }
+            // 现在 AppBridges 会把 App 真页注册过的桥全量缓存、装回离屏页，
+            // 离屏页因此具备真页同等的启动条件。不再需要用户手动进卡券中心，
+            // 也不再回退真页（用户明确只要离屏、只要一个按钮）。
+            host = openHostForScan();
             String raw = host == null ? null : scanOnce(host);
-
-            // 真页没读到（没打开 / 列表还没渲染）才退回离屏，并把现场写进日志。
-            if (raw == null || countOf(raw) <= 0) {
-                String first = raw == null ? "没有前台真页/脚本超时" : countOf(raw) + " 张";
-                HookLog.log("COUPON", "卡券扫描 · 前台真页没读到券，尝试离屏",
-                        "真页结果: " + first
-                                + "\n现场: " + (host == null ? "无" : host.name())
-                                + "\n说明: 离屏页只作兜底，不会把「没读到」误报成"
-                                + "「账户里没有券」。");
-                // LiveHost.close() 是空操作（绝不 destroy 用户正在看的页面），
-                // 这里统一置空再开离屏，避免两个现场混用。
-                if (host != null) {
-                    host.close();
-                    host = null;
-                }
-                Host off = openHostForScan();
-                if (off != null && off.ok()) {
-                    host = off;
-                    raw = scanOnce(host);
-                }
-            }
             if (raw == null) {
                 boolean anyHost = host != null;
                 sendList(anyHost ? "{\"stage\":\"timeout\",\"count\":0,\"items\":[]}"
                         : "{\"stage\":\"no-page\",\"count\":0,\"items\":[]}");
                 HookLog.log("COUPON", anyHost ? "卡券扫描 · 超时" : "卡券扫描 · 页面没打开",
-                        "前台真页和离屏页都没读到券\n入口: " + URL
+                        "入口: " + URL
                                 + "\n现场: " + (host == null ? "无" : host.name())
-                                + "\n建议: 点券页「打开卡券中心」或在中国移动 App 里进一次"
-                                + "卡券中心，等券列表加载出来后再点「一键扫描」。\n"
-                                + "导出完整日志可看「离屏页现场」里的券列表渲染判定。");
+                                + "\n已缓存的 App 私有 JS 桥:\n" + AppBridges.describe()
+                                + "\n导出完整日志可看「离屏页现场」里的券列表渲染判定、"
+                                + "桥清单与页面发出的接口清单。");
                 return;
             }
             sendList(raw);
@@ -1066,27 +1085,38 @@ final class CouponTask {
                 }
                 return false;
               }
+              // v4.0.8：不再只认 button.cp-btn。11.9.1 的券按钮可能是 div/a/
+              // [role=button]，类名也变了。按「可见 + 文案是去使用类 + 不在引导区」
+              // 收，类名只作为排除灰券的辅助。
               function anchors(d){
-                var out=[],bs=d.querySelectorAll('button.cp-btn');
+                var out=[],seen=[];
+                var bs=d.querySelectorAll('button,a,[role=button],.cp-btn');
                 for(var i=0;i<bs.length;i++){
                   var b=bs[i];
                   if(!V(b)) continue;
-                  if(/cp-grays/.test(String(b.className||''))) continue;
+                  if(/cp-grays|gray|disabled/.test(String(b.className||''))) continue;
                   if(inLead(b)) continue;
-                  if(!WORDS.test(T(b))) continue;
-                  out.push(b);
+                  var bt=T(b).replace(/\\s+/g,'');
+                  if(!WORDS.test(bt)) continue;
+                  if(seen.indexOf(b)>=0) continue;
+                  seen.push(b); out.push(b);
                 }
                 return out;
               }
-              // 找不到真正的券卡片容器就丢掉，绝不拿按钮的父节点凑数。
+              // 找券卡片容器：先按 11.9.1 之前的类名，找不到再按「文本里带
+              // 有效期 / 面额 / 券类型」的祖先兜底。宁可多包一层，也别把整屏
+              // 的模板文字当成一张券 —— 后续 parse 会再按文案裁出券名。
               function cardOf(btn){
-                var p=btn;
+                var p=btn,fallback=null;
                 for(var i=0;i<9&&p;i++,p=p.parentElement){
                   var c=''; try{ c=String(p.className||'') }catch(x){}
-                  if(/cp_lsit_tp_content|cp_lsit_tpbag_content|couponNoHasWire/.test(c)) return p;
-                  if(/cp-list/.test(c)) return p;
+                  if(/cp_lsit_tp_content|cp_lsit_tpbag_content|couponNoHasWire|cp-list/.test(c)) return p;
+                  if(!fallback){
+                    var t=''; try{ t=T(p) }catch(x){}
+                    if(t.length>12&&/有效期|￥|流量券|话费券|权益券|优惠券|代金券|加赠券/.test(t)) fallback=p;
+                  }
                 }
-                return null;
+                return fallback;
               }
               function parse(t,btnText){
                 var mt=t.match(/(流量券|话费券|权益券|语音券|短信券|会员券|商城券|观影券|代金券|话费加赠券|加赠券|专享券|优惠券)/);
@@ -1166,26 +1196,48 @@ final class CouponTask {
                   try{
                     if(typeof r.refresh==='function'){ r.refresh(); acts.push('refresh') }
                     else if(typeof r.couponQry==='function'){ r.couponQry(); acts.push('couponQry') }
+                    else if(typeof r.getCouponList==='function'){ r.getCouponList(); acts.push('getCouponList') }
+                    else if(typeof r.queryCoupon==='function'){ r.queryCoupon(); acts.push('queryCoupon') }
                   }catch(e){ acts.push('Vue调用异常:'+e) }
-                  line('唤醒: Vue '+(acts.join(',')||'没有 refresh/couponQry'));
+                  line('唤醒: Vue '+(acts.join(',')||'没有 refresh/couponQry/getCouponList'));
                 }else{
                   line('唤醒: 页面没找到 Vue 实例');
                 }
-                var tabs=document.querySelectorAll('.type-tabs li,#typeUl li,.ka-tabs li');
+                // v4.0.8：tab 选择器放宽，卡券页新版 tab 未必还叫 type-tabs/ka-tabs。
+                var tabs=document.querySelectorAll('.type-tabs li,#typeUl li,.ka-tabs li,'
+                    +'.coupon-tabs li,[class*=tab] li,[class*=tab] a,[class*=tab] span');
                 for(var i=0;i<tabs.length;i++){
-                  if(T(tabs[i]).indexOf('可使用')>=0){
+                  if(T(tabs[i]).indexOf('可使用')>=0||T(tabs[i]).indexOf('可使用(')>=0){
                     try{ tabs[i].click(); line('唤醒: 点「可使用」tab') }catch(e){}
                     break;
                   }
                 }
+                // 再兜一层：页面可能把「刷新券列表」挂在全局函数或自定义事件上。
+                try{
+                  var g=['couponQry','queryCoupon','refreshCoupon','getMyCoupon','loadCoupon'];
+                  for(var j=0;j<g.length;j++){
+                    if(typeof window[g[j]]==='function'){ window[g[j]](); acts.push(g[j]); break }
+                  }
+                }catch(e){}
                 return acts.join(',')||'none';
               }
               function diagnose(){
                 line('诊断: 现场='+(window.__cmcc_coupon_front?'前台真页':'离屏页'));
                 try{ line('诊断: href='+location.href.substring(0,140)) }catch(x){}
+                // v4.0.8：桥是否真的挂到页面上，是这轮修复成败的关键证据。
+                try{
+                  var ns=['cardInterface','androidJsInterface','newSdkInterface',
+                          'RequestInspection','newWindowInterface','androidIMScene','cmcc'];
+                  var g=[],m=[];
+                  for(var i=0;i<ns.length;i++){
+                    try{ typeof window[ns[i]]!=='undefined'?g.push(ns[i]):m.push(ns[i]) }catch(x){}
+                  }
+                  line('诊断: 页面可见桥='+(g.join(',')||'无'));
+                  line('诊断: 页面缺失桥='+(m.join(',')||'无'));
+                }catch(x){}
                 var bt=BT();
-                line('诊断: 正文长度='+bt.length);
-                line('诊断: 正文前200='+bt.substring(0,200));
+                line('诊断: 正文长度='+bt.length+' · 含Vue模板='+(bt.indexOf('{{')>=0));
+                line('诊断: 正文前300='+bt.substring(0,300));
                 line('诊断: ul.cp-list='+document.querySelectorAll('ul.cp-list').length
                      +' / button.cp-btn='+document.querySelectorAll('button.cp-btn').length
                      +' / cp_lsit_tp_content='+document.querySelectorAll('.cp_lsit_tp_content').length);
@@ -1196,14 +1248,18 @@ final class CouponTask {
                 line('诊断: 按钮文案='+words.join('|').substring(0,300));
                 try{ line('诊断: bodyHTML前300='+document.body.innerHTML.substring(0,300)) }catch(x){}
               }
-              var tries=0,woke=false;
+              var tries=0,woke=0;
               function loop(){
                 tries++;
-                if(!woke&&tries>=2){ woke=true; wake() }
+                // v4.0.8：券列表接口可能比首屏晚，前 10 轮每 3 轮唤醒一次，
+                // 别只敲一下门就放弃。
+                if(tries>=2&&woke<4&&tries%3===2){ woke++; wake() }
                 var cards=[];
                 try{ cards=collect() }catch(e){ line('扫描异常: '+e) }
+                var t=(document.body&&(document.body.innerText||document.body.textContent))||'';
                 var ready=document.querySelectorAll('ul.cp-list').length>0
-                          ||document.querySelectorAll('button.cp-btn').length>0;
+                          ||document.querySelectorAll('button.cp-btn').length>0
+                          ||(t.indexOf('{{')<0&&/有效期至|可使用\\s*\\(|￥\\s*[0-9]/.test(t));
                 if((cards.length>0&&ready)||tries>40){
                   diagnose();
                   for(var i=0;i<cards.length;i++){
@@ -1243,7 +1299,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 v4.0.7 已装载 · 一键扫描恢复前台真页优先 + 修复离屏页覆盖真页登记 + 券页恢复「打开卡券中心」入口');
+              line('券脚本 4.0.7+bridgefix 已装载 · 一键扫描纯离屏：App 私有 JS 桥全量装回离屏页 + 主动唤醒券列表 + 放宽 DOM 选择器');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){
