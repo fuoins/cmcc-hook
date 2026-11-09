@@ -4,6 +4,8 @@ on:
   push:
     branches: [ main, master ]
     tags: [ 'v*' ]
+  pull_request:
+    branches: [ main, master ]
   workflow_dispatch:
     inputs:
       publish_release:
@@ -62,6 +64,17 @@ jobs:
           echo "name=$V" >> "$GITHUB_OUTPUT"
           echo "versionName = $V"
 
+      - name: Verify tag matches versionName
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="${{ steps.ver.outputs.name }}"
+          echo "tag=$TAG  versionName=$VER"
+          if [ "$TAG" != "$VER" ]; then
+            echo "::error::tag v$TAG 与 app/build.gradle.kts 的 versionName $VER 不一致，拒绝发版"
+            exit 1
+          fi
+
       - name: Build release APK
         run: gradle assembleRelease --no-daemon --stacktrace
 
@@ -100,8 +113,9 @@ jobs:
             由 GitHub Actions 自动构建（`assembleRelease`），非本地手工编译产物。
 
             - 签名沿用仓库内固定 keystore，与 v3.98 起各版一致，可直接覆盖安装。
-            - 覆盖安装后请重启手机；LSPosed 作用域需勾选「中国移动」+「电话服务 com.android.phone」。
-            - 小米 / HyperOS 需在系统设置中关闭「验证码安全保护」、放行「通知类短信」。
+            - 覆盖安装后请重启手机；LSPosed 作用域**至少勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。v4.0.1 起验证码在中国移动 App 主进程里读，不需要额外勾「电话服务」。
+            - 小米 / HyperOS 读不到验证码时：关闭系统「验证码安全保护」、给中国移动放行「通知类短信」；仍不行再补勾「电话服务 `com.android.phone`」（系统应用，先打开「显示系统应用」）并重启手机作为兜底。旧的 `com.xiaomi.phone` 包不存在，v4.0.4 已移除。
+            - 完整安装与排障步骤见 [README「安装与启用」](https://github.com/fuoins/cmcc-hook#安装与启用)。
           files: out/*.apk
           generate_release_notes: true
           draft: false
