@@ -279,27 +279,26 @@ final class CouponTask {
     private static final long SCAN_LIST_WAIT_MS = 12_000L;
 
     /**
-     * v4.0.4：扫描专用现场 —— <b>离屏优先</b>。
+     * v4.0.7：扫描的<b>兜底现场</b> —— 离屏页。
      *
-     * <p>在中国移动进程里开一张不挂窗口的 WebView 加载卡券页，页面自己完成登录、
-     * 请求密文接口、解密并渲染 Vue 券列表，模块只读渲染好的 DOM ——
-     * <b>不解密接口、不拼签名、不发业务请求</b>。这样用户不用先手动点进卡券中心。
+     * <p>在中国移动进程里开一张不挂窗口的 WebView 加载卡券页，模块只读渲染好的 DOM，
+     * <b>不解密接口、不拼签名、不发业务请求</b>。
      *
-     * <p>为什么还要留回退：v3.39 实测「离屏页只发两个横幅接口、券列表为空」，
-     * 根因是卡券页要 App 私有的一堆 JS 桥（cardInterface 等）才拿得到登录态；
-     * 后来 WebPage 补了登录桥注入、attach 到窗口、真实 UA/Cookie，条件比当年好，
-     * 但没有真机复验就不能断言一定成。所以 scan() 会在离屏读不到券时自动回退
-     * 前台真页，并把「离屏现场到底渲染没渲染」写进日志，按证据继续判断。
+     * <p>21:32 真机日志实证：离屏页在这台设备上<b>读不到券</b> —— Vue 列表不渲染
+     * （body 里还是 {{item.title}} 模板原文），甚至跳 login.10086.cn 登录页。
+     * 原因是卡券页要 App 私有的一堆 JS 桥（cardInterface 等）才拿得到登录态。
+     * 所以 {@link #scan()} 改为<b>前台真页优先</b>，只有真页没读到时才来这里，
+     * 并把「离屏现场到底渲染没渲染」写进日志，按证据继续判断。
      */
     private static Host openHostForScan() {
-        HookLog.log("COUPON", "卡券扫描 · 离屏优先",
+        HookLog.log("COUPON", "卡券扫描 · 离屏兜底",
                 "入口: " + URL
-                        + "\n模块在中国移动进程里离屏加载卡券页，用户界面不动、不用手动点进去。\n"
-                        + "页面自己登录、请求、渲染，模块只读现成的券列表 DOM。");
+                        + "\n前台真页没读到券，改用离屏页试一次；用户界面不动。\n"
+                        + "离屏页实测常缺 App 私有 JS 桥、券列表不渲染，现场会写进日志。");
         WebPage page = WebPage.open(URL, 30_000L, HOSTS);
         if (page == null || page.raw() == null || !page.ok()) {
             HookLog.log("COUPON", "卡券扫描 · 离屏页没起来",
-                    "入口: " + URL + "\nWebView 建不起来或首屏没渲染，稍后自动回退前台真页。");
+                    "入口: " + URL + "\nWebView 建不起来或首屏没渲染，本轮离屏兜底跳过。");
             if (page != null) {
                 page.close();
             }
@@ -322,12 +321,12 @@ final class CouponTask {
                         + "\n标题: " + page.title()
                         + "\n券列表已渲染: " + ready
                         + "\n（false 多半是离屏页缺 App 私有 JS 桥、拿不到登录态；"
-                        + "会自动回退前台真页，不会把「没读到」误报成「账户里没有券」。）");
+                        + "本轮会如实记为 0 张，不会把「没读到」误报成「账户里没有券」。）");
         return off;
     }
 
     /**
-     * 前台真页（用户在中国移动里打开过卡券中心时）。离屏读不到券时用它兜底，
+     * 前台真页（用户在中国移动里打开过卡券中心时）。v4.0.7 起恢复为<b>扫描首选现场</b>，
      * 保持 v4.0.3 之前「能扫到 13/18/19 张」的能力不退化。
      */
     private static Host openLiveHost() {
@@ -366,33 +365,57 @@ final class CouponTask {
         busy = true;
         Host host = null;
         try {
-            // v4.0.4：先离屏，读不到券再自动回退前台真页。
-            host = openHostForScan();
+            // v4.0.7：恢复「前台真页优先」。
+            //
+            // 21:32 真机日志实证：离屏页的 Vue 券列表恒不渲染（body 里还是
+            // {{item.title}} / {{totalNum||0}} 模板原文，甚至被重定向到
+            // login.10086.cn），只有用户在中国移动里打开的卡券中心真页带完整
+            // JS 桥、能真正读到券。v4.0.4 把顺序改成「离屏优先」后实际退化成恒 0 张。
+            //
+            // 更关键：离屏页 loadUrl 时 WebViewHooks 会把它误登记成「前台页」
+            // （X5 回调传的是 WebView$a 内部类，isOffscreenPage 的 == 判定漏掉），
+            // 覆盖掉真页登记；而离屏页在回退前被 close() 销毁，回退拿到的现场
+            // 已经失效。所以必须在打开任何离屏页之前就把真页引用抓在手里。
+            Host live = openLiveHost();
+            if (live != null && live.ok()) {
+                host = live;
+                HookLog.log("COUPON", "卡券扫描 · 复用前台真页",
+                        "现场: " + host.name()
+                                + "\n用户已打开卡券中心，优先用带完整 JS 桥的真页读券"
+                                + "（离屏页实测读不到券，详见「离屏页现场」）。");
+            }
             String raw = host == null ? null : scanOnce(host);
-            boolean hadHost = host != null;
+
+            // 真页没读到（没打开 / 列表还没渲染）才退回离屏，并把现场写进日志。
             if (raw == null || countOf(raw) <= 0) {
-                String first = raw == null ? "页面没起来/脚本超时" : countOf(raw) + " 张";
-                HookLog.log("COUPON", "卡券扫描 · 离屏没读到券，回退前台真页",
-                        "离屏结果: " + first
+                String first = raw == null ? "没有前台真页/脚本超时" : countOf(raw) + " 张";
+                HookLog.log("COUPON", "卡券扫描 · 前台真页没读到券，尝试离屏",
+                        "真页结果: " + first
                                 + "\n现场: " + (host == null ? "无" : host.name())
-                                + "\n回退: 复用用户已打开的卡券中心真页（带 App 完整 JS 桥）。");
+                                + "\n说明: 离屏页只作兜底，不会把「没读到」误报成"
+                                + "「账户里没有券」。");
+                // LiveHost.close() 是空操作（绝不 destroy 用户正在看的页面），
+                // 这里统一置空再开离屏，避免两个现场混用。
                 if (host != null) {
                     host.close();
                     host = null;
                 }
-                Host live = openLiveHost();
-                if (live != null && live.ok()) {
-                    host = live;
+                Host off = openHostForScan();
+                if (off != null && off.ok()) {
+                    host = off;
                     raw = scanOnce(host);
                 }
             }
             if (raw == null) {
-                sendList(hadHost ? "{\"stage\":\"timeout\",\"count\":0,\"items\":[]}"
+                boolean anyHost = host != null;
+                sendList(anyHost ? "{\"stage\":\"timeout\",\"count\":0,\"items\":[]}"
                         : "{\"stage\":\"no-page\",\"count\":0,\"items\":[]}");
-                HookLog.log("COUPON", hadHost ? "卡券扫描 · 超时" : "卡券扫描 · 页面没打开",
-                        "离屏页和前台卡券页都没读到券\n入口: " + URL
+                HookLog.log("COUPON", anyHost ? "卡券扫描 · 超时" : "卡券扫描 · 页面没打开",
+                        "前台真页和离屏页都没读到券\n入口: " + URL
                                 + "\n现场: " + (host == null ? "无" : host.name())
-                                + "\n导出完整日志可看「离屏页现场」里的券列表渲染判定。");
+                                + "\n建议: 点券页「打开卡券中心」或在中国移动 App 里进一次"
+                                + "卡券中心，等券列表加载出来后再点「一键扫描」。\n"
+                                + "导出完整日志可看「离屏页现场」里的券列表渲染判定。");
                 return;
             }
             sendList(raw);
@@ -1220,7 +1243,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 v4.0.6 已装载 · 券页改为单个「一键扫描」(离屏优先,免手动进卡券中心) + 流量/券各自独立一键');
+              line('券脚本 v4.0.7 已装载 · 一键扫描恢复前台真页优先 + 修复离屏页覆盖真页登记 + 券页恢复「打开卡券中心」入口');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){

@@ -46,6 +46,15 @@ final class CouponPage {
             if (offscreen != null && offscreen == wv) {
                 return;
             }
+            // v4.0.7：X5 的 loadUrl / onPageStarted 回调传进来的可能是
+            // com.tencent.smtt.sdk.WebView$a 内部类实例，和 OffscreenWeb.track()
+            // 登记的 WebView 不是同一个对象 —— 上面的 == 判定会漏。21:32 日志实证
+            // 离屏页被登记成「前台」，把用户真页的登记冲掉，扫描回退随之失效。
+            // 只要当前存在离屏会话、且已经有一个有效的真页登记，就不让离屏页覆盖。
+            if (offscreen != null && view != null
+                    && System.currentTimeMillis() - at <= TTL_MS) {
+                return;
+            }
         } catch (Throwable ignored) {
         }
         view = wv;

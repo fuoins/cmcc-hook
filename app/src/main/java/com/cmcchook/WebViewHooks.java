@@ -766,6 +766,14 @@ final class WebViewHooks {
             return;
         }
         boolean off = isOffscreenPage(view);
+        // v4.0.7：X5 回调传进来的可能是 com.tencent.smtt.sdk.WebView$a 内部类，
+        // 和 OffscreenWeb.track() 登记的 WebView 不是同一实例，== 判定会漏
+        // （21:32 日志实证：离屏页被登记成「前台」，把用户真页的登记冲掉）。
+        // 离屏页统一用不带参数的裸地址 CouponTask.URL，前台真页一定带
+        // ?c=11&e=99&channelId=... 参数；离屏会话期间按地址再兜一层。
+        if (!off && CouponTask.URL.equals(url) && OffscreenWeb.current() != null) {
+            off = true;
+        }
         // v3.41：把「有没有登记上」写进日志。上一版 5 次扫描全走离屏兜底，
         // 但日志里 App 明明两次开了卡券页，不落日志就只能一直猜。
         // 4 个 hook 点会连着触发同一个页面，1.5 秒内只记一条，避免刷屏。
