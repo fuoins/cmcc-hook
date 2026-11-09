@@ -716,15 +716,24 @@ final class GooseTask {
                 // v3.96：07:45 日志实证 —— 首屏「已有鹅蛋：--个 加载中...」，
                 // 页面业务数据根本没回来。旧版照跑动作链，结果全是「跳过」，
                 // 零提交却打 ✓。这里直接如实报没做成，且不锁机会。
+                // v4.0.5：19:24 日志实证 —— raiseGoose/index 四次返回都是
+                // {"code":"200","dataEn":"<密文>","success":true}，离屏页只拿到加密响应，
+                // 首屏一直「加载中 / --个」，脚本空等 16 秒后零提交。
+                // 模块不解密、不拼加密请求、不发业务请求；这种「读不到」不是任务失败，
+                // 按尺子「零提交一律不算完成、不记失败次数」改记为跳过，不占用 ✗ 次数。
+                detail.append("接口: [API-GOOSE] raiseGoose/index 若返回 dataEn 密文，"
+                        + "说明只拿到加密响应，模块不解密、不拼签名\n");
                 detail.append("业务数据: 未就绪（首屏 ").append(brief(out.optString("firstText", ""))).append("）\n");
                 detail.append("组件数组字段: ").append(out.optString("arrayFields", "")).append('\n');
                 appendReceipt(detail, out);
-                return TaskRunner.Result.fail("收鹅蛋 · 业务数据未就绪，一个任务都没提交",
-                        detail.toString(),
-                        "这一轮鹅蛋页面数据没加载出来（已有鹅蛋显示 -- / 一直加载中），"
-                                + "模块没有冒充完成，也没有记你的失败次数，机会还在。\n"
-                                + "票据是好的，直接再执行一次；若连续几次都这样，"
-                                + "在 App 里手动打开一次「收鹅蛋换好礼」活动页，让页面把数据加载出来再执行。");
+                String summary = "收鹅蛋 · 本轮零提交（页面业务数据未就绪）";
+                return TaskRunner.Result.skip(summary, detail.toString(),
+                        "这一轮鹅蛋页面数据没加载出来（[API-GOOSE] 返回的是 dataEn 密文，"
+                                + "读不到明文余量/鹅蛋数）。模块不解密、不拼加密请求、没有冒充完成，"
+                                + "也不记失败次数，机会还在。\n"
+                                + "请在 App 里手动打开一次「收鹅蛋换好礼」前台真页，让页面自己把数据渲染出来，"
+                                + "再回来执行；或直接在 App 内手动完成。\n"
+                                + "导出完整日志看 [API-GOOSE] 与 [GOOSE] 段落可逐条核对。");
             }
             JSONObject before = out.optJSONObject("before");
             JSONObject after = out.optJSONObject("after");
@@ -1047,8 +1056,11 @@ final class GooseTask {
                 // v3.96：07:45 日志实证 —— 旧判据只认 eggCount!=null，'--个' 也算就绪，
                 // 于是动作链全是「跳过」，零提交却报「已跑完一轮」。
                 // 现在要求首屏出现真实数字，且不含「加载中 / --个」；期间主动刷 index 帮页面取数。
+                // v4.0.5：19:24 日志实证 —— 接口只回 dataEn 密文时页面永远等不到
+                // 明文数据，旧版空等 30×500ms ≈ 15 秒才报 notready，白占一整轮。
+                // 缩到 12 次（6 秒），照样不跑动作链（零提交），把时间还给后面的活动。
                 var ready=false, bt=bodyText();
-                for(var wl=0;wl<30;wl++){
+                for(var wl=0;wl<12;wl++){
                   bt=bodyText();
                   if(readyNow(c,bt)){ ready=true; break }
                   if(wl>0 && wl%6===0 && typeof c.indexFun==='function'){

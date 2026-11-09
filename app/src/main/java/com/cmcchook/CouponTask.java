@@ -1220,7 +1220,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 v4.0.4 已装载 · 扫描离屏优先(读不到自动回退真页) + 短信通道对齐XposedSmsCode + 小米验证码自检');
+              line('券脚本 v4.0.5 已装载 · 一键查扫描(离屏查流量+扫券) + 流量卡片整块可点展开 + 活动判定按19:24日志修正');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){

@@ -172,18 +172,38 @@ final class CanvasTask {
                 String summary = name + " · 页面没有打卡按钮，未确认打卡（不算完成）";
                 return TaskRunner.Result.idle(summary, detail.toString(), summary);
             }
-            // 页面可能不是 Vue，或者还在骨架阶段。先区分「登录没走完」和「真没组件」：
-            // 前者是桥的回调没回来，后者才是页面结构变了，两种改法完全不同。
-            if (text0.contains("登录中") || text0.contains("校验中")) {
+            // v4.0.5：19:24 日志实证 —— 7 日打卡首屏已经完整渲染出活动页
+            // （「我的奖品 / 第1天…第7天 / 剩余1次机会 / 每天登录可抽奖1次」），
+            // 只是这个 coc web6 页面不用 Vue（组件 0 个）。旧判据用
+            // text0.contains("登录") 认登录页，被活动规则里的「每天登录可抽奖1次」
+            // 命中，把好端端的活动页误报成「页面停在登录页」。
+            // 先确认活动主体是否已渲染，再决定报什么。
+            boolean rendered = text0.contains("打卡") || text0.contains("我的奖品")
+                    || text0.contains("第1天") || text0.contains("抽奖")
+                    || text0.contains("红包") || text0.contains("剩余");
+            String title = out.optString("title", "");
+            if (!rendered && (text0.contains("登录中") || text0.contains("校验中"))) {
                 return TaskRunner.Result.fail(name + " · 页面登录没走完",
                         detail.append("等待期间文案一直停在「登录中」\n").toString(),
                         "checkUID 的桥回调没回到离屏页。把完整日志发我，"
                                 + "看「登录桥改绑」和「登录回调转发」两行。");
             }
-            if (text0.contains("登录")) {
+            if (!rendered && (text0.contains("登录") || title.contains("登录"))) {
                 return TaskRunner.Result.fail(name + " · 页面停在登录页",
                         detail.toString(),
                         "在 App 里手动打开一次这个活动，再回来执行任务。");
+            }
+            if (rendered) {
+                // 页面是好的，只是没挂载 Vue 组件 / 没抓到可提交的打卡按钮。
+                // 如实报「没找到入口」：不猜坐标、不伪造提交、也不冒充完成。
+                return TaskRunner.Result.fail(name + " · 页面已渲染但没找到打卡入口",
+                        detail.append("判定(v4.0.5): 首屏已是活动页，不是登录页（")
+                                .append(brief(text0)).append("）\n")
+                                .append("组件 0 个、请求层 0 个、提交类回执 0 条；\n")
+                                .append("打卡按钮可能是画布热区/图片，脚本只能按文本找按钮，\n")
+                                .append("这一轮零提交，不算完成。\n").toString(),
+                        "页面本身没问题（不是登录页）。这个活动用画布热区，模块抓不到可点的打卡按钮。\n"
+                                + "请在 App 里手动点一次打卡，再导出完整日志发我，我按真实按钮补 DOM 目标。");
             }
             return TaskRunner.Result.fail(name + " · 页面组件没挂载",
                     detail.append("没找到 Vue 根组件，页面可能被重定向或还没渲染完\n").toString(),

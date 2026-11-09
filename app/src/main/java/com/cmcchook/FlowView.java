@@ -459,11 +459,6 @@ final class FlowView {
         link.setTypeface(Typeface.DEFAULT_BOLD);
         link.setTextColor(col(c, R.color.header_text));
         link.setPadding(dp(c, 8), dp(c, 2), dp(c, 2), dp(c, 2));
-        link.setOnClickListener(v -> {
-            detailOpen = !detailOpen;
-            detailPanel.setVisibility(detailOpen ? View.VISIBLE : View.GONE);
-            ((TextView) v).setText(detailOpen ? "流量详情 ▴" : "流量详情 ▾");
-        });
         row1.addView(link);
 
         // 行2：剩余大字（左） + 已消耗（右）
@@ -520,11 +515,19 @@ final class FlowView {
         // 行4：汇总说明
         TextView hint = new TextView(c);
         hint.setText("已用 " + fmt(hero.usedGB) + " / 共 " + fmt(hero.totalGB)
-                + " · 共 " + itemCount + " 项余量，点「流量详情」逐项展开");
+                + " · 共 " + itemCount + " 项余量，点卡片任意处展开/收起");
         hint.setTextSize(11);
         hint.setTextColor(col(c, R.color.header_text_dim));
         hint.setPadding(0, dp(c, 6), 0, 0);
         header.addView(hint);
+        // v4.0.5：整张头部卡都能点开/收起「流量详情」，不用非得点到右上角那行小字。
+        // 内部子 View 没有单独监听器，点任意位置都只会走这里一次，不会重复 toggle。
+        header.setClickable(true);
+        header.setOnClickListener(v -> {
+            detailOpen = !detailOpen;
+            detailPanel.setVisibility(detailOpen ? View.VISIBLE : View.GONE);
+            link.setText(detailOpen ? "流量详情 ▴" : "流量详情 ▾");
+        });
         return header;
     }
 
@@ -748,7 +751,9 @@ final class FlowView {
         det.setVisibility(open ? View.VISIBLE : View.GONE);
         arrow.setText(open ? "▴" : "▾");
         box.addView(det);
-        head.setOnClickListener(v -> {
+        // v4.0.5：整张分类卡都能点开/收起该组明细，不再限定只能点标题栏那个箭头。
+        box.setClickable(true);
+        box.setOnClickListener(v -> {
             boolean visible = det.getVisibility() == View.VISIBLE;
             det.setVisibility(visible ? View.GONE : View.VISIBLE);
             arrow.setText(visible ? "▾" : "▴");

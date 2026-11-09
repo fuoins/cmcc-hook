@@ -174,6 +174,13 @@
     <string name="sub_coupon">优惠券</string>
     <string name="flow_title">流量余量</string>
     <string name="flow_refresh">一键查询</string>
+    <!-- v4.0.5 一键查扫描 -->
+    <string name="quick_scan">一键查扫描</string>
+    <string name="quick_scan_idle">离屏查流量 + 扫券，不用手动进页面</string>
+    <string name="quick_scan_running">已发起：离屏查流量 + 离屏扫券…</string>
+    <string name="quick_scan_flow_done">流量已回填，正在扫券…</string>
+    <string name="quick_scan_done">完成：流量 %1$d 项 · 券 %2$d 张</string>
+    <string name="quick_scan_offline">中国移动 App 没在运行：请先打开一次 App 让登录态就绪，再点「一键查扫描」。</string>
     <string name="flow_refreshing">正在离屏读取首页余量缓存…</string>
     <string name="flow_never">进入本页自动离屏查询一次。余量卡片按 flow-assistant 的样式重画：点「流量详情」逐项展开、点分类卡展开该组每一包；下方还有消耗测速与流量领取入口。数据只读首页明文缓存，不解密接口、不提交请求。</string>
     <string name="flow_at">更新于 %1$s</string>

@@ -112,15 +112,11 @@ final class MiaoTask {
             String summary = "豆苗养成记 · 完成 " + Math.max(clickOk, 1) + " 个动作";
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
         }
-        // 3) 点了按钮但页面没反应：判失败，不写成功。
-        if (clickTry > 0) {
-            return TaskRunner.Result.fail("豆苗养成记 · 点了按钮但页面没回执",
-                    detail.toString(),
-                    "页面按钮点了但服务端没响应。把完整日志发我，我按页面真实按钮改。");
-        }
-        // 4) 页面明确写着今天做完了。
-        // v3.48：豆苗页面做完任务后的文案变体很多，以前只认 6 个词，
-        // 明明「今日已完成」还判成「点了按钮但页面没回执」。补齐常见写法。
+        // 3) v4.0.5：判定顺序修正 —— 旧版先判「点了按钮没回执 → 失败」，
+        //    导致下面「今天已经做过」的兜底永远走不到（只要点过任何按钮）。
+        //    19:24 日志实证：点了「主动领取」0 回执，但首屏是一串「+ 10 已领」
+        //    且没有「点击领」待领项，说明页面上本来就没有待领项，不是失败。
+        //    先看页面状态，再看点击结果。前面 1)/2) 已经把真做成的拦掉了。
         if (text1.contains("今日已签") || text1.contains("今天已签")
                 || text1.contains("已签到") || text1.contains("明天再来")
                 || text1.contains("已领取") || text1.contains("已浇")
@@ -130,6 +126,21 @@ final class MiaoTask {
                 || text1.contains("已领完") || text1.contains("明天继续")) {
             String summary = "豆苗养成记 · 今天已经做过";
             return TaskRunner.Result.idle(summary, detail.toString(), summary);
+        }
+        boolean noPending = (text1.contains("已领") || text0.contains("已领"))
+                && !text1.contains("点击领") && !text0.contains("点击领");
+        if (noPending) {
+            String summary = "豆苗养成记 · 页面没有待领项（已领完）";
+            return TaskRunner.Result.idle(summary,
+                    detail.append("判定(v4.0.5): 页面全是「已领」且无「点击领」待领项，\n")
+                            .append("点了按钮没回执不是服务端拒绝，而是没有可领的项。\n")
+                            .toString(), summary);
+        }
+        // 4) 点了按钮但页面没反应：判失败，不写成功。
+        if (clickTry > 0) {
+            return TaskRunner.Result.fail("豆苗养成记 · 点了按钮但页面没回执",
+                    detail.toString(),
+                    "页面按钮点了但服务端没响应。把完整日志发我，我按页面真实按钮改。");
         }
         String summary = "豆苗养成记 · 页面上没找到可做的按钮";
         return TaskRunner.Result.idle(summary, detail.toString(),
@@ -383,7 +394,22 @@ final class MiaoTask {
                        +cut(String(box.className||''),50)+'> 文本 '+cut(bt,60));
                   return signBoxTarget(box);
                 }
+                // v4.0.5：19:24 日志实证 —— 真页已经没有 [class*=sign-box] 容器，
+                // 3 次都落到这里。把页面上所有「领/签到/点击/阳光」相关的可见元素
+                // 连 class 原样打进明细，下一份日志就能定位新的签到卡容器，不用猜。
                 line('  sign-box 未找到：页面无 [class*=sign-box] 容器');
+                var cand=document.querySelectorAll('button,a,div,span,li,p');
+                var shown=0;
+                for(var ci=0;ci<cand.length && shown<18;ci++){
+                  var ce=cand[ci];
+                  if(!visible(ce)) continue;
+                  var ct=(ce.innerText||'').replace(/\\s+/g,' ').trim();
+                  if(!ct||ct.length>40) continue;
+                  if(!/领|签到|点击|阳光/.test(ct)) continue;
+                  line('  候选<'+ce.tagName+' '+cut(String(ce.className||''),46)+'> '+cut(ct,40));
+                  shown++;
+                }
+                if(shown===0) line('  （页面上没有任何含「领/签到/点击/阳光」的可见元素）');
                 return null;
               }
 
