@@ -1,37 +1,43 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Material 3 基线配色（浅色） -->
-    <color name="primary">#6750A4</color>
+    <!-- 品牌蓝 · 清爽现代（浅色） -->
+    <color name="primary">#1B6EF3</color>
     <color name="on_primary">#FFFFFF</color>
-    <color name="primary_dark">#4F378B</color>
-    <color name="primary_container">#EADDFF</color>
-    <color name="on_primary_container">#21005D</color>
-    <color name="secondary">#625B71</color>
-    <color name="secondary_container">#E8DEF8</color>
-    <color name="on_secondary_container">#1D192B</color>
+    <color name="primary_dark">#0B4FC4</color>
+    <color name="primary_container">#DBE8FF</color>
+    <color name="on_primary_container">#0A2E6B</color>
+    <color name="secondary">#00897B</color>
+    <color name="secondary_container">#CFF3EE</color>
+    <color name="on_secondary_container">#0A3A34</color>
 
-    <color name="surface">#FFFBFE</color>
-    <color name="background">#FFFBFE</color>
-    <color name="container_low">#F7F2FA</color>
-    <color name="container">#F3EDF7</color>
-    <color name="container_high">#ECE6F0</color>
+    <color name="surface">#FFFFFF</color>
+    <color name="background">#F4F7FC</color>
+    <color name="container_low">#FFFFFF</color>
+    <color name="container">#EEF3FB</color>
+    <color name="container_high">#E3EBF7</color>
 
-    <color name="text_primary">#1C1B1F</color>
-    <color name="text_secondary">#49454F</color>
-    <color name="outline">#79747E</color>
-    <color name="divider">#E7E0EC</color>
+    <color name="text_primary">#12213B</color>
+    <color name="text_secondary">#5A6B87</color>
+    <color name="outline">#B9C6DA</color>
+    <color name="divider">#E2EAF5</color>
 
-    <color name="success">#2E7D32</color>
-    <color name="warning">#B26A00</color>
-    <color name="error">#B3261E</color>
+    <color name="success">#0E9F6E</color>
+    <color name="warning">#E08A00</color>
+    <color name="error">#D93A3A</color>
 
-    <color name="tag_h5">#00695C</color>
+    <color name="tag_h5">#00897B</color>
     <color name="tag_http">#3949AB</color>
-    <color name="tag_ui">#7B1FA2</color>
+    <color name="tag_ui">#7B4FC4</color>
     <color name="tag_system">#546E7A</color>
-    <color name="tag_error">#B71C1C</color>
-    <color name="tag_api">#0D47A1</color>
-    <color name="tag_task">#2E7D32</color>
-    <color name="tag_task_fail">#C62828</color>
-    <color name="code_background">#F3EDF7</color>
+    <color name="tag_error">#C62828</color>
+    <color name="tag_api">#0B4FC4</color>
+    <color name="tag_task">#0E9F6E</color>
+    <color name="tag_task_fail">#D93A3A</color>
+    <color name="code_background">#EEF3FB</color>
+
+    <!-- 顶部渐变 header 专用 -->
+    <color name="brand_start">#1B6EF3</color>
+    <color name="brand_end">#00B4D8</color>
+    <color name="header_text">#FFFFFF</color>
+    <color name="header_text_dim">#D6E8FF</color>
 </resources>

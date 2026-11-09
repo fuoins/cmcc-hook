@@ -3,16 +3,16 @@ plugins {
 }
 
 android {
-    namespace = "com.qoder.cmcchook"
+    namespace = "com.cmcchook"
     compileSdk = 34
     buildToolsVersion = "34.0.0"
 
     defaultConfig {
-        applicationId = "com.qoder.cmcchook"
+        applicationId = "com.cmcchook"
         minSdk = 23
         targetSdk = 30
-        versionCode = 15
-        versionName = "2.4"
+        versionCode = 129
+        versionName = "3.98"
     }
 
     signingConfigs {
@@ -34,6 +34,11 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("stable")
         }
+    }
+
+    buildFeatures {
+        // 日志抬头要显示真实版本号，靠这个生成 BuildConfig.VERSION_NAME
+        buildConfig = true
     }
 
     compileOptions {

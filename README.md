@@ -1,405 +1,165 @@
-# 移动签到助手（第一阶段：抓取版）
+# 移动签到助手
 
-LSPosed 模块，用于抓取中国移动 App（`com.greenpoint.android.mc10086.activity`）里
-签到、福利中心、任务中心相关的页面与接口，为下一阶段的自动签到 / 一键领奖励提供依据。
+> 一个 LSPosed 模块：把中国移动 App 福利中心里的签到 / 领奖 / 任务活动，按页面真实的操作流程跑一遍。
+> **手动执行优先 · 查询结果不等于完成 · 只认服务端真实回执 · 不伪造请求与票据。**
 
-v1.3 起内置**去升级弹窗**，适配 11.9.1（versionCode 119101）；抓取相关 Hook 不区分版本，12.x 同样可用。
+本模块只作用于中国移动 App（`com.greenpoint.android.mc10086.activity`），在它自己的页面上下文里完成动作：
+能直接调的接口直接调，需要页面签名 / 加密 / 登录态的，就加载页面、让**页面自己的 JS** 去点，模块只负责触发和验收结果。
 
-**当前版本只抓取、不改动 App 行为**。首页是模块状态与抓取开关，日志页支持刷新、清空、导出到 Download。
+---
+
+## 目录
+
+- [它能做什么](#它能做什么)
+- [设计边界](#设计边界)
+- [环境要求](#环境要求)
+- [安装与启用](#安装与启用)
+- [怎么用](#怎么用)
+- [内置活动](#内置活动)
+- [判定尺子：什么才算「完成」](#判定尺子什么才算完成)
+- [日志与排障](#日志与排障)
+- [隐私与安全](#隐私与安全)
+- [从源码构建](#从源码构建)
+- [相关链接](#相关链接)
+- [免责声明](#免责声明)
+
+---
+
+## 它能做什么
+
+| 能力 | 说明 |
+| --- | --- |
+| 福利活动清单 | 内置活动表，打开「福利」页就能看到名字、入口、接入状态；点一行可在软件内打开、复制链接、采集页面信息 |
+| 活动执行 | 逐活动手动执行，或「立即全部跑一次」串行跑完；可选每天自动补跑一次 |
+| 页面内自动化 | 对加密 / 带动态签名的 H5 活动（如收鹅蛋），在页面加载完成后注入脚本，调页面自己的组件方法、点页面自己的按钮 |
+| 接口与页面抓取 | 记录原生 OkHttp 请求、H5 XHR / fetch、页面跳转、Cookie / Storage、H5 点击，供对接新活动使用 |
+| 日志导出 | 一键导出完整日志，可选「精简 / 只看任务 / 完整」，支持「详细原始返回」开关 |
+| 去升级弹窗 | 拦截中国移动 11.9.1 的升级提示与版本检查红点 |
+| 卡券核销（可选） | 流量券 / 话费兑换券批量使用，验证码可自动读取短信填入（不授权则手动输入） |
+
+界面分「首页 / 福利 / 功能 / 日志 / 优惠券」几栏，Material 3 卡片布局，自动跟随系统深色模式。
+首页「关于」区可一键打开捐赠页、交流群与本项目地址（均用浏览器打开）。
+
+## 设计边界
+
+这些不是限制说明，是这个项目的底线：
+
+- **不破解验证码，不伪造请求、签名或票据。** 券核销的验证码来自系统短信；加密参数、瑞数动态头、SSO token 全部由 App / 页面自己生成，模块不重放、不拼接。
+- **查询接口 ≠ 提交接口。** 页面刷新、列表查询、状态查询一律不算「做了任务」；只有真实提交类接口的成功回执（或页面业务数据确实变化）才记完成。零提交不会打 ✓。
+- **不代做需要真实意愿的动作。** 充值、办理、购买、成团、发消息、跳第三方 App 拉新等任务一律跳过，只做签到 / 领取 / 浏览 / 投喂这类页面内动作。
+- **默认手动。** 自动补跑是可选开关；同一天同一活动成功过之后，自动触发会跳过。
+- **只在本机。** 日志写入 App 私有目录，导出由你手动完成，模块不自动上传任何数据。
 
 ## 环境要求
 
-- Android 8.1 及以上，已安装并激活 LSPosed（或兼容的 Xposed 框架）
-- 中国移动 App 11.9.1 或 12.x（接口可能随版本变化）
-- 不需要 root 权限给本 App；root/LSPosed 由框架提供
+- Android 8.1 及以上，已安装并激活 LSPosed（或兼容的 Xposed 框架）；模块本身 `minSdk 23 / targetSdk 30`
+- 中国移动 App **11.9.1**（`versionCode 119101`）为已验证版本；12.x 的抓取 Hook 通用，但活动接口可能随版本变化
+- 不需要给本模块 root 权限；root / Hook 能力由框架提供
 
 ## 安装与启用
 
-1. 安装 `cmcc-hook-v1.2-capture.apk`（固定签名，可直接安装）。
-   - v1.1 起使用仓库内固定 keystore 签名，之后的版本都能直接覆盖安装。
-   - 如果系统提示「签名不一致」，说明旧版是临时 CI 调试签名：先卸载旧版再安装新版即可（旧日志已导出，不影响）。
+1. 从 [Releases](https://github.com/fuoins/cmcc-hook/releases) 下载最新 APK 并安装。
 2. 打开 LSPosed 管理器 → 模块 → 启用「移动签到助手」。
 3. 点开作用域，**只勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。
-4. 在系统设置里强制停止中国移动 App，或重启手机，让模块重新注入。
-5. 打开一次中国移动 App，再回到本模块首页：
-   - 状态显示「运行中」，并且有「最近心跳」，说明注入成功；
-   - 若一直「等待中国移动 App 启动」，检查 LSPosed 作用域、模块是否启用、系统是否限制后台。
+4. 强制停止中国移动 App 或直接**重启手机**，让模块重新注入。
+5. 打开一次中国移动 App，再回到模块首页：状态显示「运行中」并有「最近心跳」即注入成功。
 
-## 去升级弹窗
+> ⚠️ **当前包名为 `com.cmcchook`。** 早期版本用的是另一个包名，属于不同的应用，**无法覆盖安装**：
+> 请先卸载旧版，再安装新版；旧版本机日志与设置不会迁移。LSPosed 里也要重新启用新模块、重新勾选作用域。
+>
+> 每次升级后仍需强停中国移动 / 重启手机，并导出一份日志确认日志头的「模块版本」与「券脚本已装载」是新版本 —— 历史上多次问题都出在「装了新版、注入的还是旧 dex」。
 
-v1.3 起自动拦截升级弹窗，不需要额外配置。
+## 怎么用
 
-11.9.1 的升级对话框有个已知问题：`AppUpgradeDialogManager.showDialog` 最终会走到
-`android.media.QuourstGlaernong.<init>`，这个类被改名后构造函数直接抛异常，**弹窗一创建就闪退**。
-模块不去修那个类，而是在调用链的四层入口全部设卡：
+- **单个活动**：「福利」页点对应活动 →「执行任务」；或先「在软件内打开」手动进页面再执行。
+- **全部**：首页「立即全部跑一次」。
+- **看结果**：首页「今日」行显示每个活动 `✓ / ✗N / ○`；「日志」页按 tag 筛选，点条目展开完整请求与响应。
+- **反馈问题**：导出完整日志前打开「详细原始返回」，把 txt 发回来。日志头会带模块版本、设备、目标 App 版本和诊断摘要。
 
-| 层级 | 类#方法 |
-| --- | --- |
-| ① | `UpgradeDialogChecker#process` |
-| ② | `CheckVersionHelper#showUpgradeDialog` |
-| ③ | `AppUpgradeManager#showUpgradeDialog` |
-| ④ | `AppUpgradeDialogManager#showDialog` |
+## 内置活动
 
-任意一层命中就 return，所以首页滑动触发的自动检查、设置页手动点「检查更新」都不会漏，
-也不会再走到那个会崩的构造函数。
-
-同时 `CheckVersionHelper#checkVersion` 等检查入口也被挡掉，「发现新版本」的红点不会出现。
-如果发现「关于」页版本号显示异常，把 `UpdateHooks` 里的 `CHECK_ENTRIES` 循环注释掉即可，
-只保留弹窗拦截。
-
-日志里搜 `update hook` 可以看到命中情况：
-
-```
-update hook com.cmccit.appupgrade.utils.AppUpgradeDialogManager x1 showDialog=1
-update hooks ready, classes=4
-```
-
-## H5 埋点噪音
-
-H5 控制台经常刷这一条：
-
-```
-监听到dom改变后初始化曝光失败 TypeError: Cannot read properties of undefined (reading 'getAttribute')
-来源：https://h.app.coc.10086.cn/ngpsie/psieappaijssdk/collectData/1.0.0/index.js
-```
-
-这是中国移动的 psie 曝光埋点 SDK：它注册 MutationObserver 监听 DOM，节点被移除后仍拿旧引用调
-`getAttribute`，自己 catch 住再打一条 WARNING。**属于 SDK 自身缺陷，不影响页面功能**，
-但 DOM 每变一次就刷一条，会把有用日志淹掉。
-
-v1.4 起默认过滤：
-
-- 来源含 `psie`、消息含 `初始化曝光失败`、或 `Cannot read … undefined … getAttribute` 的，
-  直接丢弃，并让 `onConsoleMessage` 返回 true —— 连 App 自己打到 logcat 的 `chromium` 也一起消掉；
-- 被丢弃的条数每 60 秒汇总一条 `H5-NOISE`，不会让你误以为 Hook 失效；
-- 其余 H5 console 同一条消息 10 秒内只记一次，重复次数写在详情里。
-
-设置页的「过滤 H5 埋点噪音」可以关掉，关掉后逐条原样记录。
-
-## 界面
-
-v1.5 起按「首页 / 功能 / 日志」三个 tab 组织，M3 卡片布局：
-
-- **首页**：运行状态（心跳、目标版本、已抓条数）、快捷操作、使用说明、关于
-- **功能**：抓取范围、过滤、调试、模块四组开关，行内开关下方带说明，改动即时生效
-- **日志**：顶部「刷新 / 清空 / 导出」，下方按 tag 筛选（全部 / 原生接口 / H5 / 页面 / Cookie / 错误），
-  点条目展开完整请求响应；每 2.5 秒自动刷新，往上翻历史时不会被拉回底部
-
-深色模式自动跟随系统。
-
-### 详细原始返回
-
-默认关闭，单条 detail 截到 **8 KB**；打开后整段输出（最多 160 KB）。
-
-对接新接口、核对字段时才打开。平时关着，单个大响应不会把日志文件撑爆，
-列表也不会因为一条几十万字的 JSON 卡住。
-
-## 任务引擎（v2.0 起）
-
-抓包只是手段，真正想要的是「不用管，它自己跑」。v1.6 起模块自带任务引擎，
-v2.0 改成**后台跑**：开关打开，模块自己在目标进程里跑完，不用进活动页、
-不用切到中国移动，界面完全不动。
-
-### 怎么触发
-
-| 触发方式 | 说明 |
-|---|---|
-| **后台广播（主路径）** | 模块点按钮 → 发显式广播 → 中国移动进程里常驻的 receiver 收到就直接跑，界面不动、不切 App |
-| **定时补跑** | 目标进程每 30 分钟检查一次，开关开着、当天没跑过的活动自动补跑（7:00–23:00） |
-| **App 前台补跑** | 中国移动被拉到前台时再补一次（onResume / onNewIntent 都挂） |
-| **进活动页** | 打开签到 / 砸蛋 / 鹅蛋页 2~3 秒后触发，兜底 |
-| **手动** | 「立即全部跑一次」按钮 |
-
-同一天同一个活动成功跑过之后，自动触发会跳过；手动按钮不受限制。
-
-**关键点：不需要进活动页。** 签到和砸金蛋是纯接口；浏览任务和鹅蛋页用一个
-不挂到窗口的离屏 WebView 加载，Cookie、UA、内核都是 App 自己那一套，
-服务端看起来和正常浏览一样，但用户界面一点没动。
-
-### 每个活动到底跑哪些任务
-
-抓包看到的活动页任务，模块分三类处理：
-
-| 任务类型 | 例子 | 模块怎么做 |
-|---|---|---|
-| **签到 / 领奖类** | 每日签到、累计 7 天、连签、组队共签、月签 | 原生 HTTP 直连，服务端幂等 |
-| **浏览类** | 「查询我的套餐」「查查我的余量」「浏览话费余额」 | 离屏 WebView 加载任务页停留 7 秒，页面自己上报埋点 |
-| **增长类** | 充值 10 元、装宽带、订阅小程序、去头条刷视频 | **不做**，涉及真实交易或跳第三方 App |
-
-砸金蛋的 6 个浏览任务全部走 `startBrowse`，服务端 302 就算登记成功，不用真打开落地页。
-鹅蛋页的任务在国密加密的接口里，只能在页面内注入脚本，按文案点「打卡 / 领饲料 / 投喂 / 收蛋 / 领取」。
-
-### 三个活动的实现方式
-
-| 活动 | 活动 ID | 怎么做的 | 自动触发条件 |
-|---|---|---|---|
-| 签到有礼 | 1021122301 | 原生 HTTP 直连 `qwhdhub/api/mark/*`；浏览任务走离屏 WebView | 广播 / 定时 / 进页面 |
-| 天天砸金蛋 | 1026071510 | 原生 HTTP 直连 `qwhdhub/lottery/*` + `task/*` | 广播 / 定时 / 进页面 |
-| 收鹅蛋换好礼 | goose2025 | 离屏 WebView 加载活动页 + 注入脚本点按钮 | 广播 / 定时 / 进页面 |
-
-前两个是明文 JSON，服务端只校验会话和 Referer，模块直接发就行。
-第三个不是同一个体系：接口在 `lyh.lncmcc.com/huodong-portal`，
-请求体是国密加密后的 `sinoEnParams`、响应是 `dataEn`，URL 上还有瑞数（`$_ts`）动态签名，
-每次请求的 `LJRkIeoW` 都不一样。要本地重放，得把整套瑞数 VM 一起搬过来 ——
-成本远大于收益，而且风控一升级就全废。
-
-所以收鹅蛋换了个思路：不自己发请求，等页面打开后注入脚本，
-让页面自己去点。加密和签名全交给页面自己的 JS，模块只负责触发和收结果。
-
-### 界面上怎么用
-
-「功能」页最上面的「活动任务」卡片：
-
-- **签到有礼** 开关：打开签到页自动跑
-- **天天砸金蛋** 开关：打开砸蛋页自动跑
-- **收鹅蛋换好礼** 开关：打开鹅蛋页自动跑
-- **打开 App 就跑全部** 开关：不依赖活动页，默认关
-- **立即全部跑一次** 按钮：手动串行跑三个
-
-### 签到有礼做什么
-
-```
-SSO 换 token（/qwhdsso/login?dlwmh=true&actUrl=…）
-  → markstatus 查状态
-  → domark 签到（HAVE_MARKED 视为已签）
-  → 再查一次，领 taskAwardChance 里的累计/连签奖励
-  → 组团共签（status=3 才领）
-  → 连续月签（monthStatus=UNDO 且 hasPrize）
-  → task/taskList 里 status=2 的任务，逐个 getTaskAward 领奖
-  → 剩下 status=0 的浏览任务：jumpUrl 在 WebView 打开停留 7 秒，回到签到页
-  → 再拉一次 taskList，把新完成的奖励领掉
-```
-
-浏览任务最多做 5 个，每个 8 秒左右；遇到「充值 / 装宽带 / 办理 / 订阅」直接跳过。
-
-### 天天砸金蛋做什么
-
-```
-lottery/remain 查剩余次数
-  → task/list 拿任务清单，对 taskStage=UNDO 的逐个 GET startBrowse（+1 次）
-  → 重新查次数
-  → 按次数循环 lottery/lotterySafely，直到次数用完
-```
-
-`startBrowse` 是服务端 302 到落地页，模块只要把请求发出去就登记成功了，
-不用真的把落地页加载出来。抽奖之间带 1.8 秒随机间隔，最多 15 次。
-
-### 收鹅蛋换好礼做什么
-
-注入脚本先做四类固定动作（**打卡 → 领饲料 → 投喂 → 收蛋**），
-再进入补充轮：扫页面上所有可见的「领取 / 领奖励 / 收下 / 收获」按钮，最多再点 8 次。
-
-只碰这些动作，兑换、分享、邀请、充值、购买、「去完成」一律不点 ——
-「去完成」会跳到别的页面，脚本就断了。
-
-### 会话过期怎么办
-
-模块不存死 Cookie，每次跑之前都会重新走一遍 SSO 换 token。只有 `cmccssotoken`
-本身失效（通常是 App 里退出登录、或者长时间没用）才会失败，这时日志会直接说：
-
-```
-任务失败 · 签到会话不可用
-```
-
-在 App 里打开一次「我的 → 签到领流量」，等页面加载完，模块会把新 Cookie 收进来，
-再点一次就行 —— **不需要重新抓包**。
-
-### 还没移植的
+活动表内置在 `WelfareCatalog.BUILT_IN`，装上即可看到完整清单；采集到同一活动时用采集到的入口（带当期参数）覆盖。
 
 | 活动 | 状态 | 说明 |
-|---|---|---|
-| 签到有礼 | ✅ v1.6 / v1.9 加浏览任务 | 签到 + 累计/连签/组队/月签 + 任务奖励 + 浏览任务 |
-| 天天砸金蛋 | ✅ v1.8 | 浏览任务换次数 + 全部抽掉 |
-| 收鹅蛋换好礼 | ✅ v1.8 / v1.9 加任务遍历 | 页面内打卡/领饲料/投喂/收蛋/领任务 |
-| `cmcc_extra.py` 游戏中心/追剧 | 下一步 | diy-client，同样的明文 JSON |
-| `cmcc_coc3.py` / `cmcc_seed.py` | 待评估 | 要 `phone` 头，可以 hook 请求头自动收，但要先确认 11.9.1 还带 |
-| `cmcc_wed.py` 周三充值日 | 待评估 | 5 个任务会被 160005 风控，网页端做不了，模块同样做不了 |
-| `cmcc_seckill.py` 秒杀 | 不建议 | 要在前台卡秒，模块跑在 App 进程里，反而更适合「打开 App 时顺手抢」 |
-| `cmcc_age.py` 网龄 | 不建议 | 抽奖要短信/滑块，只能查次数 |
-| `cmcc_fee.py` 话费 | 不需要 | App 首页本来就有 |
+| --- | --- | --- |
+| 签到有礼 | 已接入 | 签到 + 累计 / 连签 / 组队 / 月签 + 任务奖励 + 浏览任务 |
+| 天天砸金蛋 | 已接入 | 浏览任务换次数 + 把次数抽完 |
+| 收鹅蛋换好礼 | 已接入 | 页面内打卡 / 领饲料 / 投喂 / 收蛋 / 领任务 / 出游归来领取 |
+| 幸运三日签、周三签到、AI 豆苗、乡友答题、球赛 / 追剧 / 游戏中心等 | 已接入 / 部分接入 | 按各自页面流程执行，逐个按真实回执验收 |
+| 充值先领券、百GB、部分 coc3 系列 | 待适配 | 已内置名字与地址，执行逻辑未写 |
+| 拼团、发口令红包 | 仅手动 | 涉及成团、支付或发消息，模块不代做 |
 
-写死的活动列表迟早会漏，所以任务引擎按「活动 ID + 接口路径」注册，
-新增活动只加一条配置，不动主流程。
+活动换期、下架或服务端风控（如 `SCORE_REFUSE`）时，模块会如实报「未确认 / 风控」而不是记成功；按新日志继续定位即可。
 
-## 抓取步骤（请按这个顺序操作）
+## 判定尺子：什么才算「完成」
 
-1. 打开中国移动 App，进入 **我的 → 福利中心**（或你平时领奖励的入口）。
-2. 把希望自动化的操作都手动做一遍，例如：
-   - 每日签到 / 连续签到
-   - 福利中心里的签到任务、浏览任务、领积分 / 领金币、领优惠券
-   - 任务中心里能完成的任务，以及「领取」「开宝箱」「抽奖」等按钮
-   - 会员权益、等级奖励等
-3. 每进入一个页面停留 1～2 秒，等 H5 把数据请求发完；点按钮后也稍等再返回。
-4. 回到本模块 → **查看日志 → 刷新**，确认能看到 `H5` / `HTTP` / `ACTIVITY` 等条目。
-5. 点 **导出到 Download**，文件位于：
+这是本项目反复踩坑后定下的规则，也是排查「进去了却什么都没做」的依据：
 
-   ```
-   Download/CmccHook/cmcc-hook-YYYYMMDD-HHMMSS.txt
-   ```
+1. **提交类回执复核**：任务跑完会核对这一轮网络记录，`doTask` / `signIn` / `feedGoose` / `harvestEgg` / `claim*` 这类**提交**才计数；`index` / `taskIndex` / `signIndex` / `boxQuery` 只算查询。失败回执（5xx、`success:false`）不计。
+2. **零提交 + 数据无变化 → 不算完成**，也不消耗当天失败次数（机会还在），日志里写「鹅蛋接口 N 条 · 提交类 0 条」。
+3. **业务数据未就绪不空跑**：首屏仍是 `--个 / 加载中...` 时如实报没做成，不制造一串「跳过」来凑「已跑完一轮」。
+4. **服务端明确回「本日已签到」视为已完成**；风控类回执立即停止，不重试。
+5. **动作链要收敛**：任务做完饲料会增加，就继续投喂 / 收蛋直到数据不再变化，而不是每样只做一次就收工。
 
-6. 把这个 txt 发回来。日志里会包含账号 Cookie / Token / 手机号，**请只发给可信的人，不要上传公开网盘或群聊**。
+## 日志与排障
 
-## 抓不到请求时
-
-- 先确认首页有「最近心跳」，日志里有 `APP-START`。没有心跳就是模块没注入，与抓取逻辑无关。
-- 关闭首页的「仅记录 10086 / cmcc 域名」开关再试一次；有些请求会走其他域名。
-- 默认只注入主进程；加固壳的 `:tools` 安全进程始终跳过。需要抓推送 / X5 沙盒进程时，可在首页打开「注入其他进程」。
-- 如果只看到 `ACTIVITY` / `WEBVIEW` 而没有 `HTTP` / `H5`，可能是加固壳使用了自研网络库或系统
-  `HttpURLConnection`。把现有日志发回来，下一版再针对性补 Hook。
-- MIUI / ColorOS / OriginOS 等系统请给本模块和中国移动 App 允许自启动、后台运行、无省电限制，
-  否则模块进程可能被冻结，广播日志会丢失。
-
-## 日志里有什么
+日志保存在 App 私有目录，单文件上限 10 MB，超出后轮转为 `hook.log.1`；导出路径 `Download/CmccHook/cmcc-hook-YYYYMMDD-HHMMSS[-brief|-task|-full].txt`。
 
 | 标签 | 含义 |
 | --- | --- |
-| `APP-START` | 模块注入目标进程成功，含设备、版本、进程名 |
-| `SYSTEM` | 心跳 / 模块状态 |
-| `HTTP` | OkHttp 请求与响应（URL、方法、请求头、请求体、状态码、响应头、响应体） |
-| `HTTP-REQ` | 只抓到请求、响应未被拦截时的兜底记录 |
-| `HTTP-ERROR` | 网络异常 |
-| `WEBVIEW` | WebView / X5 页面加载、跳转、注册的 JS 桥 |
-| `H5` | H5 内 XHR / fetch / sendBeacon 的请求与响应 |
-| `H5-PAGE` | H5 页面快照：URL、标题、Cookie、localStorage、sessionStorage、可点击控件 |
-| `H5-CLICK` | H5 点击的控件文本 / id / class / href |
-| `H5-ROUTE` | 单页应用路由变化 |
-| `H5-ERROR` | H5 脚本错误 |
-| `H5-NOISE` | 被过滤的 H5 埋点噪音汇总，每 60 秒一条（v1.4+） |
-| `COOKIE` | WebView / X5 Cookie 读写快照 |
-| `ACTIVITY` | 原生页面打开与新 Intent（含 extras） |
-| `CRASH` | 未捕获异常：线程、进程、完整堆栈（排查闪退） |
-| `EXIT` | `System.exit` / `Process.killProcess` / `Runtime.halt` 的调用堆栈 |
-| `EXIT-INFO` | 上一次进程退出的系统记录：Java 崩溃 / native 崩溃 / 被信号杀死，附 tombstone |
-| `HOOK` | 晚加载类探测结果（OkHttp / X5 是否补装成功） |
+| `APP-START` / `SYSTEM` | 注入成功、心跳与模块状态 |
+| `HTTP` / `HTTP-REQ` / `HTTP-ERROR` | 原生 OkHttp 请求响应、兜底记录、网络异常 |
+| `H5` / `H5-PAGE` / `H5-CLICK` / `H5-ROUTE` / `H5-ERROR` | H5 XHR / fetch、页面快照、点击、SPA 路由、脚本错误 |
+| `H5-NOISE` | 被过滤的 psie 埋点噪音，每 60 秒汇总一条 |
+| `COOKIE` / `WEBVIEW` / `ACTIVITY` | Cookie 读写、WebView 生命周期、原生页面跳转 |
+| `CRASH` / `EXIT` / `EXIT-INFO` / `HOOK` | 崩溃与退出堆栈、晚加载类补装结果 |
 
-日志保存在 App 私有目录，单文件上限 10 MB，超出后自动轮转为 `hook.log.1`；导出的 txt 是可读全量文本。
-「清空」会删除本机两份日志文件。
+常用排障顺序：
+
+- 没有「最近心跳」/ 没有 `APP-START` → 模块没注入，检查 LSPosed 是否启用、作用域、系统后台限制。
+- 只有 `ACTIVITY` / `WEBVIEW` 没有 `HTTP` / `H5` → 关闭「仅记录 10086 / cmcc 域名」再试；必要时打开「注入其他进程」。
+- 活动「进去了但没做」→ 看结论里的「提交类 N 条」与首屏原文；0 条就是页面数据没就绪或登录态缺失，按日志里的组件字段继续定位。
+- 「详细原始返回」默认关闭（单条截到 8 KB），对接接口 / 核对字段时才打开，否则日志体积会暴涨。
 
 ## 隐私与安全
 
-- 模块不上传任何数据，日志只写入本机；是否导出由你决定。
-- 日志含有登录态（Cookie / Token / Authorization / 手机号），泄露等同于账号被他人使用。
-- 本工具仅用于抓取你自己账号在你自己的设备上的操作数据；自动化操作可能有账号风控风险，请自行评估。
-- 源码和 APK 中不包含任何账号、手机号或 token。
+- 导出的日志**含有 Cookie / Token / Authorization / 手机号**，泄露等同于账号被他人使用，请只发给可信的人，不要上传公开网盘或群聊。
+- 源码与 APK 不含任何账号凭据；模块不提供自动上传日志的功能。
+- 仓库内的 `keystore/cmcc-hook.jks` 是**固定调试签名**，用于让连续构建可以互相覆盖安装。仓库公开后任何人都能取得同一签名，**请勿把它当作正式分发签名**。
+- 自动化操作可能触发运营商账号风控，请自行评估；本项目不绕过验证码与风控校验。
 
 ## 从源码构建
 
-### GitHub Actions
-
-仓库自带 `.github/workflows/build.yml`：
-
-- push 到 `main` 或手动触发 `Build APK`；
-- 自动使用 JDK 17 + Gradle 8.10 + Android SDK 34 构建；
-- 构建产物在 Actions 运行页面的 `cmcc-hook-debug-apk` artifact 中，保留 30 天；
-- 使用仓库内 `keystore/cmcc-hook.jks` 固定签名，连续构建可互相覆盖安装。
-
-### 本地构建
-
-- JDK 17+，Android SDK Platform 34 / Build-Tools 34.0.0
-- 新建 `local.properties`：`sdk.dir=/path/to/android-sdk`
-- 执行：`gradle assembleDebug`
-- 产物：`app/build/outputs/apk/debug/app-debug.apk`
-- Xposed API 82 的编译依赖已放在 `app/libs/XposedBridgeAPI-82.jar`
-
-## 代码结构
-
-```
-app/src/main/java/com/qoder/cmcchook/
-  HookEntry.java         模块入口，按进程安装 Hook
-  UpdateHooks.java       升级弹窗 / 版本检查拦截（11.9.1）
-  ClassLoaderHooks.java  后台探测晚加载的 OkHttp / X5 类并补装 Hook
-  ActivityHooks.java     Application / Activity / Intent
-  CrashHooks.java        未捕获异常捕获（CRASH 堆栈）
-  WebViewHooks.java      WebView / X5 的加载、页面回调、Cookie、H5 噪音过滤
-  JsInjector.java        注入 H5 抓取脚本与 JS Bridge
-  JsBridge.java          把 H5 数据转成日志
-  OkHttpHooks.java       OkHttp 2/3 请求响应（不再 hook 系统 com.android.okhttp）
-  HookLog.java           通过显式广播把日志送到模块 App，按开关截断 detail
-  LogReceiver.java       接收日志并落盘
-  LogStore.java          日志存储 / 轮转 / 读取
-  LogExporter.java       导出到 Download/CmccHook
-  MainActivity.java      三 tab：首页 / 功能 / 日志（含筛选、清空、导出）
-  LogAdapter.java        日志列表与展开详情
-  CookieStore.java       10086 系 Cookie 汇总（OkHttp / WebView 两处截取）
-  TaskNet.java           任务接口的极简 HTTP 客户端（HttpURLConnection）
-  TaskApi.java           qwhdhub 接口封装、SSO 预热、code 校验、设备码
-  SsoLogin.java          用 App 的 JSBridge 取 SSO token，换 QWHD_SESSION_TOKEN
-  SignTask.java          签到有礼：签到 + 累计/连签/组队/月签 + 任务奖励
-  EggTask.java           天天砸金蛋：浏览任务换次数 + 抽奖
-  GooseTask.java         收鹅蛋换好礼：WebView 注入，页面内点按钮
-  PageAuto.java          进活动页自动触发：URL 匹配 + 去重 + WebView 浏览任务
-  TaskRunner.java        任务调度：单活动 / 一键全部 / 进页面触发 / 启动跑 / 幂等
-  TaskReceiver.java      常驻广播接收：模块界面点按钮 / 定时自检广播都在这里落地
-  TaskAlarm.java         模块进程里的定时自检：AlarmManager 唤醒 + 解冻目标 App
-  TaskAlarmReceiver.java 定时广播与开机广播的落点
-  OffscreenWeb.java      离屏 WebView（浏览任务用；鹅蛋用不了，缺登录态）
+```bash
+# JDK 17+ / Android SDK Platform 34 / Build-Tools 34.0.0 / Gradle 8.10
+# local.properties: sdk.dir=/path/to/android-sdk
+gradle assembleDebug      # app/build/outputs/apk/debug/app-debug.apk
+gradle assembleRelease    # app/build/outputs/apk/release/app-release.apk
 ```
 
-`res/layout/` 里 `page_home.xml`、`page_func.xml`、`page_log.xml` 分别是三个 tab 的页面，
-配色走 `values/` + `values-night/` 两套 Material 3 色板，跟随系统深色模式。
+- Xposed API 82 的编译依赖已放在 `app/libs/XposedBridgeAPI-82.jar`（`compileOnly`）。
+- 仓库自带 `.github/workflows/build.yml`：push 到 `main` / `master` 或手动触发即可构建，产物在 Actions 的 `cmcc-hook-debug-apk` artifact，保留 30 天。
+- 主要源码位于 `app/src/main/java/com/cmcchook/`：`HookEntry` 入口、`*Task` 各活动执行逻辑、`TaskRunner` 调度与记账、`WebPage`/`WebSession` 页面上下文、`LogExporter` 导出。
 
-## 版本
+## 相关链接
 
-### v2.4
-- 收鹅蛋换好礼修根因：App 真正打开的是
-  `lyhVue/index.html#/bgIndex?actNo=goose2025&pc=...&pk=...`，
-  `pc`/`pk` 是门户按登录态签发的密文参数，裸地址进去 Vue 根本不渲染（页面文本为空）。
-  现在 `GooseTask` 会把带参地址缓存 24 小时，跑任务时按「当前页 → 缓存地址 → 裸地址」
-  依次尝试，谁渲染出内容就用谁。
-- 注入脚本先等页面渲染（15 秒），再执行动作；白屏不再直接判失败，而是换地址重来一轮。
-  诊断信息（URL、标题、文本长度、节点数、iframe 数）写进任务详情。
-- 页面提示「活动已结束 / 已失效 / 请重新进入」时判定为参数过期，自动清缓存并换地址。
-- 脚本支持同源 iframe：内容嵌在 iframe 里的页面也能找到按钮。
-- 任务日志抬头新增两行：
-  `今日: 签到 ✓　砸蛋 ✗3　鹅蛋 ○` 和 `开关: 自动开 · 签到开 · 砸蛋开 · 鹅蛋开`。
-  只跑了一个活动时，能立刻看出另外两个是已完成、还是失败次数到顶被跳过。
-- 修复首页「今日」永远显示 ○：任务结果写在目标进程的 SharedPreferences 里，
-  模块界面读不到。现在通过 `STATE` 广播同步回模块进程。
+| | |
+| --- | --- |
+| 项目地址 | <https://github.com/fuoins/cmcc-hook> |
+| 交流群组（Telegram） | <https://t.me/yidongqdzs> |
+| 交流群组（QQ） | 群号 **690877742** · <https://qm.qq.com/q/690877742> |
+| 捐赠支持 | <https://zy520.de5.net/juanzeng/> |
 
-### v2.3
-- 新增 `ApiSpy`：抓到的请求按活动归类 —— `API-SIGN` / `API-EGG` / `API-GOOSE` /
-  `API-SSO` / `API-WEB`。日志页「接口」一筛只剩业务请求，极光埋点、广告位、
-  静态资源全部挡掉（一次首页加载 226 条日志里有 84 条是极光埋点）。
-- 新增「只抓业务接口」开关（默认开）：埋点直接在写入前丢掉，日志体积降一个量级。
-- 日志页新增「任务」筛选：只看 `TASK` / `TASK-FAIL` / 心跳，任务过程不再被网络日志淹没。
-- 首页新增今日状态行：`今日：签到 ✓ 砸蛋 ✗ 鹅蛋 ○`，不用翻日志就知道哪个没跑。
-- 任务结果按活动落库（`result_<活动>_<日期>`），日志摘要也改成
-  `过任务 2/3 · 签到 ✓ 砸蛋 ✓ 鹅蛋 ✗`，一眼看出谁失败。
-- 日志条目支持长按复制完整请求/响应，抓包分析时直接发出来。
+模块首页「关于」区里这些条目点击后会用系统的 `ACTION_VIEW` 打开（浏览器或对应 App），不在模块内嵌 WebView。
 
-### v2.2
-- 新增 `TaskAlarm`：定时自检改到模块进程里跑。`AlarmManager.setAndAllowWhileIdle`
-  每 30 分钟唤醒一次，执行 `cmd activity unfreeze --sticky <目标包>` 把中国移动
-  从 cached 组里捞出来，再发 `PING` 广播让它跑一轮。不打开界面、不弹通知。
-  目标进程里的 Handler 定时只作为「进程还活着」时的快速通道。
-- `TaskReceiver` 接 `PING`，并用 `goAsync()` 让广播在任务跑完前保持 pending，
-  避免 onReceive 一返回进程又被冻住、任务做到一半被掐断。
-- 失败按活动拉黑：`attempt_<活动>_<日期>`，单个活动当天满 3 次不再自动重试。
-  以前是一个全局计数，三个活动共用，一个失败三次全体停摆。
-- 修 `finish()` 的完成标记：逗号列表只在 `runList` 里逐个记成功，
-  以前 1/3 成功也会调 `markDone(cmd)` 把三个全标成完成，失败的活动当天再也不重试。
-- 新增 `hostVisible()`：用 `RunningAppProcessInfo.importance` 判断前后台，日志里能看出
-  这次是前台还是后台触发。
-- 登录补一条离屏兜底：把 App 的 `newSdkInterface` 对象重新注入到不挂窗口的 WebView，
-  打开 SSO 登录页让页面自己走 `getUserInfo → appTokenLogin`。冷启动、App 在后台、
-  手上没有任何可用页面时也能换出 `QWHD_SESSION_TOKEN`。
-- 间隔节流：两次自动跑之间至少 8 分钟，多个触发源不会叠加重复跑。
+## 免责声明
 
-### v2.1
-- 新增 `SsoLogin`：在 App 的 WebView 里执行 JS 调 `newSdkInterface.getUserInfo()`，
-  拿手机号和 SSO token，再走 `qwhdsso/appTokenLogin` 换 `QWHD_SESSION_TOKEN`。
-  这是签到 / 砸金蛋能后台跑的前提——纯 HTTP 走 SSO 只会 302 回登录页。
-- `TaskApi.warmUp` 改为走 `SsoLogin`，失败时把「登录页 / sid / 用户信息 / appTokenLogin」
-  每一步写进任务详情，方便定位。
-- 完成标记按单个活动记录（`markDone`），`pendingAuto` 不会再因为一次失败整天重跑整组。
-- 收鹅蛋改用 App 当前 WebView 打开活动页。离屏 WebView 里页面拿不到 `pc`/`pk` 登录参数，
-  渲染出来是空壳，v2.0 的「一个按钮都找不到」就是这么来的。
-- 鹅蛋脚本加页面文本快照，找不到按钮时日志里直接能看到页面上真实文案。
-
-### v2.0
-- 常驻广播 + 30 分钟定时补跑 + 离屏 WebView + onNewIntent 修复。
-
-## 下一阶段
-
-拿到导出的日志后，将补全功能页：自动签到、福利中心一键领取、任务中心批量完成等，
-并用你提供的账号信息验证接口参数与签名逻辑。
+> **本模块仅供学习与技术交流使用，严禁用于任何商业用途。**
+>
+> 1. 本模块为开源项目，代码仅供学习研究，不得用于商业牟利；
+> 2. 禁止以任何形式倒卖、售卖本模块或其衍生版本；
+> 3. 使用本模块产生的一切后果由使用者自行承担，开发者概不负责；
+> 4. 本模块不收集任何用户数据，不联网、不上传，所有操作均在本地完成；
+> 5. 如有侵权，请联系删除。
+>
+> **下载即代表您同意以上声明。**

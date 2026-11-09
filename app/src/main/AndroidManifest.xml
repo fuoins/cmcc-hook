@@ -7,6 +7,11 @@
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- 券核销短信验证码自动读取：静态广播收实时短信，短信库做兜底。
+         两者都是运行时权限，模块界面里会按需申请；不授权就退回手动输入。 -->
+    <uses-permission android:name="android.permission.RECEIVE_SMS" />
+    <uses-permission android:name="android.permission.READ_SMS" />
+
     <queries>
         <package android:name="com.greenpoint.android.mc10086.activity" />
         <package android:name="org.lsposed.manager" />
@@ -51,9 +56,28 @@
             android:enabled="true"
             android:exported="true">
             <intent-filter>
-                <action android:name="com.qoder.cmcchook.action.LOG" />
-                <action android:name="com.qoder.cmcchook.action.HEARTBEAT" />
-                <action android:name="com.qoder.cmcchook.action.STATE" />
+                <action android:name="com.cmcchook.action.LOG" />
+                <action android:name="com.cmcchook.action.HEARTBEAT" />
+                <action android:name="com.cmcchook.action.STATE" />
+                <action android:name="com.cmcchook.action.WELFARE" />
+                <action android:name="com.cmcchook.action.PROBE" />
+                <action android:name="com.cmcchook.action.PROBE_ACT" />
+                <action android:name="com.cmcchook.action.LOGIN_LOST" />
+                <action android:name="com.cmcchook.action.COUPON_LIST" />
+                <action android:name="com.cmcchook.action.COUPON_PROGRESS" />
+                <action android:name="com.cmcchook.action.COUPON_NEED_CODE" />
+                <action android:name="com.cmcchook.action.COUPON_DONE" />
+            </intent-filter>
+        </receiver>
+
+        <!-- SMS_RECEIVED 是系统受保护广播，只有系统电话进程能发，第三方伪造不了。
+             不再额外声明发送方权限：部分 ROM 上它会反过来把正常广播挡掉。 -->
+        <receiver
+            android:name=".SmsReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter android:priority="999">
+                <action android:name="android.provider.Telephony.SMS_RECEIVED" />
             </intent-filter>
         </receiver>
 
@@ -62,7 +86,7 @@
             android:enabled="true"
             android:exported="false">
             <intent-filter>
-                <action android:name="com.qoder.cmcchook.action.ALARM_TICK" />
+                <action android:name="com.cmcchook.action.ALARM_TICK" />
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>

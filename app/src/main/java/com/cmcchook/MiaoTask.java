@@ -1,0 +1,571 @@
+package com.cmcchook;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+/**
+ * 爱购 AI 豆苗养成记（coc3 画布，2026dmycj）。
+ *
+ * <p>页面在「爱购商城」画布里，签到领阳光值、浇水施肥养豆苗都在同一页。
+ * 画布页的请求带 WASM 生成的 wasmParams / phone 风控头，Java 层拼不出来，
+ * 所以这里和 {@link CanvasTask} 一样走「离屏页 + 页面内真实操作」：
+ *
+ * <ol>
+ *   <li>先等页面自己的登录桥走完（cmcc.getUserInfo）；</li>
+ *   <li>读页面上的阳光值，作为执行前的基线；</li>
+ *   <li>点页面上真实的「签到 / 领取 / 浇水 / 施肥 / 收豆」按钮，每条最多点一次；</li>
+ *   <li>复查阳光值和页面文案，并回看 XHR/fetch 是否真有 2xx 回执。</li>
+ * </ol>
+ *
+ * <p>判定只认证据：阳光值变大，或点击后页面确实发出了 2xx 请求。
+ * 只是「点了按钮」不算成功，避免又出现 7 日打卡那种「日志写成功、账号没签到」。
+ */
+final class MiaoTask {
+
+    static final String ACT_MIAO =
+            "https://dev.coc.10086.cn/coc3/canvas/rightsmarket-h5-canvas/online/2026dmycj";
+
+    private MiaoTask() {
+    }
+
+    static TaskRunner.Result run(String url) {
+        StringBuilder detail = new StringBuilder();
+        String entry = (url == null || url.isEmpty()) ? ACT_MIAO : url;
+        detail.append("入口: ").append(brief(entry)).append('\n');
+        WebPage page = WebSession.current();
+        if (page == null || page.raw() == null) {
+            return TaskRunner.Result.fail("豆苗养成记 · 活动页没起来",
+                    detail.toString(),
+                    "离屏 WebView 没能加载活动页。重开一次中国移动 App 再试。");
+        }
+
+        page.eval(MIAO_SCRIPT, 8_000L);
+        String raw = null;
+        long deadline = System.currentTimeMillis() + 95_000L;
+        while (System.currentTimeMillis() < deadline) {
+            String value = page.eval(
+                    "(function(){var v=window.__cmcc_miao;return v?String(v):'';})()", 6_000L);
+            if (value != null && !value.isEmpty()) {
+                raw = value;
+                break;
+            }
+            sleep(600L);
+        }
+        if (raw == null) {
+            return TaskRunner.Result.fail("豆苗养成记 · 页面脚本超时",
+                    detail.append("脚本 95 秒没有回报\n").toString(),
+                    "页面能打开但脚本没回报。把完整日志发我。");
+        }
+
+        JSONObject out;
+        try {
+            out = new JSONObject(raw);
+        } catch (Throwable e) {
+            return TaskRunner.Result.fail("豆苗养成记 · 结果解析失败",
+                    detail.append("回报: ").append(brief(raw)).toString(), "");
+        }
+
+        writeLines(out.optJSONArray("lines"));
+
+        String stage = out.optString("stage", "");
+        if ("no-vue".equals(stage)) {
+            return TaskRunner.Result.fail("豆苗养成记 · 页面组件没挂载",
+                    detail.append("页面没有 Vue 根组件，可能被重定向或还没渲染完\n").toString(),
+                    "在 App 里手动点进一次这个活动，再回来执行任务。");
+        }
+        if ("error".equals(stage)) {
+            return TaskRunner.Result.fail("豆苗养成记 · 脚本异常",
+                    detail.append(out.optString("msg", "")).toString(), "把日志发我。");
+        }
+
+        int sun0 = out.optInt("sun0", -1);
+        int sun1 = out.optInt("sun1", -1);
+        int clickTry = out.optInt("clickTry", 0);
+        int clickOk = out.optInt("clickOk", 0);
+        int netOk = out.optInt("netOk", 0);
+        String text0 = out.optString("text0", "");
+        String text1 = out.optString("text1", "");
+        JSONArray acts = out.optJSONArray("acts");
+
+        detail.append("阳光值: ").append(sun0 < 0 ? "没读到" : String.valueOf(sun0))
+                .append(" → ").append(sun1 < 0 ? "没读到" : String.valueOf(sun1)).append('\n');
+        detail.append("动作: 点了 ").append(clickTry).append(" 个，页面回执 ").append(netOk)
+                .append(" 次\n");
+        if (acts != null && acts.length() > 0) {
+            detail.append("动作明细: ").append(acts.toString()).append('\n');
+        }
+        if (!text0.isEmpty()) {
+            detail.append("执行前: ").append(brief(text0)).append('\n');
+        }
+        if (!text1.isEmpty() && !text1.equals(text0)) {
+            detail.append("执行后: ").append(brief(text1)).append('\n');
+        }
+
+        // 1) 阳光值变多：最硬的证据。
+        if (sun0 >= 0 && sun1 > sun0) {
+            String summary = "豆苗养成记 · 阳光值 +" + (sun1 - sun0) + "（" + sun0 + " → " + sun1 + "）";
+            return TaskRunner.Result.ok(summary, detail.toString(), summary);
+        }
+        // 2) 确实点到了按钮，且页面跟着发出了 2xx 业务请求。
+        //    注意必须同时有 clickTry：否则页面初始化那几条 2xx 会被当成「做成了」。
+        if (netOk > 0 && clickTry > 0) {
+            String summary = "豆苗养成记 · 完成 " + Math.max(clickOk, 1) + " 个动作";
+            return TaskRunner.Result.ok(summary, detail.toString(), summary);
+        }
+        // 3) 点了按钮但页面没反应：判失败，不写成功。
+        if (clickTry > 0) {
+            return TaskRunner.Result.fail("豆苗养成记 · 点了按钮但页面没回执",
+                    detail.toString(),
+                    "页面按钮点了但服务端没响应。把完整日志发我，我按页面真实按钮改。");
+        }
+        // 4) 页面明确写着今天做完了。
+        // v3.48：豆苗页面做完任务后的文案变体很多，以前只认 6 个词，
+        // 明明「今日已完成」还判成「点了按钮但页面没回执」。补齐常见写法。
+        if (text1.contains("今日已签") || text1.contains("今天已签")
+                || text1.contains("已签到") || text1.contains("明天再来")
+                || text1.contains("已领取") || text1.contains("已浇")
+                || text1.contains("今日已完成") || text1.contains("任务已完成")
+                || text1.contains("已全部完成") || text1.contains("已浇过水")
+                || text1.contains("阳光值已满") || text1.contains("今日已领完")
+                || text1.contains("已领完") || text1.contains("明天继续")) {
+            String summary = "豆苗养成记 · 今天已经做过";
+            return TaskRunner.Result.idle(summary, detail.toString(), summary);
+        }
+        String summary = "豆苗养成记 · 页面上没找到可做的按钮";
+        return TaskRunner.Result.idle(summary, detail.toString(),
+                "页面结构和预期不一致。手动进一次豆苗页面看看有哪些按钮，把日志发我。");
+    }
+
+    private static void writeLines(JSONArray lines) {
+        if (lines == null || lines.length() == 0) {
+            return;
+        }
+        StringBuilder chunk = new StringBuilder();
+        int part = 1;
+        for (int i = 0; i < lines.length(); i++) {
+            String one = lines.optString(i, "");
+            if (chunk.length() + one.length() + 1 > 4000) {
+                HookLog.log("MIAO", "豆苗页面执行明细 " + part, chunk.toString());
+                chunk.setLength(0);
+                part++;
+            }
+            chunk.append(one).append('\n');
+        }
+        if (chunk.length() > 0) {
+            HookLog.log("MIAO", "豆苗页面执行明细 " + part, chunk.toString());
+        }
+    }
+
+    private static String brief(String text) {
+        if (text == null) {
+            return "";
+        }
+        String value = text.replace('\n', ' ').trim();
+        return value.length() <= 240 ? value : value.substring(0, 240) + "…";
+    }
+
+    private static void sleep(long ms) {
+        try {
+            Thread.sleep(ms);
+        } catch (InterruptedException ignored) {
+        }
+    }
+
+    private static final String MIAO_SCRIPT = """
+            (function(){
+              var ID='__cmcc_miao';
+              window[ID]='';
+              var L=[], NET=[];
+              function line(s){ L.push(String(s)) }
+              function cut(s,n){ s=String(s==null?'':s); return s.length>n?s.slice(0,n)+'…':s }
+              function isFn(x){ return typeof x==='function' }
+              function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
+              function done(o){ try{ o.lines=L; window[ID]=JSON.stringify(o) }catch(e){ window[ID]='{"stage":"crash"}' } }
+              function btext(){ try{ return (document.body?document.body.innerText:'').replace(/\\s+/g,' ').trim() }catch(e){ return '' } }
+
+              function hookNet(){
+                try{
+                  var op=XMLHttpRequest.prototype.open, se=XMLHttpRequest.prototype.send;
+                  XMLHttpRequest.prototype.open=function(m,u){
+                    try{ this.__q={m:String(m||''),u:String(u||'')} }catch(e){}
+                    return op.apply(this,arguments);
+                  };
+                  XMLHttpRequest.prototype.send=function(){
+                    var x=this;
+                    try{
+                      x.addEventListener('loadend',function(){
+                        try{ NET.push({u:x.__q?x.__q.u:'', s:x.status||0,
+                          b:String(x.responseText||'').slice(0,300)}) }catch(e){}
+                      });
+                    }catch(e){}
+                    return se.apply(this,arguments);
+                  };
+                }catch(e){}
+                try{
+                  var f=window.fetch;
+                  if(isFn(f)){
+                    window.fetch=function(){
+                      var u=''; try{ u=String(arguments[0]&&arguments[0].url||arguments[0]||'') }catch(e){}
+                      return f.apply(this,arguments).then(function(r){
+                        try{ NET.push({u:u,s:r.status||0,b:''}) }catch(e){}
+                        return r;
+                      });
+                    };
+                  }
+                }catch(e){}
+              }
+
+              function ensureSdk(){
+                if(window.cmcc&&isFn(window.cmcc.checkUID)) return 'native';
+                var NAMES=['checkUID','getUserInfo','getLoginInfo','userStatus',
+                  'checkSessionIsvalid','showLogin','getCatchInfo','getLocation',
+                  'permissionIsEnable','showMsgSubscribeDialog','shareMessage','newWebview',
+                  'goNativePage','setTitle','closeWindow','showNavCustomBtn','hiddenShareButton',
+                  'showTitleBarRightIcons','openOtherAPP','copyToClipboard','getIDMPLoginToken',
+                  'getDeviceMultiSimInfo','getNetInfo','getRiskLevel','getStatusBarHeight'];
+                var face=window.cmcc||{}, n=0;
+                function call(o,nm){
+                  o=o||{};
+                  o.businessName=nm;
+                  o.callbackSuccess='callbackSuccess_'+nm;
+                  o.callbackError='callbackError_'+nm;
+                  if(!isFn(o.success)) o.success=function(){};
+                  if(!isFn(o.error)) o.error=function(){};
+                  try{ delete o.success; delete o.error }catch(e){}
+                  if(window.newSdkInterface&&isFn(window.newSdkInterface[nm])){
+                    window.newSdkInterface[nm](JSON.stringify(o));
+                    return true;
+                  }
+                  return false;
+                }
+                for(var i=0;i<NAMES.length;i++){
+                  (function(nm){
+                    if(isFn(face[nm])) return;
+                    face[nm]=function(o){ return call(o,nm) };
+                    n++;
+                  })(NAMES[i]);
+                }
+                window.cmcc=face;
+                if(!window.leadeon) window.leadeon=face;
+                return 'shim+'+n;
+              }
+
+              function visible(e){
+                try{
+                  var r=e.getBoundingClientRect();
+                  if(!r||r.width<2||r.height<2) return false;
+                  var s=getComputedStyle(e);
+                  return s.display!=='none' && s.visibility!=='hidden' && s.opacity!=='0';
+                }catch(x){ return false }
+              }
+              function clickable(e){
+                try{
+                  var tag=(e.tagName||'').toUpperCase();
+                  if(tag==='BUTTON'||tag==='A') return true;
+                  var cls=String(e.className||'')+' '+(e.id||'');
+                  if(/btn|button|click|sign|water|feed|harvest|receive/i.test(cls)) return true;
+                  if(getComputedStyle(e).cursor==='pointer') return true;
+                }catch(x){}
+                return false;
+              }
+
+              // 顶部弹层（签到成功 / 公告 / 奖励到账）会挡住页面，先点掉。
+              function closePop(){
+                var all=document.querySelectorAll('button,div,span,a');
+                var words=['知道了','我知道了','确定','确认','关闭','开心收下','收下'];
+                for(var i=0;i<all.length;i++){
+                  var e=all[i];
+                  if(!visible(e)) continue;
+                  var t=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                  if(!t||t.length>6) continue;
+                  for(var j=0;j<words.length;j++){
+                    if(t!==words[j]) continue;
+                    if(!clickable(e)) continue;
+                    try{ e.click(); line('  关弹层: '+t); return true }catch(x){}
+                  }
+                }
+                return false;
+              }
+
+              // 画布组件的 class 是编辑器生成的（comp-xxx / rights-xxx），
+              // 用 btn/click 白名单筛会一个都点不到 —— 11-07 豆苗「点了 0 个」就是这个原因。
+              // 现在改成沿父链找真正挂点击的元素，找不到就点文本自己（事件会冒泡上去）。
+              function targetOf(e){
+                var cur=e;
+                for(var d=0; d<4 && cur; d++){
+                  try{
+                    var tag=(cur.tagName||'').toUpperCase();
+                    if(tag==='BUTTON'||tag==='A') return cur;
+                    if(getComputedStyle(cur).cursor==='pointer') return cur;
+                    if(/btn|button|click|comp-|item|card/i.test(String(cur.className||''))) return cur;
+                  }catch(x){}
+                  cur=cur.parentElement;
+                }
+                return e;
+              }
+
+              // v3.60：画布组件的点击监听挂在 pointer/touch 上，单发 el.click()
+              // 11-07 只打出「点击: + 10 点击领 <DIV >」，页面一条请求都没发。
+              // 这里补齐指针序列，并记下最后点的是谁，供上层补点。
+              function fire(e){
+                try{
+                  var r=e.getBoundingClientRect();
+                  var cx=r.left+r.width/2, cy=r.top+r.height/2;
+                  var mk=function(){return {bubbles:true,cancelable:true,view:window,
+                                            clientX:cx,clientY:cy}};
+                  var ts=['pointerdown','touchstart','mousedown','pointerup','touchend','mouseup'];
+                  for(var i=0;i<ts.length;i++){
+                    try{
+                      var ev;
+                      if(ts[i].indexOf('pointer')===0) ev=new PointerEvent(ts[i],mk());
+                      else if(ts[i].indexOf('touch')===0) ev=new Event(ts[i],{bubbles:true,cancelable:true});
+                      else ev=new MouseEvent(ts[i],mk());
+                      e.dispatchEvent(ev);
+                    }catch(x){}
+                  }
+                  if(typeof e.click==='function') e.click();
+                  window.__cmcc_lastTap=e;
+                  return true;
+                }catch(x){return false}
+              }
+
+              // v3.93：22:08 日志实证——模块点「+ 10 点击领」文字 DIV 和父层
+              // UL list-ul / DIV list 全无回执（阳光值 0→0）；用户手动点的是
+              // class=sign-box 的整块签到卡，点完阳光值 0→10、「点击领」变「已领」。
+              // 说明点击监听挂在 sign-box 容器上，旧版补点只到 2 层父级够不到它。
+              function ownText(e){
+                var s='';
+                try{
+                  var n=e.firstChild;
+                  while(n){ if(n.nodeType===3) s+=n.nodeValue; n=n.nextSibling }
+                }catch(x){}
+                return String(s||'').replace(/\\s+/g,' ').trim();
+              }
+              function signBoxTarget(box){
+                var all=box.querySelectorAll('*'), best=null, bl=1e9;
+                for(var i=0;i<all.length;i++){
+                  var e=all[i];
+                  if(!visible(e)) continue;
+                  var t=ownText(e);
+                  if(t.indexOf('点击领')<0 || /已领/.test(t)) continue;
+                  if(t.length<bl){ best={e:e,t:t}; bl=t.length }
+                }
+                if(best){
+                  line('  sign-box 命中「点击领」最小元素: <'+best.e.tagName+' '
+                       +cut(String(best.e.className||''),40)+'> '+cut(best.t,30));
+                  return best;
+                }
+                try{
+                  var r=box.getBoundingClientRect();
+                  var cx=r.left+r.width/2, cy=r.top+r.height/2;
+                  var at=document.elementFromPoint(cx,cy);
+                  if(at&&visible(at)){
+                    line('  sign-box 中心命中: <'+at.tagName+' '
+                         +cut(String(at.className||''),40)+'> @'+Math.round(cx)+','+Math.round(cy));
+                    return {e:at,t:'签到卡(sign-box 中心)'};
+                  }
+                }catch(x){}
+                line('  sign-box 用容器本身: <'+box.tagName+' '
+                     +cut(String(box.className||''),40)+'>');
+                return {e:box,t:'签到卡(sign-box 容器)'};
+              }
+              function signBoxTap(words){
+                if(!/点击领|签到|领取/.test(words.join(''))) return null;
+                var boxes=document.querySelectorAll('[class*=sign-box],.sign-box,[class*=signBox]');
+                for(var i=0;i<boxes.length;i++){
+                  var box=boxes[i];
+                  if(!visible(box)) continue;
+                  var bt=(box.innerText||'').replace(/\\s+/g,' ').trim();
+                  if(!/点击领|立即签到|去签到/.test(bt)) continue;
+                  // 已经领过的卡片不重复点（22:08 手动后「点击领」变「已领」）。
+                  if(/已领/.test(bt) && !/点击领/.test(bt)) continue;
+                  line('  sign-box 容器: <'+box.tagName+' '
+                       +cut(String(box.className||''),50)+'> 文本 '+cut(bt,60));
+                  return signBoxTarget(box);
+                }
+                line('  sign-box 未找到：页面无 [class*=sign-box] 容器');
+                return null;
+              }
+
+              // 按文案找页面上的真实按钮。只点一次，不点「已领取/已签到」。
+              function hit(words, max){
+                // v3.93：签到词优先走 sign-box 精确目标（22:08 用户手动实证有效）。
+                var sb=signBoxTap(words);
+                if(sb&&sb.e){
+                  try{
+                    fire(sb.e);
+                    line('  点击(sign-box): '+sb.t+' <'+sb.e.tagName+' '
+                         +cut(String(sb.e.className||''),40)+'>');
+                    return sb.t;
+                  }catch(x){}
+                }
+                var all=document.querySelectorAll('button,a,div,span,i,p');
+                var n=0;
+                for(var i=0;i<all.length && n<max;i++){
+                  var e=all[i];
+                  if(!visible(e)) continue;
+                  var t=(e.innerText||'').replace(/\\s+/g,' ').trim();
+                  if(!t||t.length>14) continue;
+                  if(/已领取|已签到|已打卡|已完成|明天再来|已领/.test(t)) continue;
+                  // 说明文字不是按钮：「每日可签到1次~」「签到奖励记录」这类点上去没反应。
+                  if(/可签到|签到1次|每日|规则|说明|记录|剩余|我的阳光/.test(t)) continue;
+                  var ok=false;
+                  for(var j=0;j<words.length;j++){
+                    if(t.indexOf(words[j])>=0){ ok=true; break }
+                  }
+                  if(!ok) continue;
+                  var el=targetOf(e);
+                  try{
+                    fire(el);
+                    n++;
+                    line('  点击: '+t+' <'+(el.tagName||'')+' '
+                         +cut(String(el.className||''),40)+'>');
+                    return t;
+                  }catch(x){}
+                }
+                return '';
+              }
+
+              function sun(){
+                var t=btext();
+                var m=/阳光值[^0-9]{0,6}(\\d{1,7})/.exec(t);
+                if(m) return parseInt(m[1],10);
+                return -1;
+              }
+
+              (async function(){
+                try{
+                  line('=== 爱购AI豆苗养成记 v3.95 ===');
+                  line('URL: '+cut(location.href,220));
+                  hookNet();
+                  var sdk=ensureSdk();
+                  line('登录桥: '+sdk);
+
+                  var t0='';
+                  var loginWait=0;
+                  for(var w=0;w<40;w++){
+                    t0=btext();
+                    if(t0.length>0 && !/登录中|加载中|校验中|请稍候/.test(t0)) break;
+                    loginWait++;
+                    await wait(500);
+                  }
+                  if(loginWait>0) line('等登录: '+(loginWait*500)+'ms');
+
+                  var root=null;
+                  for(var i=0;i<24;i++){
+                    try{
+                      var el=document.querySelector('#app')||document.querySelector('#root');
+                      root=el&&el.__vue__;
+                      if(!root && el&&el.__vue_app__&&el.__vue_app__._instance) root=el.__vue_app__._instance;
+                    }catch(e){}
+                    if(root) break;
+                    await wait(400);
+                  }
+                  if(!root){
+                    line('没有 Vue 根组件');
+                    done({stage:'no-vue',text0:btext(),text1:btext()});
+                    return;
+                  }
+
+                  await wait(1200);
+                  closePop();
+                  await wait(600);
+
+                  var sun0=sun();
+                  var t00=btext();
+                  line('阳光值基线: '+(sun0<0?'没读到':sun0));
+                  line('首屏: '+cut(t00,300));
+
+                  var acts=[], tryN=0, okN=0, netMark=0;
+                  // 顺序按「先签到、再领取、后养成」排：签到是最稳的日常。
+                  var plan=[
+                    // 先只认「动作词」。「签到」单独出现时多半是卡片标题，
+                    // 11-07 就点在了「每日可签到1次~」这行说明文字上，白点三次没回执。
+                    {w:['点击领','立即领取','立即签到'], n:1},
+                    {w:['一键领取','领取奖励'], n:2},
+                    {w:['浇水','浇水壶','施肥','喂食'], n:2},
+                    {w:['收豆','收取','收获'], n:1}
+                  ];
+                  for(var p=0;p<plan.length;p++){
+                    for(var k=0;k<plan[p].n;k++){
+                      netMark=NET.length;
+                      var got=hit(plan[p].w,1);
+                      if(!got) break;
+                      tryN++;
+                      acts.push(got);
+                      await wait(1400);
+                      closePop();
+                      await wait(400);
+                      if(NET.length>netMark){
+                        var hit2=false;
+                        for(var z=netMark;z<NET.length;z++){
+                          if(NET[z].s>=200&&NET[z].s<400) hit2=true;
+                        }
+                        if(hit2) okN++;
+                      }else{
+                        // v3.93：监听挂在更外层 sign-box 卡片上，补点扩到 5 层父节点。
+                        var up=window.__cmcc_lastTap;
+                        for(var d=1;d<=5&&up;d++){
+                          up=up.parentElement;
+                          if(!up) break;
+                          try{ fire(up); line('  补点父层 '+d+' <'+(up.tagName||'')+' '
+                              +cut(String(up.className||''),30)+'>'); }catch(x){}
+                          await wait(1100);
+                          if(NET.length>netMark) break;
+                        }
+                        for(var z3=netMark;z3<NET.length;z3++){
+                          if(NET[z3].s>=200&&NET[z3].s<400){ okN++; break }
+                        }
+                      }
+                    }
+                  }
+
+                  // 精确词一个都没命中，退回宽泛词再试一次：
+                  // 有些版本按钮就叫「签到」，不能因为怕点错标题就整个放弃。
+                  if(tryN===0){
+                    netMark=NET.length;
+                    var fb=hit(['签到','打卡','领取'],1);
+                    if(fb){
+                      tryN++;
+                      acts.push(fb);
+                      await wait(1500);
+                      closePop();
+                      await wait(400);
+                      for(var z2=netMark;z2<NET.length;z2++){
+                        if(NET[z2].s>=200&&NET[z2].s<400){ okN++; break }
+                      }
+                    }
+                  }
+
+                  var sun1=sun();
+                  var t11=btext();
+                  // 只认「点击之后」新增的 2xx，页面开屏那几条不算。
+                  var netOk=okN;
+                  line('动作: 点了 '+tryN+' 个，点击后有回执 '+okN+' 次');
+                  // 一个都没点到时，把页面上真实存在的短文案打出来：
+                  // 下一版直接照这些名字补关键词，不用再靠猜。
+                  if(tryN===0){
+                    var allEl=document.querySelectorAll('button,a,div,span,i,p');
+                    var seenTxt={}, cntTxt=0;
+                    for(var q=0;q<allEl.length && cntTxt<26;q++){
+                      var ee=allEl[q];
+                      if(!visible(ee)) continue;
+                      var tt=(ee.innerText||'').replace(/\\s+/g,' ').trim();
+                      if(!tt||tt.length>12) continue;
+                      if(ee.querySelector('button,a,span,i')) continue;
+                      var kk=tt+'|'+String(ee.className||'');
+                      if(seenTxt[kk]) continue;
+                      seenTxt[kk]=1; cntTxt++;
+                      line('  可见文本: '+tt+' <'+cut(String(ee.className||''),40)+'>');
+                    }
+                  }
+                  done({stage:'done',sun0:sun0,sun1:sun1,text0:t00,text1:t11,
+                        clickTry:tryN,clickOk:okN,netOk:netOk,acts:acts,
+                        net:NET.slice(0,10)});
+                }catch(err){
+                  done({stage:'error',msg:String((err&&err.stack)||err)});
+                }
+              })();
+            })()
+            """;
+}

@@ -3,18 +3,37 @@
     <style name="Theme.CmccHook" parent="Theme.MaterialComponents.DayNight.NoActionBar">
         <item name="colorPrimary">@color/primary</item>
         <item name="colorPrimaryVariant">@color/primary_dark</item>
-        <item name="colorOnPrimary">@android:color/white</item>
+        <item name="colorOnPrimary">@color/on_primary</item>
         <item name="colorSecondary">@color/primary</item>
-        <item name="colorOnSecondary">@android:color/white</item>
+        <item name="colorOnSecondary">@color/on_primary</item>
         <item name="colorSurface">@color/surface</item>
         <item name="android:colorBackground">@color/background</item>
-        <item name="android:statusBarColor">@color/background</item>
-        <item name="android:navigationBarColor">@color/background</item>
-        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:statusBarColor">@color/brand_start</item>
+        <item name="android:navigationBarColor">@color/surface</item>
+        <item name="android:windowLightStatusBar">false</item>
         <item name="android:windowLightNavigationBar">true</item>
         <item name="android:windowBackground">@color/background</item>
         <item name="android:textColorPrimary">@color/text_primary</item>
         <item name="android:textColorSecondary">@color/text_secondary</item>
+    </style>
+
+    <!-- 顶部渐变 header -->
+    <style name="HeaderTitle">
+        <item name="android:textSize">24sp</item>
+        <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textColor">@color/header_text</item>
+        <item name="android:letterSpacing">0.01</item>
+    </style>
+
+    <style name="HeaderSub">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/header_text_dim</item>
+        <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="HeaderStatus">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/header_text</item>
     </style>
 
     <style name="CardTitle">
@@ -23,15 +42,15 @@
         <item name="android:textColor">@color/text_primary</item>
     </style>
 
-    <!-- 分组标题：小黄鱼同款 14sp / primary / medium -->
     <style name="SectionTitle">
-        <item name="android:textSize">14sp</item>
+        <item name="android:textSize">13sp</item>
         <item name="android:fontFamily">sans-serif-medium</item>
+        <item name="android:textStyle">bold</item>
         <item name="android:textColor">@color/primary</item>
         <item name="android:paddingStart">16dp</item>
         <item name="android:paddingEnd">16dp</item>
-        <item name="android:paddingTop">18dp</item>
-        <item name="android:paddingBottom">8dp</item>
+        <item name="android:paddingTop">20dp</item>
+        <item name="android:paddingBottom">9dp</item>
     </style>
 
     <style name="RowTitle">
@@ -44,13 +63,19 @@
         <item name="android:textSize">12sp</item>
         <item name="android:textColor">@color/text_secondary</item>
         <item name="android:lineSpacingExtra">2dp</item>
-        <item name="android:paddingTop">2dp</item>
+        <item name="android:paddingTop">3dp</item>
     </style>
 
     <style name="Caption">
         <item name="android:textSize">12sp</item>
         <item name="android:textColor">@color/text_secondary</item>
         <item name="android:lineSpacingExtra">2dp</item>
+    </style>
+
+    <style name="DisclaimerText">
+        <item name="android:textSize">12sp</item>
+        <item name="android:textColor">@color/text_secondary</item>
+        <item name="android:lineSpacingExtra">4dp</item>
     </style>
 
     <style name="CardBox">
