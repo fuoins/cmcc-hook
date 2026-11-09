@@ -25,6 +25,10 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_COUPON_NEED_CODE = "com.cmcchook.action.COUPON_NEED_CODE";
     /** 一批跑完。 */
     static final String ACTION_COUPON_DONE = "com.cmcchook.action.COUPON_DONE";
+    /** v4.0 目标进程离屏读完官方余量页，把整份结果 JSON 发回来。 */
+    static final String ACTION_FLOW_DATA = "com.cmcchook.action.FLOW_DATA";
+    /** v4.0 电话进程框架层短信通道的安装诊断（回答「还得加东西吗」）。 */
+    static final String ACTION_SMS_DIAG = "com.cmcchook.action.SMS_DIAG";
 
     /** 优惠券页开着时，收到广播立刻刷新；关着就只落盘。 */
     interface CouponWatcher {
@@ -35,6 +39,17 @@ public final class LogReceiver extends BroadcastReceiver {
 
     static void setCouponWatcher(CouponWatcher watcher) {
         couponWatcher = watcher;
+    }
+
+    /** 流量页开着时，收到数据立刻重画；关着只落盘。 */
+    interface FlowWatcher {
+        void onFlow(String action, Intent intent);
+    }
+
+    private static volatile FlowWatcher flowWatcher;
+
+    static void setFlowWatcher(FlowWatcher watcher) {
+        flowWatcher = watcher;
     }
 
     @Override
@@ -70,6 +85,10 @@ public final class LogReceiver extends BroadcastReceiver {
         } else if (ACTION_COUPON_DONE.equals(action)) {
             SmsCode.onDone(context);
             notifyCoupon(action, intent);
+        } else if (ACTION_FLOW_DATA.equals(action)) {
+            handleFlowData(context, intent);
+        } else if (ACTION_SMS_DIAG.equals(action)) {
+            handleSmsDiag(context, intent);
         }
     }
 
@@ -109,6 +128,45 @@ public final class LogReceiver extends BroadcastReceiver {
                 watcher.onCoupon(action, intent);
             } catch (Throwable ignored) {
             }
+        }
+    }
+
+    /** v4.0 流量结果：按账号落盘 + 通知流量页重画。 */
+    private void handleFlowData(Context context, Intent intent) {
+        // 数据必须写进「产生它的那个账号」的命名空间，换号后不串数据。
+        AppPrefs.setAccount(context, intent.getStringExtra("uid"),
+                intent.getStringExtra("phone"));
+        try {
+            FlowStore.save(context, intent.getStringExtra("json"));
+        } catch (Throwable ignored) {
+        }
+        FlowWatcher watcher = flowWatcher;
+        if (watcher != null) {
+            try {
+                watcher.onFlow(ACTION_FLOW_DATA, intent);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /**
+     * v4.0 电话进程框架层短信通道安装诊断。
+     *
+     * <p>之前这些状态只在 LSPosed 的 XposedBridge.log 里，模块自己的完整日志一行
+     * 都没有 —— 用户说「不行」时根本无法判断模块到底有没有被注入电话进程、
+     * InboundSmsHandler 找没找到、hook 到几个方法。这条广播把它们写进日志页，
+     * 下次导日志就能一眼定位，不用再猜「是不是还得加东西」。
+     */
+    private void handleSmsDiag(Context context, Intent intent) {
+        String summary = intent.getStringExtra("summary");
+        String detail = intent.getStringExtra("detail");
+        try {
+            LogStore.append(context, new LogEntry(System.currentTimeMillis(),
+                    "SMSDIAG",
+                    summary == null || summary.isEmpty()
+                            ? "框架层短信通道安装诊断" : summary,
+                    detail == null ? "" : detail));
+        } catch (Throwable ignored) {
         }
     }
 

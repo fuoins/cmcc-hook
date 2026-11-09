@@ -1,6 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string-array name="xposed_scope">
+        <!-- 主作用域：中国移动 App。任务、券核销、离屏页面都跑在这个进程里。 -->
         <item>com.greenpoint.android.mc10086.activity</item>
+        <!-- 框架层短信通道：对齐 XposedSmsCode，只 hook 电话服务进程里的
+             com.android.internal.telephony.InboundSmsHandler。
+             小米 / HyperOS 的「电话服务」真实包名就是 com.android.phone
+             （见 HyperCeiler 官方作用域清单；短信 App 是 com.android.mms）。
+             之前这里写过的 com.xiaomi.phone 是臆造的包名，设备上不存在，
+             按它勾选等于没勾 —— v4.0.4 删除。
+             注意：这是系统应用，LSPosed 默认隐藏，要先在 LSPosed 设置里打开
+             「显示系统应用」才能看到并勾选，勾完必须重启手机。 -->
+        <item>com.android.phone</item>
     </string-array>
 </resources>

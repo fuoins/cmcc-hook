@@ -74,6 +74,8 @@ final class TaskRunner {
     static final String CMD_DIY = "diy:";
     /** 打开一个页面：open:https://... —— 只开页面，不算任务。 */
     static final String CMD_OPEN = "open:";
+    /** v4.0 流量余量：离屏只读官方余量页，不进任务队列、不记今日状态。 */
+    static final String CMD_FLOW = "flow";
 
     private static final String STATE_FILE = "cmcc_hook_tasks";
     private static final String KEY_HANDLED_SEQ = "handled_seq";

@@ -182,6 +182,26 @@ final class TaskReceiver {
                         }, "cmcc-coupon").start();
                         return;
                     }
+                    // v4.0 流量余量：离屏只读官方余量页，结果用广播回模块 UI。
+                    // 和券扫描一样不进任务队列（只读、不记今日状态、不占用「过任务」串行池）。
+                    if (TaskRunner.CMD_FLOW.equals(cmd)) {
+                        ack(context, cmd);
+                        final BroadcastReceiver.PendingResult flowPending = goAsync();
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    FlowTask.fetch();
+                                } finally {
+                                    try {
+                                        flowPending.finish();
+                                    } catch (Throwable ignored) {
+                                    }
+                                }
+                            }
+                        }, "cmcc-flow").start();
+                        return;
+                    }
                     ack(context, cmd);
                     // goAsync 让广播在任务跑完前保持 pending，避免 onReceive 一返回
                     // 进程又被丢回 cached 组、跑到一半被冻住。

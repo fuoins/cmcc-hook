@@ -7,6 +7,10 @@
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
+    <!-- v4.0.3：消耗流量测速 + 远程 flow.json 配置 + IP 查询都在模块 App 进程联网。
+         这些与 Xposed hook 无关，是 flow-assistant 搬过来的独立原生功能。 -->
+    <uses-permission android:name="android.permission.INTERNET" />
+
     <!-- 券核销短信验证码自动读取：静态广播收实时短信，短信库做兜底。
          两者都是运行时权限，模块界面里会按需申请；不授权就退回手动输入。 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
@@ -15,14 +19,26 @@
     <queries>
         <package android:name="com.greenpoint.android.mc10086.activity" />
         <package android:name="org.lsposed.manager" />
+        <!-- 关于页 QQ 群直接唤起群资料卡（同小黄鱼 XHY 的做法）。
+             Android 11(API 30) 起有包可见性限制：不在这里声明，setPackage() 之后
+             startActivity 会直接抛 ActivityNotFoundException —— 明明装了 QQ 也会被判成没装。 -->
+        <package android:name="com.tencent.mobileqq" />
+        <package android:name="com.tencent.tim" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <data android:scheme="mqqapi" />
+        </intent>
     </queries>
 
+    <!-- v4.0.3：flow.json 里部分咪咕测速源是 http 明文，Android 9+ 默认禁明文，
+         这里按 flow-assistant 的配置放开，否则这些源连不上（其它功能不受影响）。 -->
     <application
         android:allowBackup="false"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
         android:theme="@style/Theme.CmccHook">
 
         <meta-data
@@ -67,6 +83,9 @@
                 <action android:name="com.cmcchook.action.COUPON_PROGRESS" />
                 <action android:name="com.cmcchook.action.COUPON_NEED_CODE" />
                 <action android:name="com.cmcchook.action.COUPON_DONE" />
+                <!-- v4.0 流量余量结果 + 电话进程框架层短信通道安装诊断 -->
+                <action android:name="com.cmcchook.action.FLOW_DATA" />
+                <action android:name="com.cmcchook.action.SMS_DIAG" />
             </intent-filter>
         </receiver>
 
@@ -78,6 +97,18 @@
             android:exported="true">
             <intent-filter android:priority="999">
                 <action android:name="android.provider.Telephony.SMS_RECEIVED" />
+            </intent-filter>
+        </receiver>
+
+        <!-- v3.99.1：系统电话进程 hook 到短信后，用显式广播把正文送回模块 App。
+             小米上验证码短信不向第三方广播、短信库也读不到，这条通道不依赖权限。
+             只接收正文，不拦截短信、不 abortBroadcast。 -->
+        <receiver
+            android:name=".PhoneSmsReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.cmcchook.action.PHONE_SMS_BODY" />
             </intent-filter>
         </receiver>
 

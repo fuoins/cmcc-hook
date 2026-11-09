@@ -12,7 +12,17 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 public final class HookEntry implements IXposedHookLoadPackage {
     @Override
     public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
-        if (lpparam == null || !HookLog.TARGET_PACKAGE.equals(lpparam.packageName)) {
+        if (lpparam == null) {
+            return;
+        }
+        // v3.99.1：电话进程是框架层读短信的入口 —— 小米上绕开短信权限 / 自启动 /
+        // 验证码保护的管控。必须放在最前面且立刻 return：电话进程里不能碰
+        // HookPrefs / HookLog / LogStore 这些模块 App 的私有数据，也不能装中国移动 App 的 hook。
+        if (PhoneSmsReceiver.isPhonePackage(lpparam.packageName)) {
+            PhoneSmsHook.install(lpparam);
+            return;
+        }
+        if (!HookLog.TARGET_PACKAGE.equals(lpparam.packageName)) {
             return;
         }
         HookLog.init(lpparam);

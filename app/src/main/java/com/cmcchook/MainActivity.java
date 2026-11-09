@@ -33,6 +33,8 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 
+import org.json.JSONObject;
+
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -71,6 +73,17 @@ public final class MainActivity extends AppCompatActivity {
     private View pageFunc;
     private View pageLog;
     private View pageCoupon;
+    /** v4.0 增强容器里的两个子页 + 底部一行子导航。 */
+    private View pageFlow;
+    private View pageCouponBody;
+    private TextView subFlow;
+    private TextView subCoupon;
+    private TextView flowNotify;
+    private boolean flowTab = true;       // 当前子页：true=流量，false=优惠券
+    private boolean flowLoading = false;  // 离屏读取进行中
+    private long flowAutoAt = 0L;         // 上次「进页自动查询」时间，做节流防抖
+    private static final long FLOW_AUTO_GAP_MS = 60_000L;   // 60s 内不重复自动查
+    private static final long FLOW_FRESH_MS = 10 * 60_000L; // 缓存 10 分钟内视为新鲜
     private TextView pageTitle;
     private TextView statusText;
     private TextView accountText;
@@ -169,6 +182,19 @@ public final class MainActivity extends AppCompatActivity {
         }
     };
 
+    /** v4.0 流量刷新超时兜底：50 秒没收到结果就解锁，别让「正在读取」一直挂着。 */
+    private final Runnable flowTimeout = new Runnable() {
+        @Override
+        public void run() {
+            if (flowLoading) {
+                flowLoading = false;
+                if (flowNotify != null) {
+                    flowNotify.setText("读取超时：没收到数据。请确认中国移动 App 已打开过、模块已注入，再点「刷新」重试。");
+                }
+            }
+        }
+    };
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -227,8 +253,7 @@ public final class MainActivity extends AppCompatActivity {
                 v -> openExternalLink(getString(R.string.about_donate_url)));
         findViewById(R.id.btnGroup).setOnClickListener(
                 v -> openExternalLink(getString(R.string.about_group_url)));
-        findViewById(R.id.btnQq).setOnClickListener(
-                v -> openExternalLink(getString(R.string.about_qq_url)));
+        findViewById(R.id.btnQq).setOnClickListener(v -> openQQGroup());
         findViewById(R.id.btnProject).setOnClickListener(
                 v -> openExternalLink(getString(R.string.about_project_url)));
 
@@ -250,6 +275,12 @@ public final class MainActivity extends AppCompatActivity {
         btnCouponUseAll.setOnClickListener(v -> couponUse(true));
         btnCouponUse.setOnClickListener(v -> couponUse(false));
         btnCouponOpen.setOnClickListener(v -> couponOpenCenter());
+        // v4.0.4：小米 / HyperOS 的「验证码安全保护」是系统开关，模块不能代改，
+        // 只能把自检步骤摆到券页。点入口弹说明，可一键把说明写进日志页。
+        TextView smsHelp = findViewById(R.id.smsHelpEntry);
+        if (smsHelp != null) {
+            smsHelp.setOnClickListener(v -> showSmsHelp());
+        }
         cbCouponSort = findViewById(R.id.cbCouponSort);
         cbCouponHide = findViewById(R.id.cbCouponHide);
         if (cbCouponSort != null) {
@@ -266,6 +297,24 @@ public final class MainActivity extends AppCompatActivity {
                 buildCoupon();
             });
         }
+
+        // v4.0 增强页：底栏「优惠券」→「增强」，页内底部一行子导航（流量 / 优惠券）。
+        pageFlow = findViewById(R.id.pageFlow);
+        pageCouponBody = findViewById(R.id.pageCouponBody);
+        subFlow = findViewById(R.id.subFlow);
+        subCoupon = findViewById(R.id.subCoupon);
+        flowNotify = findViewById(R.id.flowNotify);
+        if (subFlow != null) {
+            subFlow.setOnClickListener(v -> selectFlowSub(true));
+        }
+        if (subCoupon != null) {
+            subCoupon.setOnClickListener(v -> selectFlowSub(false));
+        }
+        View btnFlowRefresh = findViewById(R.id.btnFlowRefresh);
+        if (btnFlowRefresh != null) {
+            btnFlowRefresh.setOnClickListener(v -> flowRefresh());
+        }
+        selectFlowSub(true); // 默认落在流量子页
 
         bindSwitch(R.id.switchApiOnly, AppPrefs.KEY_API_ONLY);
         bindSwitch(R.id.switchH5, AppPrefs.KEY_CAPTURE_H5);
@@ -295,6 +344,7 @@ public final class MainActivity extends AppCompatActivity {
 
         setupLogPage();
         LogReceiver.setCouponWatcher(this::onCouponEvent);
+        LogReceiver.setFlowWatcher(this::onFlowEvent);
         selectTab(TAB_HOME);
         // 短信权限只申请一次，用户拒绝也不阻塞其它功能。
         ensureSmsPermission(false);
@@ -312,6 +362,11 @@ public final class MainActivity extends AppCompatActivity {
         if (tab == TAB_LOG) {
             refreshLogs(true, false);
         }
+        // v4.0.2：从中国移动 App 切回模块、当前正停在「增强·流量」页时，
+        // 顺手自动查一次（缓存新鲜/节流会挡住重复查询）。
+        if (tab == TAB_COUPON && flowTab) {
+            maybeAutoFlow();
+        }
     }
 
     @Override
@@ -327,6 +382,10 @@ public final class MainActivity extends AppCompatActivity {
         handler.removeCallbacks(logTick);
         worker.shutdownNow();
         LogReceiver.setCouponWatcher(null);
+        LogReceiver.setFlowWatcher(null);
+        handler.removeCallbacks(flowTimeout);
+        // v4.0.3：停掉消耗测速的下载线程与计时器，避免退出后后台继续偷跑流量。
+        FlowAssist.stopAll();
         dismissCodeDialog();
         super.onDestroy();
     }
@@ -350,6 +409,12 @@ public final class MainActivity extends AppCompatActivity {
         }
         if (target == TAB_COUPON) {
             buildCoupon();
+            if (flowTab && pageFlow != null) {
+                FlowView.render(this, pageFlow);
+                // v4.0.2：进「增强·流量」页自动一键离屏查询，不用手动点按钮、
+                // 更不用手动进中国移动 App 的余量查询页。带节流，缓存新鲜就跳过。
+                maybeAutoFlow();
+            }
         }
         if (target == TAB_LOG) {
             refreshLogs(true, false);
@@ -1446,13 +1511,191 @@ public final class MainActivity extends AppCompatActivity {
         });
     }
 
+    // ---------------------------------------------------------------- v4.0 增强页 · 流量
+
+    /** 切换增强容器里的子页（流量 / 优惠券）。 */
+    private void selectFlowSub(boolean showFlow) {
+        flowTab = showFlow;
+        if (pageFlow != null) {
+            pageFlow.setVisibility(showFlow ? View.VISIBLE : View.GONE);
+        }
+        if (pageCouponBody != null) {
+            pageCouponBody.setVisibility(showFlow ? View.GONE : View.VISIBLE);
+        }
+        int selColor = ContextCompat.getColor(this, R.color.on_primary);
+        int dimColor = ContextCompat.getColor(this, R.color.text_primary);
+        // v4.0.1：必须 setSelected —— bg_nav_item 的蓝色高亮底是 state_selected 态，
+        // 旧版只 setTextColor 没 setSelected，选中项一直用白色字(on_primary)却落在
+        // 透明/白色底上 → 浅色模式下白字白底看不清。补上与主导航 paintNav 一致的处理。
+        // 未选中项改用 text_primary（高对比主文字色），浅色/深色底上都清楚。
+        if (subFlow != null) {
+            subFlow.setSelected(showFlow);
+            subFlow.setTextColor(showFlow ? selColor : dimColor);
+            subFlow.setTypeface(Typeface.create(
+                    showFlow ? "sans-serif-medium" : "sans-serif", Typeface.NORMAL));
+        }
+        if (subCoupon != null) {
+            subCoupon.setSelected(!showFlow);
+            subCoupon.setTextColor(showFlow ? dimColor : selColor);
+            subCoupon.setTypeface(Typeface.create(
+                    showFlow ? "sans-serif" : "sans-serif-medium", Typeface.NORMAL));
+        }
+        if (showFlow && pageFlow != null) {
+            FlowView.render(this, pageFlow);
+            // v4.0.2：从「优惠券」子页切回「流量」时也可自动查询（带节流）。
+            // maybeAutoFlow 内有 tab==TAB_COUPON 守卫，onCreate 里 tab 还是 TAB_HOME，
+            // 那次初始化渲染不会误触发离屏查询。
+            if (tab == TAB_COUPON) {
+                maybeAutoFlow();
+            }
+        }
+    }
+
+    /** 点「一键查询」：发 flow 命令让目标进程离屏读首页余量缓存，结果由 FlowWatcher 回来。 */
+    private void flowRefresh() {
+        if (flowLoading) {
+            Toast.makeText(this, "正在离屏读取，稍候…", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        boolean alive = System.currentTimeMillis()
+                - AppPrefs.getLastHeartbeat(this) < 90_000L;
+        if (!alive) {
+            // 目标进程没起来，广播没人收；离屏读页面还要复用 App 现成的登录态 Cookie。
+            if (flowNotify != null) {
+                flowNotify.setText("中国移动 App 没在运行：请先打开一次中国移动 App（让登录态就绪），再点「一键查询」。");
+            }
+            Toast.makeText(this, "请先打开一次中国移动 App 再查询流量", Toast.LENGTH_LONG).show();
+            return;
+        }
+        flowAutoAt = System.currentTimeMillis();
+        flowLoading = true;
+        if (flowNotify != null) {
+            flowNotify.setText(R.string.flow_refreshing);
+        }
+        handler.removeCallbacks(flowTimeout);
+        handler.postDelayed(flowTimeout, 50_000L);
+        if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+            handler.removeCallbacks(flowTimeout);
+            flowLoading = false;
+            if (flowNotify != null) {
+                flowNotify.setText("指令发送失败，请重试。");
+            }
+        }
+    }
+
+    /**
+     * v4.0.2 进「增强·流量」页自动一键查询（静默）：这是「一键查询、离屏、不用手动
+     * 点进流量页」的关键。满足下列任一条件就跳过，避免每次切页都重开离屏 WebView：
+     * <ul>
+     *   <li>正在查询中 / 目标进程没在线（广播没人收，白跑一趟）；</li>
+     *   <li>距上次自动查询不到 {@link #FLOW_AUTO_GAP_MS}（节流防抖）；</li>
+     *   <li>本地缓存是 {@code ready}、有数据、且在 {@link #FLOW_FRESH_MS} 内（直接用缓存）。</li>
+     * </ul>
+     * 静默模式不弹 Toast、不改状态行为「请先打开 App」—— 用户没主动触发时不打扰。
+     */
+    private void maybeAutoFlow() {
+        if (flowLoading || !flowTab || pageFlow == null || tab != TAB_COUPON) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - flowAutoAt < FLOW_AUTO_GAP_MS) {
+            return;
+        }
+        // 已有新鲜、成功的缓存就直接展示，不重复离屏读。
+        try {
+            String cached = FlowStore.json(this);
+            if (!cached.isEmpty()) {
+                JSONObject o = new JSONObject(cached);
+                boolean ready = "ready".equals(o.optString("state", ""))
+                        && o.optJSONArray("items") != null
+                        && o.optJSONArray("items").length() > 0;
+                if (ready && now - FlowStore.at(this) < FLOW_FRESH_MS) {
+                    return;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        boolean alive = now - AppPrefs.getLastHeartbeat(this) < 90_000L;
+        if (!alive) {
+            return; // 目标没在线，静默跳过；用户手动点「一键查询」才有明确提示
+        }
+        flowAutoAt = now;
+        flowLoading = true;
+        if (flowNotify != null) {
+            flowNotify.setText(R.string.flow_refreshing);
+        }
+        handler.removeCallbacks(flowTimeout);
+        handler.postDelayed(flowTimeout, 50_000L);
+        if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+            handler.removeCallbacks(flowTimeout);
+            flowLoading = false;
+            // 静默：指令发不出去也不打扰用户，等下次进页重试
+        }
+    }
+
+    /** 流量结果广播回来：解锁 + 重画流量页（数据已由 LogReceiver 落盘）。 */
+    private void onFlowEvent(String action, Intent intent) {
+        runOnUiThread(() -> {
+            if (LogReceiver.ACTION_FLOW_DATA.equals(action)) {
+                handler.removeCallbacks(flowTimeout);
+                flowLoading = false;
+                if (pageFlow != null) {
+                    FlowView.render(this, pageFlow);
+                }
+            }
+        });
+    }
+
     private final Runnable showCodeDialogRunnable = this::showCodeDialog;
+
+    // ---------------------------------------------------- v4.0.4 小米短信自检引导
+
+    /**
+     * 券页「小米读不到验证码」入口。
+     *
+     * <p>小米的「验证码安全保护」是系统级开关，模块不代改、也不该代改；
+     * 把 XposedSmsCode 的原理和用户在系统上必须做的几步摆清楚，
+     * 并提供「写入诊断日志」，让导出的完整日志能自证哪一步没落地。
+     */
+    private void showSmsHelp() {
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.sms_help_title)
+                .setMessage(R.string.sms_help_message)
+                .setNegativeButton(R.string.sms_help_close, null)
+                .setPositiveButton(R.string.sms_help_log, (d, w) -> {
+                    logSmsDiag(getString(R.string.sms_help_title),
+                            getString(R.string.sms_help_message));
+                    Toast.makeText(this, R.string.sms_help_logged, Toast.LENGTH_SHORT).show();
+                })
+                .show();
+    }
+
+    /** 把短信自检说明写进模块日志页（导出完整日志后可逐条核对）。 */
+    private void logSmsDiag(String summary, String detail) {
+        try {
+            LogStore.append(this, new LogEntry(System.currentTimeMillis(),
+                    "SMSDIAG", summary, detail));
+        } catch (Throwable ignored) {
+        }
+    }
 
     /** 兜底：自动读码没成功时，仍可手动输入 6 位验证码。 */
     private void showCodeDialog() {
         if (!couponNeedingCode || isFinishing() || isDestroyed()) {
             return;
         }
+        // v4.0.4：30 秒没自动填码 = 本轮三条短信通道都没读到。
+        // 写一条可自证的诊断，把小米必做的系统开关带出来，不再让用户盲猜。
+        logSmsDiag(getString(R.string.sms_diag_timeout_title),
+                "券核销已发出短信验证码，但 30 秒内模块没有自动读到 ——\n"
+                        + "三条通道（模块静态 SMS_RECEIVED 广播 / 短信库兜底 / 被注入进程转发）"
+                        + "均未投递成功。\n\n"
+                        + getString(R.string.sms_help_message)
+                        + "\n\n────────────────────────\n"
+                        + "核对方法：导出完整日志，搜 [SMSDIAG]（框架层通道是否被注入电话进程）、\n"
+                        + "[SMSCODE]（有没有「短信到达」和「自动读到验证码」）；\n"
+                        + "一条都没有 → 通道没装好或系统开关没关；\n"
+                        + "有「短信到达」却标「非兑换类」→ 短信文案变了，按真实正文调白名单。");
         dismissCodeDialog();
         EditText input = new EditText(this);
         input.setHint(R.string.coupon_code_hint);
@@ -1641,7 +1884,44 @@ public final class MainActivity extends AppCompatActivity {
         return "中国移动" + suffix;
     }
 
-    /** 关于页三个链接一律走系统 ACTION_VIEW：交给浏览器（或对应 App）打开，不在模块内开 WebView。 */
+    /**
+     * 关于页 QQ 群：打开 QQ 群资料页（到那儿用户自己点「加入」）。
+     * 实现照搬小黄鱼 XHY（gitee.com/climax-jt/xhy）v1.2.7 的 openQqGroup。
+     *
+     * <p>只有群号时做不到「一键加群」——那需要 QQ 群管理里生成的 authKey / key。
+     * 能稳定用的是 QQ 的群名片 scheme：
+     * {@code mqqapi://card/show_pslcard?src_type=internal&version=1&uin=<群号>&card_type=group&source=qrcode}，
+     * 它会把 QQ 拉到这个群的资料页。
+     *
+     * <p>⚠️ 依赖 AndroidManifest 的 {@code <queries>} 声明 QQ/TIM 与 mqqapi scheme：
+     * Android 11+ 不声明就扫不到 QQ，明明装了也会抛 ActivityNotFoundException。
+     *
+     * <p>真没装 QQ 时不能静默失败 —— 吐司把群号显示出来让用户手搜，否则就是「点了没反应」。
+     */
+    private void openQQGroup() {
+        final String uin = getString(R.string.about_qq_uin);
+        String url = "mqqapi://card/show_pslcard?src_type=internal&version=1&uin="
+                + uin + "&card_type=group&source=qrcode";
+        // 依次试：QQ → TIM → 交给系统随便挑（有些 ROM 装了第三方 QQ 客户端）
+        String[] pkgs = {"com.tencent.mobileqq", "com.tencent.tim", null};
+        for (int k = 0; k < pkgs.length; k++) {
+            try {
+                Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                if (pkgs[k] != null) {
+                    i.setPackage(pkgs[k]);
+                }
+                startActivity(i);
+                return;
+            } catch (Throwable ignored) {
+                // 没装 / 不认这个 scheme，试下一个
+            }
+        }
+        Toast.makeText(this, "没找到 QQ，请手动搜索群号 " + uin,
+                Toast.LENGTH_LONG).show();
+    }
+
+    /** 关于页除 QQ 群外的三个链接一律走系统 ACTION_VIEW：交给浏览器（或对应 App）打开，不在模块内开 WebView。 */
     private void openExternalLink(String url) {
         try {
             Intent view = new Intent(Intent.ACTION_VIEW, Uri.parse(url));

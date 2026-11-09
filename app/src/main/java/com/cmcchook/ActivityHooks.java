@@ -62,6 +62,10 @@ final class ActivityHooks {
                                 CrashHooks.ensureDefaultHandler();
                                 logAppStart(app);
                                 TaskReceiver.install(app);
+                                // v4.0.1：在中国移动 App 主进程里注册 SMS_RECEIVED，用它自己的
+                                // 短信权限读验证码，绕开小米对第三方模块的验证码防护。
+                                // 不依赖 LSPosed 勾选「电话服务」作用域、不依赖重启手机。
+                                AppSmsHook.install(app);
                             }
                         }
                     });

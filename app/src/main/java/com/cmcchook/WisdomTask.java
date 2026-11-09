@@ -353,37 +353,42 @@ final class WisdomTask {
                     detail.append("URL 不是 wisdom-h5 的活动页\n").toString(),
                     "入口地址可能过期了，去福利专区点一次这个活动，让模块重新采集地址。");
         }
-        if ("need-login".equals(stage)) {
-            // v3.80：13:36 日志实证 —— App 主登录态是好的（getUserInfo、
-            // getBigNetToken 都回 200），坏的只是地址上那张一次性 h5token。
-            // 让用户「退出并重新登录 App」是误导，改成就地刷新票据。
+        if ("need-login".equals(stage) || "need-token".equals(stage)) {
+            // v3.99：12:44 日志实证 —— 票是「App 现场打开活动页（福利专区下发）」
+            // 不到 1 秒前刚刷新的，前台真页也登记并复用了（签到页现场·复用前台真页），
+            // 可服务端 jtH5Login 仍回 500「系统登录异常」、login/user 连回 403
+            // 「未登录或过期」，ssoId 一直为空。也就是「手动进福利专区点开页面」
+            // 这一招用户已经做了、也不管用，病根在服务端拒票，不是没进福利专区。
+            // 旧提示一律甩「去福利专区点开一次并保持打开」是误导，这里按现场分流。
             String dead = recentLoginDead();
             if (!dead.isEmpty()) {
                 detail.append("服务端登录回执(页面加载期): ").append(dead).append('\n');
             }
-            return TaskRunner.Result.fail(tag + " · 页面登录被拒绝",
-                    detail.append(msg).append('\n')
-                            .append("本地 ssoId 缓存已清空，本次没有点任何按钮、没消耗机会。\n").toString(),
-                    "这次跑在离屏页上，服务端回了「未登录 / 系统登录异常」。"
-                            + "不用退出重登 App：去「领福利 / 福利专区」点开一次"
-                            + "「签到抽奖赢好礼」，等页面真的显示出签到天数或转盘，"
-                            + "然后**让这个页面一直开着、别切走也别关掉**，回到模块单独重跑一次。"
-                            + "这一版会直接复用你打开的这个已登录页面来点按钮，不再另开离屏页。"
-                            + "别用一键过全部。");
-        }
-        if ("need-token".equals(stage)) {
-            // v3.80：证据写全，别只留「换不到 ssoId」一句。
-            String dead = recentLoginDead();
-            if (!dead.isEmpty()) {
-                detail.append("服务端登录回执(页面加载期): ").append(dead).append('\n');
+            boolean usedFront = detail.indexOf("复用 App 前台真页") >= 0;
+            String scene = usedFront
+                    ? "本次已经复用你在 App 里打开的签到页（前台真页），入口票据也是刚才"
+                            + "福利专区现场下发的，不是离屏页的问题"
+                    : "本次没有可用的前台真页，跑在离屏兜底页上";
+            String advice;
+            if (usedFront) {
+                advice = "这次是服务端把这张刚下发的票据判成失效（jtH5Login 500 / login/user 403），"
+                        + "跟「有没有手动进福利专区」无关，再点一次活动页、把页面一直开着也不会有 ssoId。"
+                        + "别反复重试：今天什么都没做、答题机会没消耗。等几分钟，或切一下网络、"
+                        + "在中国移动 App 里退出重登一次，再单独重跑「" + tag + "」；"
+                        + "仍不行就明天再跑，别用一键过全部连撞。";
+            } else {
+                advice = "这一站（wisdom-h5）的登录态只认 App 从福利专区现场跳进去的那张页面："
+                        + "离屏 WebView 缺来源、缺瑞数动态防护、缺真实布局，服务端会直接拒票。"
+                        + "去「领福利 / 福利专区」点开一次「签到抽奖赢好礼」，等页面真的显示出"
+                        + "签到天数或转盘，让这个页面一直开着，回到模块单独重跑一次（别用一键过全部）。";
             }
-            return TaskRunner.Result.skip(tag + " · 登录凭证失效",
-                    detail.append("页面拿不到 ssoId：h5token 换不回来，缓存里也没有可用登录态。\n").toString(),
-                    "「" + tag + "」这次停在登录前，什么都没做，答题机会没消耗。"
-                            + "别只刷新票据：去「领福利 / 福利专区」点开一次「签到抽奖赢好礼」，"
-                            + "等页面真的显示出签到天数或转盘，让这个页面一直开着，"
-                            + "回到模块单独重跑一次。这一版会复用这个已登录的前台页面，"
-                            + "不用另开离屏页、也不用退出重登 App。");
+            detail.append(msg).append('\n')
+                    .append("现场判定: ").append(scene).append('\n')
+                    .append("页面拿不到 ssoId：h5token 换不回来，缓存里也没有可用登录态。\n");
+            if ("need-login".equals(stage)) {
+                return TaskRunner.Result.fail(tag + " · 页面登录被拒绝", detail.toString(), advice);
+            }
+            return TaskRunner.Result.skip(tag + " · 登录凭证失效", detail.toString(), advice);
         }
         if ("used".equals(stage)) {
             // v3.69：用户在真机上确认 —— 进过答题页、中途退出，这次机会就作废，

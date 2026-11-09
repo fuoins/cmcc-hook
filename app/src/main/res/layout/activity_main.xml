@@ -94,9 +94,11 @@
             android:id="@+id/pageLog"
             layout="@layout/page_log" />
 
+        <!-- v4.0：底栏「优惠券」升级为「增强」容器页（流量 / 优惠券 两个子页 + 底部子导航）。
+             容器内部再 include 原来的 page_coupon，券页所有控件 id 保持不变。 -->
         <include
             android:id="@+id/pageCoupon"
-            layout="@layout/page_coupon" />
+            layout="@layout/page_enhance" />
     </FrameLayout>
 
     <View

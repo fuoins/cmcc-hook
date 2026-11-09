@@ -275,6 +275,89 @@ final class CouponTask {
 
     // ------------------------------------------------------------------ 扫描
 
+    /** 离屏页开好之后，最多等它把券列表画出来这么久。 */
+    private static final long SCAN_LIST_WAIT_MS = 12_000L;
+
+    /**
+     * v4.0.4：扫描专用现场 —— <b>离屏优先</b>。
+     *
+     * <p>在中国移动进程里开一张不挂窗口的 WebView 加载卡券页，页面自己完成登录、
+     * 请求密文接口、解密并渲染 Vue 券列表，模块只读渲染好的 DOM ——
+     * <b>不解密接口、不拼签名、不发业务请求</b>。这样用户不用先手动点进卡券中心。
+     *
+     * <p>为什么还要留回退：v3.39 实测「离屏页只发两个横幅接口、券列表为空」，
+     * 根因是卡券页要 App 私有的一堆 JS 桥（cardInterface 等）才拿得到登录态；
+     * 后来 WebPage 补了登录桥注入、attach 到窗口、真实 UA/Cookie，条件比当年好，
+     * 但没有真机复验就不能断言一定成。所以 scan() 会在离屏读不到券时自动回退
+     * 前台真页，并把「离屏现场到底渲染没渲染」写进日志，按证据继续判断。
+     */
+    private static Host openHostForScan() {
+        HookLog.log("COUPON", "卡券扫描 · 离屏优先",
+                "入口: " + URL
+                        + "\n模块在中国移动进程里离屏加载卡券页，用户界面不动、不用手动点进去。\n"
+                        + "页面自己登录、请求、渲染，模块只读现成的券列表 DOM。");
+        WebPage page = WebPage.open(URL, 30_000L, HOSTS);
+        if (page == null || page.raw() == null || !page.ok()) {
+            HookLog.log("COUPON", "卡券扫描 · 离屏页没起来",
+                    "入口: " + URL + "\nWebView 建不起来或首屏没渲染，稍后自动回退前台真页。");
+            if (page != null) {
+                page.close();
+            }
+            return null;
+        }
+        OffHost off = new OffHost(page);
+        // 等券列表真的画出来：光「文档加载完」不够，SPA 骨架里一个券按钮都没有。
+        long end = System.currentTimeMillis() + SCAN_LIST_WAIT_MS;
+        boolean ready = false;
+        while (System.currentTimeMillis() < end) {
+            if ("1".equals(off.eval(LIST_JS, 3_000L))) {
+                ready = true;
+                break;
+            }
+            sleep(400L);
+        }
+        HookLog.log("COUPON", "卡券扫描 · 离屏页现场",
+                "内核: " + page.kernel()
+                        + "\n地址: " + page.url()
+                        + "\n标题: " + page.title()
+                        + "\n券列表已渲染: " + ready
+                        + "\n（false 多半是离屏页缺 App 私有 JS 桥、拿不到登录态；"
+                        + "会自动回退前台真页，不会把「没读到」误报成「账户里没有券」。）");
+        return off;
+    }
+
+    /**
+     * 前台真页（用户在中国移动里打开过卡券中心时）。离屏读不到券时用它兜底，
+     * 保持 v4.0.3 之前「能扫到 13/18/19 张」的能力不退化。
+     */
+    private static Host openLiveHost() {
+        Object live = CouponPage.get();
+        if (live != null) {
+            String href = CouponPage.eval(live,
+                    "(function(){try{return location.href}catch(e){return ''}})()");
+            if (href != null && href.contains("mycoupons")) {
+                return new LiveHost(live);
+            }
+            CouponPage.detach(live);
+        }
+        return null;
+    }
+
+    /** 在一个现场上跑一遍扫描脚本，返回 JSON；脚本没回报（超时）返回 null。 */
+    private static String scanOnce(Host host) {
+        host.eval("window.__cmcc_coupon_front=" + (host instanceof LiveHost) + ";", 4_000L);
+        host.eval(SCAN_SCRIPT, 8_000L);
+        long deadline = System.currentTimeMillis() + SCAN_WAIT_MS;
+        while (System.currentTimeMillis() < deadline) {
+            String value = host.eval(POLL_SCAN, 6_000L);
+            if (value != null && !value.isEmpty()) {
+                return value;
+            }
+            sleep(500L);
+        }
+        return null;
+    }
+
     static void scan() {
         if (busy) {
             sendList("{\"stage\":\"busy\",\"count\":0,\"items\":[]}");
@@ -283,34 +366,38 @@ final class CouponTask {
         busy = true;
         Host host = null;
         try {
-            host = openHost();
-            if (host == null || !host.ok()) {
-                sendList("{\"stage\":\"no-page\",\"count\":0,\"items\":[]}");
-                HookLog.log("COUPON", "卡券扫描 · 页面没打开",
-                        "入口: " + URL + "\n前台卡券页和离屏页都不可用");
-                return;
-            }
-            host.eval("window.__cmcc_coupon_front=" + (host instanceof LiveHost) + ";", 4_000L);
-            host.eval(SCAN_SCRIPT, 8_000L);
-            String raw = null;
-            long deadline = System.currentTimeMillis() + SCAN_WAIT_MS;
-            while (System.currentTimeMillis() < deadline) {
-                String value = host.eval(POLL_SCAN, 6_000L);
-                if (value != null && !value.isEmpty()) {
-                    raw = value;
-                    break;
+            // v4.0.4：先离屏，读不到券再自动回退前台真页。
+            host = openHostForScan();
+            String raw = host == null ? null : scanOnce(host);
+            boolean hadHost = host != null;
+            if (raw == null || countOf(raw) <= 0) {
+                String first = raw == null ? "页面没起来/脚本超时" : countOf(raw) + " 张";
+                HookLog.log("COUPON", "卡券扫描 · 离屏没读到券，回退前台真页",
+                        "离屏结果: " + first
+                                + "\n现场: " + (host == null ? "无" : host.name())
+                                + "\n回退: 复用用户已打开的卡券中心真页（带 App 完整 JS 桥）。");
+                if (host != null) {
+                    host.close();
+                    host = null;
                 }
-                sleep(500L);
+                Host live = openLiveHost();
+                if (live != null && live.ok()) {
+                    host = live;
+                    raw = scanOnce(host);
+                }
             }
             if (raw == null) {
-                sendList("{\"stage\":\"timeout\",\"count\":0,\"items\":[]}");
-                HookLog.log("COUPON", "卡券扫描 · 超时",
-                        "45 秒没有回报\n现场: " + host.name() + "\n入口: " + URL);
+                sendList(hadHost ? "{\"stage\":\"timeout\",\"count\":0,\"items\":[]}"
+                        : "{\"stage\":\"no-page\",\"count\":0,\"items\":[]}");
+                HookLog.log("COUPON", hadHost ? "卡券扫描 · 超时" : "卡券扫描 · 页面没打开",
+                        "离屏页和前台卡券页都没读到券\n入口: " + URL
+                                + "\n现场: " + (host == null ? "无" : host.name())
+                                + "\n导出完整日志可看「离屏页现场」里的券列表渲染判定。");
                 return;
             }
             sendList(raw);
             HookLog.log("COUPON", "卡券扫描 · " + countOf(raw) + " 张",
-                    "现场: " + host.name() + "\n" + describe(raw));
+                    "现场: " + (host == null ? "无" : host.name()) + "\n" + describe(raw));
         } catch (Throwable e) {
             sendList("{\"stage\":\"error\",\"count\":0,\"items\":[]}");
             HookLog.log("COUPON", "卡券扫描 · 异常", String.valueOf(e));
@@ -1133,7 +1220,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 v3.98 已装载 · 公开版(全新包名/全新UI/默认关仅记录10086·开详细原始/QQ群+免责声明)');
+              line('券脚本 v4.0.4 已装载 · 扫描离屏优先(读不到自动回退真页) + 短信通道对齐XposedSmsCode + 小米验证码自检');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){
