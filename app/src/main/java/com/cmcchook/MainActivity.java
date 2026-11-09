@@ -79,9 +79,6 @@ public final class MainActivity extends AppCompatActivity {
     private TextView subFlow;
     private TextView subCoupon;
     private TextView flowNotify;
-    /** v4.0.5 一键查扫描的状态行与进行中标志。 */
-    private TextView quickScanStatus;
-    private boolean quickScanning = false;
     private boolean flowTab = true;       // 当前子页：true=流量，false=优惠券
     private boolean flowLoading = false;  // 离屏读取进行中
     private long flowAutoAt = 0L;         // 上次「进页自动查询」时间，做节流防抖
@@ -138,7 +135,6 @@ public final class MainActivity extends AppCompatActivity {
     private MaterialButton btnCouponInvert;
     private MaterialButton btnCouponUseAll;
     private MaterialButton btnCouponUse;
-    private MaterialButton btnCouponOpen;
     /**
      * v3.52：冷启动时清一次券清单（只清一次，旋转屏幕重建 Activity 不清）。
      * 用户要求「关闭软件重进后重新扫描，别直接显示之前的卡券数据，不然会出错」。
@@ -192,14 +188,7 @@ public final class MainActivity extends AppCompatActivity {
             if (flowLoading) {
                 flowLoading = false;
                 if (flowNotify != null) {
-                    flowNotify.setText("读取超时：没收到数据。请确认中国移动 App 已打开过、模块已注入，再点「刷新」重试。");
-                }
-            }
-            if (quickScanning) {
-                // 一键查扫描里流量结果一直没回来：别把「进行中」状态挂死。
-                quickScanning = false;
-                if (quickScanStatus != null) {
-                    quickScanStatus.setText("读取超时：没收到数据，请确认中国移动 App 已打开过再重试。");
+                    flowNotify.setText("读取超时：没收到数据。请确认中国移动 App 已打开过、模块已注入，再点「一键查询」重试。");
                 }
             }
         }
@@ -276,7 +265,9 @@ public final class MainActivity extends AppCompatActivity {
         btnCouponInvert = findViewById(R.id.btnCouponInvert);
         btnCouponUseAll = findViewById(R.id.btnCouponUseAll);
         btnCouponUse = findViewById(R.id.btnCouponUse);
-        btnCouponOpen = findViewById(R.id.btnCouponOpen);
+        // v4.0.6：「跳转卡券中心」+「扫描」合并为一个「一键扫描」按钮。
+        // 点它直接走 CMD_SCAN —— 目标进程里离屏加载卡券页读券（读不到自动回退真页），
+        // 不再需要用户手动点进卡券中心。
         btnCouponScan.setOnClickListener(v -> couponScan());
         btnCouponAll.setOnClickListener(v -> couponSelectAll());
         if (btnCouponInvert != null) {
@@ -284,7 +275,6 @@ public final class MainActivity extends AppCompatActivity {
         }
         btnCouponUseAll.setOnClickListener(v -> couponUse(true));
         btnCouponUse.setOnClickListener(v -> couponUse(false));
-        btnCouponOpen.setOnClickListener(v -> couponOpenCenter());
         // v4.0.4：小米 / HyperOS 的「验证码安全保护」是系统开关，模块不能代改，
         // 只能把自检步骤摆到券页。点入口弹说明，可一键把说明写进日志页。
         TextView smsHelp = findViewById(R.id.smsHelpEntry);
@@ -324,12 +314,8 @@ public final class MainActivity extends AppCompatActivity {
         if (btnFlowRefresh != null) {
             btnFlowRefresh.setOnClickListener(v -> flowRefresh());
         }
-        // v4.0.5 一键查扫描：放在增强页顶部工具条，两个子页都能一键发起。
-        View btnQuickScan = findViewById(R.id.btnQuickScan);
-        if (btnQuickScan != null) {
-            btnQuickScan.setOnClickListener(v -> quickScan());
-        }
-        quickScanStatus = findViewById(R.id.quickScanStatus);
+        // v4.0.6：删掉增强页顶部「一键查扫描」工具条。
+        // 流量子页用「一键查询」、优惠券子页用「一键扫描」，各管各的，合并按钮反而绕。
         selectFlowSub(true); // 默认落在流量子页
 
         bindSwitch(R.id.switchApiOnly, AppPrefs.KEY_API_ONLY);
@@ -1447,11 +1433,6 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    private void couponOpenCenter() {
-        // 卡券中心是普通 H5，走宿主 App 现有容器打开，用户能自己核对券状态。
-        sendCouponCmd(TaskRunner.CMD_OPEN + CouponTask.URL, "打开卡券中心");
-    }
-
     private void sendCouponCmd(String cmd, String hint) {
         boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
         if (alive && sendTaskBroadcast(cmd)) {
@@ -1484,21 +1465,6 @@ public final class MainActivity extends AppCompatActivity {
                         ? ("扫描完成：" + n + " 张券" + (cost > 0 ? "，耗时 " + fmtCost(cost) : ""))
                         : "扫描完成，但没读到券";
                 Toast.makeText(this, tip, Toast.LENGTH_SHORT).show();
-                if (quickScanning) {
-                    // 一键查扫描的第二步回来了：给出一条汇总，别让用户去两个子页分别找。
-                    quickScanning = false;
-                    if (quickScanStatus != null) {
-                        int flowItems = 0;
-                        try {
-                            JSONObject fo = new JSONObject(FlowStore.json(this));
-                            flowItems = fo.optJSONArray("items") == null
-                                    ? 0 : fo.optJSONArray("items").length();
-                        } catch (Throwable ignored) {
-                        }
-                        quickScanStatus.setText(
-                                getString(R.string.quick_scan_done, flowItems, n));
-                    }
-                }
             } else if (LogReceiver.ACTION_COUPON_PROGRESS.equals(action)) {
                 String stage = intent.getStringExtra("stage");
                 int idx = intent.getIntExtra("idx", -1);
@@ -1615,53 +1581,6 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * v4.0.5 一键查扫描：一条指令让目标进程<b>串行</b>离屏读流量余量 + 离屏扫卡券。
-     *
-     * <p>不用手动点进流量页，也不用手动点进卡券中心；结果沿原来的
-     * {@code ACTION_FLOW_DATA} / {@code ACTION_COUPON_LIST} 广播回填到两个子页。
-     * 串行是为了避免两个离屏 WebView 同时抢容器和登录态；券扫描本身在离屏读不到券时
-     * 会自动回退到已经打开过的前台真页（[COUPON] 日志里会写明）。
-     */
-    private void quickScan() {
-        if (flowLoading || couponRunning || quickScanning) {
-            Toast.makeText(this, "正在离屏读取，稍候…", Toast.LENGTH_SHORT).show();
-            return;
-        }
-        boolean alive = System.currentTimeMillis()
-                - AppPrefs.getLastHeartbeat(this) < 90_000L;
-        if (!alive) {
-            if (quickScanStatus != null) {
-                quickScanStatus.setText(R.string.quick_scan_offline);
-            }
-            if (flowNotify != null) {
-                flowNotify.setText(R.string.quick_scan_offline);
-            }
-            Toast.makeText(this, R.string.quick_scan_offline, Toast.LENGTH_LONG).show();
-            return;
-        }
-        quickScanning = true;
-        CouponStore.markScanStart(this);
-        flowAutoAt = System.currentTimeMillis();
-        flowLoading = true;
-        if (flowNotify != null) {
-            flowNotify.setText(R.string.flow_refreshing);
-        }
-        if (quickScanStatus != null) {
-            quickScanStatus.setText(R.string.quick_scan_running);
-        }
-        handler.removeCallbacks(flowTimeout);
-        handler.postDelayed(flowTimeout, 50_000L);
-        if (!sendTaskBroadcast(TaskRunner.CMD_QUICK)) {
-            handler.removeCallbacks(flowTimeout);
-            flowLoading = false;
-            quickScanning = false;
-            if (quickScanStatus != null) {
-                quickScanStatus.setText("指令发送失败，请重试。");
-            }
-        }
-    }
-
-    /**
      * v4.0.2 进「增强·流量」页自动一键查询（静默）：这是「一键查询、离屏、不用手动
      * 点进流量页」的关键。满足下列任一条件就跳过，避免每次切页都重开离屏 WebView：
      * <ul>
@@ -1719,9 +1638,6 @@ public final class MainActivity extends AppCompatActivity {
                 flowLoading = false;
                 if (pageFlow != null) {
                     FlowView.render(this, pageFlow);
-                }
-                if (quickScanning && quickScanStatus != null) {
-                    quickScanStatus.setText(R.string.quick_scan_flow_done);
                 }
             }
         });

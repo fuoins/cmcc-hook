@@ -174,13 +174,6 @@
     <string name="sub_coupon">优惠券</string>
     <string name="flow_title">流量余量</string>
     <string name="flow_refresh">一键查询</string>
-    <!-- v4.0.5 一键查扫描 -->
-    <string name="quick_scan">一键查扫描</string>
-    <string name="quick_scan_idle">离屏查流量 + 扫券，不用手动进页面</string>
-    <string name="quick_scan_running">已发起：离屏查流量 + 离屏扫券…</string>
-    <string name="quick_scan_flow_done">流量已回填，正在扫券…</string>
-    <string name="quick_scan_done">完成：流量 %1$d 项 · 券 %2$d 张</string>
-    <string name="quick_scan_offline">中国移动 App 没在运行：请先打开一次 App 让登录态就绪，再点「一键查扫描」。</string>
     <string name="flow_refreshing">正在离屏读取首页余量缓存…</string>
     <string name="flow_never">进入本页自动离屏查询一次。余量卡片按 flow-assistant 的样式重画：点「流量详情」逐项展开、点分类卡展开该组每一包；下方还有消耗测速与流量领取入口。数据只读首页明文缓存，不解密接口、不提交请求。</string>
     <string name="flow_at">更新于 %1$s</string>
@@ -194,18 +187,17 @@
     <string name="flow_fail">读取失败：%1$s</string>
     <string name="flow_ok">读取完成：%1$d 项余量 · 点「流量详情」逐项展开</string>
     <string name="coupon_section">我的卡券</string>
-    <string name="coupon_hint">直接点「扫描」即可，模块会离屏打开卡券页读券，不需要手动点进卡券中心。只有「流量券」和「话费兑换券」可勾选使用，其余置灰。默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
+    <string name="coupon_hint">点「一键扫描」即可，模块会在中国移动进程里离屏打开卡券页读券，不用手动点进卡券中心（离屏读不到会自动回退到已打开的真页）。只有「流量券」和「话费兑换券」可勾选使用，其余置灰。默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
     <string name="coupon_title">卡券中心</string>
-    <string name="coupon_summary_empty">还没扫描，点右侧「扫描」读一次</string>
-    <string name="coupon_scan">扫描</string>
-    <string name="coupon_never">还没扫描，点上方「扫描」读取卡券页</string>
+    <string name="coupon_summary_empty">还没扫描，点「一键扫描」读一次</string>
+    <string name="coupon_scan">一键扫描</string>
+    <string name="coupon_never">还没扫描，点「一键扫描」读取卡券页</string>
     <string name="coupon_at">扫描于 %1$s</string>
     <string name="coupon_at_cost">扫描于 %1$s · 耗时 %2$s</string>
     <string name="coupon_select_all">全选</string>
     <string name="coupon_invert">反选</string>
     <string name="coupon_use">使用</string>
     <string name="coupon_use_all">一键全用</string>
-    <string name="coupon_open">跳转卡券中心</string>
     <string name="coupon_bar_idle">仅流量券 / 话费兑换券可用，其余置灰；验证码自动读取。</string>
     <string name="coupon_bar_selected">已选 %1$d 张</string>
     <string name="coupon_running">正在用第 %1$d/%2$d 张：%3$s</string>
@@ -222,8 +214,8 @@
     <string name="coupon_all_confirm_message">将使用全部 %1$d 张可用券（仅流量券 / 话费兑换券，快到期的先用）。券一经使用不可撤销，确认继续？</string>
     <string name="coupon_confirm_use">确认使用</string>
     <string name="coupon_done">批量结束：成功 %1$d 张，失败 %2$d 张</string>
-    <string name="coupon_scanning">正在读卡券页…</string>
-    <string name="coupon_scan_fail">离屏读券失败，已自动回退。可点「跳转卡券中心」打开卡券页后再点扫描；导出完整日志可看「卡券扫描 · 现场」诊断。</string>
+    <string name="coupon_scanning">正在一键扫描…</string>
+    <string name="coupon_scan_fail">一键扫描没读到券：模块已自动回退前台真页再试一次。若仍是 0 张，请在中国移动 App 里手动打开一次卡券中心让列表加载出来，再回来点「一键扫描」；导出完整日志可看「卡券扫描 · 现场」诊断。</string>
     <!-- v4.0.4 小米 / HyperOS 短信验证码自检引导 -->
     <string name="sms_help_entry">小米 / HyperOS 读不到验证码？点这里看自检步骤</string>
     <string name="sms_help_title">小米读不到短信验证码 · 自检</string>

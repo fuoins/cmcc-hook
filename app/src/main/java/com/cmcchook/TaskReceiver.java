@@ -202,50 +202,6 @@ final class TaskReceiver {
                         }, "cmcc-flow").start();
                         return;
                     }
-                    // v4.0.5 一键查扫描：串行跑，避免两个离屏 WebView 抢登录态/容器。
-                    // 流量读首页 localStorage 余量缓存；券扫描离屏优先（读不到自动回退真页）。
-                    // 结果各自用原广播回模块 UI，模块端不用手动点进流量页或卡券中心。
-                    if (TaskRunner.CMD_QUICK.equals(cmd)) {
-                        ack(context, cmd);
-                        final BroadcastReceiver.PendingResult quickPending = goAsync();
-                        new Thread(new Runnable() {
-                            @Override
-                            public void run() {
-                                try {
-                                    HookLog.log("QUICK", "一键查扫描 · 开始",
-                                            "目标进程里串行执行：①离屏读首页余量缓存 → ②离屏扫卡券"
-                                                    + "（离屏读不到自动回退前台真页）。\n"
-                                                    + "模块界面无需手动点进流量页 / 卡券中心。");
-                                    try {
-                                        FlowTask.fetch();
-                                    } catch (Throwable e) {
-                                        HookLog.log("QUICK", "一键查扫描 · 流量读取异常",
-                                                String.valueOf(e));
-                                    }
-                                    try {
-                                        Thread.sleep(400L);
-                                    } catch (Throwable ignored) {
-                                    }
-                                    try {
-                                        CouponTask.scan();
-                                    } catch (Throwable e) {
-                                        HookLog.log("QUICK", "一键查扫描 · 券扫描异常",
-                                                String.valueOf(e));
-                                    }
-                                    HookLog.log("QUICK", "一键查扫描 · 完成",
-                                            "两项都已执行完；结果分别看 [FLOW] / [COUPON] 段落与增强页两个子页。\n"
-                                                    + "券扫描若走了「回退前台真页」，按 [COUPON] 里的"
-                                                    + "「离屏页现场」逐条核对券列表渲染判定。");
-                                } finally {
-                                    try {
-                                        quickPending.finish();
-                                    } catch (Throwable ignored) {
-                                    }
-                                }
-                            }
-                        }, "cmcc-quick").start();
-                        return;
-                    }
                     ack(context, cmd);
                     // goAsync 让广播在任务跑完前保持 pending，避免 onReceive 一返回
                     // 进程又被丢回 cached 组、跑到一半被冻住。

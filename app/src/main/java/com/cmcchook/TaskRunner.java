@@ -76,8 +76,6 @@ final class TaskRunner {
     static final String CMD_OPEN = "open:";
     /** v4.0 流量余量：离屏只读官方余量页，不进任务队列、不记今日状态。 */
     static final String CMD_FLOW = "flow";
-    /** v4.0.5 一键查扫描：目标进程里串行离屏查流量 + 离屏扫券，不用手动进任何页面。 */
-    static final String CMD_QUICK = "quickscan";
 
     private static final String STATE_FILE = "cmcc_hook_tasks";
     private static final String KEY_HANDLED_SEQ = "handled_seq";

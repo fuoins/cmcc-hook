@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  v3.52：按用户指定顺序重排操作按钮，并统一 6 个按钮的样式。
-  顺序：跳转卡券中心 / 扫描 / 全选 / 反选 / 使用 / 一键全用（2 行 × 3 列等宽）。
+  v4.0.6：券页「跳转卡券中心」+「扫描」合并成一个「一键扫描」（占 2 份宽，主操作）。
+  现为 5 个按钮：第一行 一键扫描 / 全选；第二行 反选 / 使用 / 一键全用。
 
   注意：couponSummary / couponAt / couponBar 三个 TextView 必须保留在布局里，
   MainActivity 会直接对它们 setText()，删掉会空指针崩溃。
@@ -24,7 +24,7 @@
         android:paddingTop="12dp"
         android:paddingBottom="24dp">
 
-        <!-- 顶部按钮区第一行：跳转卡券中心 / 扫描 / 全选 -->
+        <!-- 顶部按钮区第一行：一键扫描(离屏) / 全选 -->
         <LinearLayout
             style="@style/CardBox"
             android:layout_width="match_parent"
@@ -40,32 +40,15 @@
                 android:paddingTop="10dp"
                 android:paddingEnd="12dp">
 
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnCouponOpen"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
-                    android:layout_weight="1"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:maxLines="1"
-                    android:minWidth="0dp"
-                    android:paddingStart="2dp"
-                    android:paddingEnd="2dp"
-                    android:text="@string/coupon_open"
-                    android:textAllCaps="false"
-                    android:textSize="12sp"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp"
-                    app:minWidth="0dp" />
-
+                <!-- v4.0.6：「跳转卡券中心」+「扫描」合并成一个「一键扫描」。
+                     点它直接离屏加载卡券页并读券（离屏读不到自动回退前台真页），
+                     不再需要用户手动点进卡券中心。占 2 份宽，作为本页主操作。 -->
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnCouponScan"
                     style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="40dp"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
+                    android:layout_weight="2"
                     android:insetTop="0dp"
                     android:insetBottom="0dp"
                     android:maxLines="1"
