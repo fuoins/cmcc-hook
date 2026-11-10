@@ -4,42 +4,51 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 /**
- * v4.0.7+probe：一键扫描「全方案探针」—— 纯诊断版。
+ * v4.0.7+probe-v2：一键扫描「全方案探针」第二轮 —— 纯诊断版。
  *
- * <p>用户拍板：与其一轮一轮赌某个假设，不如一次点击把想到的方案全跑一遍，
- * 用一份日志的对照表说话。这里串行跑 A~F 六组累加方案，每组<b>独立开一张
- * 离屏页、独立注入、独立采集、独立 close</b>，互不干扰（{@link OffscreenWeb}
- * 的 current 是单例，必须一张用完再开下一张）。
+ * <p>第一轮（probe）的结论：6 组方案落地都是 mycoupons.html、没被踢登录页，
+ * 但 body 停在 {@code {{item.title}}} 模板原文、券接口一次都没发。更关键的是
+ * 「无当次现场」导致 B~F 的变量全部退化为空，6 组实际只测了 1 个变量。
  *
- * <p><b>硬约束（用户明确要求）</b>：
+ * <p>本轮按用户确认的方案重做：
  * <ul>
- *   <li>纯离屏、界面不动、只点一次「一键扫描」；</li>
- *   <li><b>不点「本机号码一键登录」、不调 {@code SsoLogin.ensure} 换票、
- *       不发起任何新登录请求</b> —— 避免一天内多次登录。所有方案只复用当次
- *       现场已有的登录态（Cookie / headers / jwt），绝不制造新会话；</li>
- *   <li>不落盘任何「入口缓存」：带渠道参数的 URL、headers 都来自
- *       {@link CouponScene} 的本进程内存快照，带采集时间戳，日志写明新鲜度；
- *       没有现场就如实标注、对应变量退化为裸地址，绝不拿旧缓存冒充最新入口；</li>
- *   <li>只读页面渲染好的 DOM / performance 资源记录 / localStorage 缓存，
- *       不解密接口、不拼签名、不发业务请求。</li>
+ *   <li><b>原料实时读取</b>：不再依赖前台真页现场。channelId / QWHDSSOJWT / yx
+ *       从当前会话的 dev.coc.10086.cn 同源 localStorage 现场读（localStorage 同域
+ *       跨 WebView 共享）；会话串从 {@link CookieStore#sessionString()} 读已捕获的
+ *       当前会话。全部只存本次 run 的内存变量，<b>不落盘、不带时间戳冒充最新入口</b>，
+ *       日志写明来源与新鲜度，敏感值只报长度。</li>
+ *   <li><b>先定位 Vue 为什么不 mount</b>：所有方案在 onPageStarted 就注入
+ *       {@link #EARLY_DIAG_JS}，挂 window.onerror / unhandledrejection /
+ *       console.error；PROBE_JS 额外采 readyState、完整资源清单、脚本清单、
+ *       Vue 实例状态、window.cmcc 方法、localStorage 键名。</li>
+ *   <li><b>三路会话注入对照</b>：Cookie 回灌+Cookie 头 / 会话串作 URL 参数
+ *       （App 就是把 JSESSIONID;UID;ticketID 拼进 XHR 参数）/ localStorage.QWHDSSOJWT
+ *       + window 全局，逐组累加。</li>
+ *   <li><b>缺桥垫片</b>：cardInterface / newWindowInterface / androidIMScene
+ *       用 Proxy 兜底（B 组起引入，A 组原样复现做对照），不打开真页。</li>
  * </ul>
  *
- * <p>累加变量（后一组 = 前一组 + 一个新变量，命中在哪一步一目了然）：
- * A 基线(裸地址+全桥) → B +渠道参数入口 → C +会话Cookie → D +重放真页headers
- * → E +SSO jwt(localStorage) → F +主动唤醒(点「可使用」tab / Vue refresh)。
- *
- * <p>本版是诊断测试版：不改正式扫描逻辑、不采用命中结果、不动版本号。
- * 得出「哪组能出券」后，下一轮再做精简正式版。
+ * <p><b>硬约束（用户明确要求）</b>：纯离屏、界面不动、只点一次「一键扫描」；
+ * 不点「本机号码一键登录」、不调 {@code SsoLogin.ensure} 换票、不发起任何新登录
+ * 请求；只复用已登录会话，日志对会话串脱敏；不发 Release、不动版本号。
  */
 final class CouponProbe {
 
     private static final String[] HOSTS = {"10086.cn"};
     /** 每方案时间上限（含开页），用户拍板 12s。 */
     private static final long PER_PLAN_MS = 12_000L;
-    /** 整轮上限，留一点余量，用户拍板总计 2 分钟。 */
-    private static final long TOTAL_MS = 112_000L;
+    /** 整轮上限：6 组 + 原料页 + 首页流量页 + 余量查询页。 */
+    private static final long TOTAL_MS = 145_000L;
     private static final long POLL_GAP_MS = 900L;
-    private static final long FLOW_MS = 9_000L;
+    private static final long MATERIAL_MS = 6_000L;
+    private static final long AUX_MS = 7_000L;
+
+    /** 当前会话的渠道/SSO 原料所在 origin（爱购商城画布页，日志实证）。 */
+    private static final String MATERIAL_URL =
+            "https://dev.coc.10086.cn/coc3/canvas/rightsmarket-h5-canvas/online/home";
+    /** 「余量查询」页：判断有没有分套餐明细可解析（只诊断，不改流量逻辑）。 */
+    private static final String MARGIN_URL =
+            "https://wx.10086.cn/cmcc-service/app-pages/main/marginQuery";
 
     private CouponProbe() {
     }
@@ -71,11 +80,143 @@ final class CouponProbe {
         String verdict = "";
     }
 
+    /** 本轮实时采到的原料，只在 run() 内存里活，不落盘。 */
+    private static final class Material {
+        String channelId = "";
+        String yx = "";
+        String jwt = "";
+        String cookie = "";
+        String session = "";
+        long at = 0L;
+        String origin = "";
+
+        boolean hasChannel() {
+            return !channelId.isEmpty();
+        }
+
+        boolean hasSession() {
+            return !session.isEmpty();
+        }
+
+        String describe() {
+            return "采集时间: " + (at <= 0 ? "未采到" : (System.currentTimeMillis() - at) / 1000L + "s 前")
+                    + " · 来源: " + (origin.isEmpty() ? "无" : origin) + "\n"
+                    + "channelId: " + (channelId.isEmpty() ? "无" : channelId)
+                    + " · yx: " + (yx.isEmpty() ? "无" : yx) + "\n"
+                    + "QWHDSSOJWT: " + (jwt.isEmpty() ? "无" : jwt.length() + " 字符, 已脱敏")
+                    + " · 会话串(JSESSIONID/UID/ticketID): " + (session.isEmpty() ? "无" : session.length() + " 字符, 已脱敏")
+                    + " · Cookie头: " + (cookie.isEmpty() ? "无" : cookie.length() + " 字符, 已脱敏");
+        }
+    }
+
     /**
-     * 现场采集脚本：一次性把「落地 URL / 是否被踢登录 / 券相关请求 / 桥 /
-     * 正文 / 券按钮 / 流量缓存原文」全采出来，返回 "键: 值" 逐行的纯文本。
-     * 所有值压成单行，Java 侧按前缀解析（避开 evaluateJavascript 的 JSON 引号转义）。
+     * 观测用，所有方案共用：文档刚建立、业务脚本还没跑时挂错误钩子。
+     * 在 onPageStarted 注入，能抓到 Vue 初始化阶段的异常。
      */
+    private static final String EARLY_DIAG_JS = """
+            (function(){
+              try{
+                if(window.__cmccDiag)return;
+                var d={errs:[],t:Date.now()};
+                window.__cmccDiag=d;
+                function rec(kind,a){try{
+                  var s=kind+': '+String(a&&a.message?a.message:a);
+                  if(a&&a.filename)s+=' @'+String(a.filename).split('/').pop()+':'+(a.lineno||0);
+                  if(d.errs.length<24)d.errs.push(String(s).replace(/\\s+/g,' ').substring(0,220));
+                }catch(e){}}
+                window.addEventListener('error',function(e){rec('error',e.error||e.message||e)},true);
+                window.addEventListener('unhandledrejection',function(e){try{rec('rejection',e.reason)}catch(x){}},true);
+                try{
+                  var ce=console.error;
+                  console.error=function(){
+                    try{
+                      if(d.errs.length<24)d.errs.push('console: '+Array.prototype.slice.call(arguments).join(' ').replace(/\\s+/g,' ').substring(0,200));
+                    }catch(x){}
+                    return ce.apply(console,arguments);
+                  };
+                }catch(e){}
+              }catch(e){}
+            })();
+            """;
+
+    /**
+     * B 组起的注入变量：卡券页专用桥在离屏页里从没被注册过（用户不打开真页，
+     * 就永远采不到），页面脚本调 cardInterface.xxx 会直接 TypeError 中断 mount。
+     * 这里用 Proxy 兜一个「任何方法都返回空串」的垫片，先验证这一步是不是卡点。
+     * 不打开真页、不创建 Activity，符合「纯离屏」硬约束。
+     */
+    private static final String SHIM_JS = """
+            (function(){
+              try{
+                var names=['cardInterface','newWindowInterface','androidIMScene'],made=[];
+                for(var i=0;i<names.length;i++){
+                  (function(n){
+                    if(typeof window[n]!=='undefined')return;
+                    try{
+                      window[n]=new Proxy({}, {get:function(t,k){
+                        if(k==='toString'||k==='valueOf')return function(){return ''};
+                        if(k==='then')return undefined;
+                        if(typeof Symbol!=='undefined'&&k===Symbol.toPrimitive)return undefined;
+                        return function(){return ''};
+                      }});
+                      made.push(n);
+                    }catch(e){
+                      try{window[n]={};made.push(n+'(空对象)')}catch(x){}
+                    }
+                  })(names[i]);
+                }
+                if(window.__cmccDiag)window.__cmccDiag.shim=made.join(',')||'无需补';
+              }catch(e){}
+            })();
+            """;
+
+    /** 在 dev.coc.10086.cn 同源离屏页里读当前会话的渠道/SSO 原料。 */
+    private static final String MATERIAL_JS = """
+            (function(){
+              var out=[];
+              function g(k){try{return localStorage.getItem(k)||''}catch(e){return ''}}
+              out.push('CHANNELID: '+g('channelId'));
+              out.push('JWT: '+g('QWHDSSOJWT'));
+              var yx='';
+              try{
+                var p=JSON.parse(g('gioPerformanceInfo')||'{}');
+                var h=(p.gioPageParams&&p.gioPageParams.href)||'';
+                var m=String(h).match(/[?&]yx=([^&]+)/);if(m)yx=m[1];
+              }catch(e){}
+              if(!yx){try{var m2=String(location.href).match(/[?&]yx=([^&]+)/);if(m2)yx=m2[1]}catch(e){}}
+              out.push('YX: '+yx);
+              var keys=[];
+              try{for(var i=0;i<localStorage.length&&i<40;i++)keys.push(localStorage.key(i))}catch(e){}
+              out.push('LSKEYS: '+keys.join(','));
+              out.push('HREF: '+location.href);
+              return out.join('\\n');
+            })();
+            """;
+
+    /** 在「余量查询」页只采集，不改流量逻辑。 */
+    private static final String MARGIN_JS = """
+            (function(){
+              var out=[];
+              var t='';try{t=(document.body?(document.body.innerText||document.body.textContent||''):'')}catch(e){}
+              try{t=t.replace(/\\s+/g,' ').trim()}catch(e){}
+              out.push('BODY: '+t.substring(0,1400));
+              var keys=[],raw='';
+              try{
+                for(var i=0;i<localStorage.length;i++){
+                  var k=localStorage.key(i);if(keys.length<40)keys.push(k);
+                  var v=localStorage.getItem(k)||'';
+                  if(v&&(v.indexOf('flowSceneData')>=0||v.indexOf('remain')>=0||v.indexOf('Remain')>=0)){
+                    if(raw.length<1800)raw+=k+'='+v.substring(0,700)+' | ';
+                  }
+                }
+              }catch(e){}
+              out.push('LSKEYS: '+keys.join(','));
+              out.push('FLOWRAW: '+(raw||'无'));
+              return out.join('\\n');
+            })();
+            """;
+
+    /** 现场采集脚本：一次性把「落地 / 登录 / 请求 / 桥 / 正文 / JS 错误」全采出来。 */
     private static final String PROBE_JS = """
             (function(){
               var out=[];
@@ -99,15 +240,17 @@ final class CouponProbe {
                 out.push('MISSING: '+(m.join(',')||'无'));
               }catch(e){out.push('BRIDGES: 探测异常 '+e)}
               try{
-                var rs=performance.getEntriesByType('resource')||[],a=[];
+                var rs=performance.getEntriesByType('resource')||[],a=[],all=[];
                 for(var j=0;j<rs.length&&a.length<20;j++){
                   var u=String(rs[j].name||'').split('?')[0],lu=u.toLowerCase();
+                  if(j<24){var c0=u.indexOf('/',8);all.push((c0>0?u.substring(c0):u).substring(0,80))}
                   if(lu.indexOf('coupon')>=0||lu.indexOf('voucher')>=0||lu.indexOf('mycard')>=0||lu.indexOf('mycoupons')>=0){
                     var cut=u.indexOf('/',8);a.push(cut>0?u.substring(cut):u);
                   }
                 }
                 out.push('APIS('+rs.length+'): '+(a.join(' | ')||'无'));
-              }catch(e){out.push('APIS: 探测异常 '+e)}
+                out.push('RES: '+(all.join(' | ')||'无'));
+              }catch(e){out.push('APIS: 探测异常 '+e);out.push('RES: ?')}
               try{
                 var W=['去使用','立即使用','马上使用','去兑换','立即兑换','去充值'],bs=document.querySelectorAll('button,a,[role=button],.cp-btn'),n=0,w=[];
                 for(var k=0;k<bs.length;k++){
@@ -120,10 +263,34 @@ final class CouponProbe {
                 out.push('ANYBTN: '+bs.length);
                 out.push('WORDS: '+(w.join('|')||'无'));
               }catch(e){out.push('COUPONBTN: 探测异常 '+e)}
+              try{out.push('READY: '+(document.readyState||'?'))}catch(e){out.push('READY: ?')}
+              try{
+                var d=window.__cmccDiag;
+                out.push('DIAG: '+(d?'有':'无(earlyScript 未生效)')+(d&&d.shim?' 垫片:'+d.shim:''));
+                out.push('ERRS: '+(d&&d.errs&&d.errs.length?d.errs.slice(0,12).join(' || ').replace(/\\n/g,' '):'无'));
+              }catch(e){out.push('DIAG: ?');out.push('ERRS: ?')}
+              try{
+                var app=document.querySelector('#app')||document.querySelector('#root');
+                out.push('VUE: '+(app?((app.__vue__?'实例有':'实例无')+' 子节点'+app.children.length+' html'+String(app.innerHTML||'').length):'无容器'));
+              }catch(e){out.push('VUE: ?')}
+              try{
+                var sc=document.scripts||[],ss=[];
+                for(var z2=0;z2<sc.length&&z2<20;z2++){var s2=sc[z2].src||'(inline)';ss.push(s2.substring(s2.lastIndexOf('/')+1).substring(0,55))}
+                out.push('SCRIPTS: '+sc.length+' '+ss.join(','));
+              }catch(e){out.push('SCRIPTS: ?')}
+              try{
+                var c=window.cmcc,mm=[];
+                if(c){for(var kk in c){if(typeof c[kk]==='function'&&mm.length<18)mm.push(kk)}}
+                out.push('CMCC: '+(c?(mm.join(',')||'对象无方法'):'无'));
+              }catch(e){out.push('CMCC: ?')}
+              try{
+                var lk=[];for(var q=0;q<localStorage.length&&q<30;q++)lk.push(localStorage.key(q));
+                out.push('LSKEYS: '+(lk.join(',')||'空'));
+              }catch(e){out.push('LSKEYS: 读取异常')}
               try{
                 var keys=['BH/newPlanRemainQry/getNewPlanRemainQry','newPlanRemainQry','getNewPlanRemainQry'],raw='';
                 for(var p=0;p<keys.length;p++){var v=localStorage.getItem(keys[p]);if(v&&v.indexOf('flowSceneData')>=0){raw=v;break}}
-                if(!raw){for(var q=0;q<localStorage.length;q++){var kk=localStorage.key(q);var vv=localStorage.getItem(kk);if(vv&&vv.indexOf('flowSceneData')>=0){raw=vv;break}}}
+                if(!raw){for(var q2=0;q2<localStorage.length;q2++){var kk2=localStorage.key(q2);var vv=localStorage.getItem(kk2);if(vv&&vv.indexOf('flowSceneData')>=0){raw=vv;break}}}
                 out.push('FLOWKEY: '+(raw?'命中':'无'));
                 out.push('FLOWRAW: '+String(raw).replace(/\\s+/g,' ').substring(0,900));
               }catch(e){out.push('FLOWKEY: 无');out.push('FLOWRAW: 读取异常 '+e)}
@@ -158,54 +325,77 @@ final class CouponProbe {
         long t0 = System.currentTimeMillis();
         long globalEnd = t0 + TOTAL_MS;
 
-        boolean hasScene = CouponScene.fresh();
-        String bare = CouponTask.URL;
-        String sceneUrl = CouponScene.entryUrl();
-        String withParams = hasScene && !sceneUrl.isEmpty() ? sceneUrl : bare;
-        String cookie = CouponScene.cookie();
-        String jwt = CouponScene.jwt();
-        Map<String, String> sceneHeaders = CouponScene.headers();
-
-        // C 起把会话 Cookie 刷进 X5/系统内核（只是把已捕获的 Cookie 写回 CookieManager，
-        // 不产生任何登录动作）。同时把它作为主文档 Cookie 头带上做对照。
-        Map<String, String> hdrCookie = new LinkedHashMap<>();
-        if (!cookie.isEmpty()) {
-            hdrCookie.put("Cookie", cookie);
+        // ---- 1. 实时原料：不依赖前台真页现场，只读当前会话 ----
+        Material mat = collectMaterials(globalEnd);
+        try {
+            mat.cookie = CookieStore.header(CouponTask.URL);
+        } catch (Throwable t) {
+            mat.cookie = "";
         }
-        // D 起在 Cookie 之上叠加真页 loadUrl 的额外 headers（可能为空，如实记录）。
-        Map<String, String> hdrFull = new LinkedHashMap<>(hdrCookie);
-        hdrFull.putAll(sceneHeaders);
+        try {
+            mat.session = CookieStore.sessionString();
+        } catch (Throwable t) {
+            mat.session = "";
+        }
+        if (mat.jwt.isEmpty()) {
+            try {
+                mat.jwt = SsoLogin.ssoJwt();
+            } catch (Throwable ignored) {
+            }
+        }
 
-        String earlyJwt = jwt.isEmpty() ? "" : jwtEarly(jwt);
-        String earlyWake = (earlyJwt.isEmpty() ? "" : earlyJwt + "\n") + WAKE_JS;
+        String bare = CouponTask.URL;
+        String chUrl = bare;
+        if (mat.hasChannel()) {
+            chUrl = bare + "?c=11&e=99&channelId=" + enc(mat.channelId)
+                    + (mat.yx.isEmpty() ? "" : "&yx=" + enc(mat.yx));
+        }
+        // App 把会话串拼进 XHR 参数而不是靠 Cookie，这里照它的格式做一路对照。
+        String sessUrl = mat.hasSession()
+                ? chUrl + (chUrl.indexOf('?') >= 0 ? "&" : "?") + mat.session
+                : chUrl;
 
-        HookLog.log("COUPON", "一键扫描 · 全方案探针启动（4.0.7+probe 诊断版）",
-                "券探针 4.0.7+probe 已装载 · 纯诊断版（不改正式扫描、不采用命中结果、不发 Release）\n"
-                        + "一次点击串行测试 6 组方案，每组独立开一张离屏页、独立采集、独立关闭。\n"
+        Map<String, String> hdrFull = new LinkedHashMap<>();
+        if (!mat.cookie.isEmpty()) {
+            hdrFull.put("Cookie", mat.cookie);
+        }
+        hdrFull.putAll(CouponScene.headers());
+
+        String earlyBase = EARLY_DIAG_JS;
+        String earlyShim = earlyBase + "\n" + SHIM_JS;
+        String earlyJwt = mat.jwt.isEmpty() ? earlyShim : earlyShim + "\n" + jwtEarly(mat.jwt);
+        String earlyWake = earlyJwt + "\n" + WAKE_JS;
+
+        HookLog.log("COUPON", "一键扫描 · 全方案探针 v2 启动（4.0.7+probe-v2 诊断版）",
+                "券探针 v2 已装载 · 纯诊断版（不改正式扫描、不采用命中结果、不发 Release）\n"
+                        + "第一轮结论: 页面加载成功、没被踢登录页，但 Vue 不 mount、券接口一个没发；"
+                        + "且「无当次现场」使 B~F 变量全退化，6 组实际只测了 1 个变量。\n"
+                        + "本轮改为: 原料实时读当前会话 + 先抓 JS 错误定位 mount 失败 + 三路会话注入对照。\n"
                         + "硬约束: 不点『本机号码一键登录』、不调 SsoLogin.ensure 换票、"
-                        + "不发起任何新登录请求；只用当次现场已有的登录态做对照，避免一天多登。\n"
-                        + "现场原料(内存快照, 不落盘, 带时间戳):\n" + CouponScene.describe()
-                        + "\n本轮入口选择: " + (hasScene && !withParams.equals(bare)
-                        ? "有当次现场 → B~F 用带渠道参数真页 URL" : "无当次现场 → 全部退化用裸地址")
-                        + "\nCookie 头: " + (cookie.isEmpty() ? "无（A/B 不刷, C 起也无可刷）" : cookie.length() + " 字符")
-                        + " · 真页额外 headers: " + (sceneHeaders.isEmpty() ? "无（D 退化为 C）" : sceneHeaders.size() + " 项")
-                        + " · SSO jwt: " + (jwt.isEmpty() ? "无（E 退化为 D）" : jwt.length() + " 字符")
-                        + "\n方案: A 基线 / B +渠道参数 / C +会话Cookie / D +真页headers / E +SSO jwt / F +主动唤醒"
+                        + "不发起任何新登录请求；会话串日志已脱敏。\n"
+                        + "—— 实时原料(本次 run 内存, 不落盘) ——\n" + mat.describe()
+                        + "\n—— 前台真页现场(仅参考, 不再作为变量来源) ——\n" + CouponScene.describe()
+                        + "\n本轮入口: A/B 裸地址" + (mat.hasChannel() ? " · C/D 带实时渠道参数" : " · 渠道参数无(退化为裸地址)")
+                        + (mat.hasSession() ? " · E/F 再叠加会话串 URL 参数" : " · 会话串无(E/F 退化为渠道参数)")
+                        + "\nCookie 头: " + (mat.cookie.isEmpty() ? "无" : mat.cookie.length() + " 字符")
+                        + " · 真页额外 headers: " + CouponScene.headers().size() + " 项"
+                        + " · QWHDSSOJWT: " + (mat.jwt.isEmpty() ? "无" : mat.jwt.length() + " 字符")
+                        + "\n方案: A 基线 / B +缺桥垫片 / C +实时渠道参数 / D +会话Cookie回灌 /"
+                        + " E +会话串URL参数+JWT / F +主动唤醒"
                         + "\n每方案 " + (PER_PLAN_MS / 1000) + "s 上限, 整轮 " + (TOTAL_MS / 1000) + "s 上限。");
 
         Plan[] plans = new Plan[]{
-                new Plan("A", "基线·裸地址+全桥", bare, null, null, false),
-                new Plan("B", "+渠道参数入口", withParams, null, null, false),
-                new Plan("C", "+会话Cookie", withParams, hdrCookie, null, true),
-                new Plan("D", "+重放真页headers", withParams, hdrFull, null, true),
-                new Plan("E", "+SSO jwt(localStorage)", withParams, hdrFull,
-                        earlyJwt.isEmpty() ? null : earlyJwt, true),
-                new Plan("F", "+主动唤醒(点tab/Vue refresh)", withParams, hdrFull, earlyWake, true),
+                new Plan("A", "基线·裸地址+全桥+错误钩子", bare, null, earlyBase, false),
+                new Plan("B", "+缺桥垫片(cardInterface等)", bare, null, earlyShim, false),
+                new Plan("C", "+实时渠道参数", chUrl, null, earlyShim, false),
+                new Plan("D", "+会话Cookie回灌/头", chUrl, hdrFull, earlyShim, true),
+                new Plan("E", "+会话串URL参数+QWHDSSOJWT", sessUrl, hdrFull, earlyJwt, true),
+                new Plan("F", "+主动唤醒(点tab/Vue refresh)", sessUrl, hdrFull, earlyWake, true),
         };
 
         StringBuilder table = new StringBuilder();
-        table.append("方案 | 变量 | 落地 | 登录页 | 渠道 | Vue模板 | 券按钮 | 券请求 | 正文 | 耗时 | 结论\n");
-        table.append("--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---\n");
+        table.append("方案 | 变量 | 落地 | 登录 | 模板 | 券按钮 | 正文 | JS错误 | 资源 | Vue | 耗时 | 结论\n");
+        table.append("--- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | ---\n");
 
         boolean flushed = false;
         String hit = "";
@@ -233,46 +423,102 @@ final class CouponProbe {
             int login = intField(r.site, "LOGIN", 0) + intField(r.site, "LOGINTXT", 0);
             int channel = intField(r.site, "CHANNEL", 0);
             String landed = shortUrl(fieldOf(r.site, "HREF"));
-            r.verdict = verdict(r, btn, tpl, login, channel);
+            String errs = fieldOf(r.site, "ERRS");
+            String vue = fieldOf(r.site, "VUE");
+            String res = fieldOf(r.site, "RES");
+            r.verdict = verdict(r, btn, tpl, login, channel, errs);
             if (hit.isEmpty() && btn > 0 && tpl == 0 && login == 0 && channel == 0) {
                 hit = p.code + "（" + btn + " 个券按钮）";
             }
 
             table.append(p.code).append(" | ").append(p.label)
                     .append(" | ").append(landed)
-                    .append(" | ").append(login > 0 ? "是" : "否")
-                    .append(" | ").append(channel > 0 ? "未开放" : "否")
+                    .append(" | ").append(login > 0 || channel > 0 ? "是" : "否")
                     .append(" | ").append(tpl > 0 ? "是" : "否")
                     .append(" | ").append(btn)
-                    .append(" | ").append(shortApis(fieldOf(r.site, "APIS")))
                     .append(" | ").append(intField(r.site, "BODYLEN", 0))
+                    .append(" | ").append(shortCell(errs, 42))
+                    .append(" | ").append(res.isEmpty() ? "-" : res.split("\\|").length + "条")
+                    .append(" | ").append(shortCell(vue, 22))
                     .append(" | ").append(r.costMs / 1000L).append("s")
                     .append(" | ").append(r.verdict).append('\n');
 
-            HookLog.log("COUPON", "探针 · 方案 " + p.code + " · " + p.label,
-                    "入口: " + p.url
+            HookLog.log("COUPON", "探针 v2 · 方案 " + p.code + " · " + p.label,
+                    "入口(已脱敏): " + safeUrl(p.url)
                             + "\n附加headers: " + (p.headers == null || p.headers.isEmpty()
                             ? "无" : p.headers.keySet().toString())
                             + "\n预注入脚本: " + (p.early == null || p.early.isEmpty() ? "无" : "有")
+                            + (p.early != null && p.early.contains("QWHDSSOJWT") ? "(含 JWT)" : "")
+                            + (p.early != null && p.early.contains("setInterval") ? "(含唤醒)" : "")
+                            + (p.early != null && p.early.contains("new Proxy") ? "(含缺桥垫片)" : "")
                             + "\nCookie回灌: " + (p.flushCookie ? "是" : "否")
                             + "\n耗时: " + r.costMs + "ms"
                             + "\n结论: " + r.verdict
                             + "\n—— 页面现场 ——\n" + (r.site.isEmpty() ? "(空)" : r.site));
         }
 
-        // 流量诊断：把首页同源的余量缓存原文打进日志，确认有没有 flowSceneData[] 明细。
-        probeFlowCache(globalEnd);
+        // ---- 2. 辅助诊断：首页流量缓存原文 + 余量查询页明细 ----
+        probeAux(globalEnd);
 
-        HookLog.log("COUPON", "一键扫描 · 全方案探针汇总",
+        HookLog.log("COUPON", "一键扫描 · 全方案探针 v2 汇总",
                 table.toString()
                         + "\n命中出券的方案: " + (hit.isEmpty() ? "无（6 组都没读到券）" : hit)
-                        + "\n现场原料新鲜度: " + (hasScene ? CouponScene.ageMs() / 1000L + "s 前采集" : "无当次现场")
-                        + "\n说明: 完整页面现场见上方 6 条『探针 · 方案 X』；流量缓存原文见『探针 · 首页余量缓存原文』。"
+                        + "\n实时原料新鲜度: " + (mat.at > 0 ? (System.currentTimeMillis() - mat.at) / 1000L + "s 前采集" : "未采到")
+                        + " · 前台真页现场: " + (CouponScene.fresh() ? CouponScene.ageMs() / 1000L + "s 前" : "无（符合纯离屏要求）")
+                        + "\n说明: 完整页面现场(含 JS 错误/资源清单/Vue 状态)见上方 6 条『探针 v2 · 方案 X』；"
+                        + "流量原文见『探针 · 首页余量缓存原文』与『探针 · 余量查询页明细』。"
                         + "\n本版为诊断测试版，不采用命中结果、不改正式扫描、不发 Release。");
 
         CouponTask.sendDone(0, 0, plans.length,
-                hit.isEmpty() ? "全方案探针完成 · 6 组均未读到券 · 详见日志『全方案探针汇总』"
-                        : "全方案探针完成 · 命中 " + hit + " · 详见日志");
+                hit.isEmpty() ? "探针 v2 完成 · 6 组均未读到券 · 详见日志『全方案探针 v2 汇总』"
+                        : "探针 v2 完成 · 命中 " + hit + " · 详见日志");
+    }
+
+    /** 开一张 dev.coc.10086.cn 同源离屏页，现场读 channelId / QWHDSSOJWT / yx。 */
+    private static Material collectMaterials(long globalEnd) {
+        Material m = new Material();
+        if (System.currentTimeMillis() >= globalEnd) {
+            return m;
+        }
+        WebPage page = null;
+        try {
+            page = WebPage.openProbe(MATERIAL_URL, 5_000L, HOSTS, null, null);
+            if (page == null) {
+                HookLog.log("COUPON", "探针 v2 · 实时原料", "同源离屏页没起来，原料留空（不拿缓存冒充）");
+                return m;
+            }
+            long end = Math.min(System.currentTimeMillis() + MATERIAL_MS, globalEnd);
+            String site = null;
+            while (System.currentTimeMillis() < end) {
+                site = page.eval(MATERIAL_JS, 4_000L);
+                if (site != null && !fieldOf(site, "CHANNELID").isEmpty()) {
+                    break;
+                }
+                sleep(POLL_GAP_MS);
+            }
+            if (site != null) {
+                m.channelId = fieldOf(site, "CHANNELID");
+                m.yx = fieldOf(site, "YX");
+                m.jwt = fieldOf(site, "JWT");
+                m.at = System.currentTimeMillis();
+                m.origin = "dev.coc.10086.cn 同源 localStorage（当前会话实时读）";
+            }
+            HookLog.log("COUPON", "探针 v2 · 实时原料",
+                    m.describe()
+                            + "\n该 origin localStorage 键: " + (site == null ? "(采集失败)" : fieldOf(site, "LSKEYS"))
+                            + "\n说明: 只从当前会话同源 localStorage 现场读，不落盘、不用旧缓存；"
+                            + "读不到就如实留空，对应方案退化为裸地址。");
+        } catch (Throwable e) {
+            HookLog.log("COUPON", "探针 v2 · 实时原料", "异常: " + e + "（原料留空，不兜底造数据）");
+        } finally {
+            if (page != null) {
+                try {
+                    page.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return m;
     }
 
     private static Result runOne(Plan p, long globalEnd) {
@@ -296,10 +542,10 @@ final class CouponProbe {
                         int tpl = intField(site, "TPL", 1);
                         int login = intField(site, "LOGIN", 0) + intField(site, "LOGINTXT", 0);
                         if (btn > 0 && tpl == 0) {
-                            break; // 命中券列表，没必要再等
+                            break;
                         }
                         if (login > 0 && System.currentTimeMillis() - start > 3_000L) {
-                            break; // 已经被踢到登录页，多等也不会自己登录（本版不点登录）
+                            break;
                         }
                     }
                     sleep(POLL_GAP_MS);
@@ -323,36 +569,46 @@ final class CouponProbe {
         return r;
     }
 
-    private static void probeFlowCache(long globalEnd) {
+    /** 首页同源 flowSceneData 原文 + 余量查询页 DOM/缓存，只诊断不改流量逻辑。 */
+    private static void probeAux(long globalEnd) {
+        probeOne(globalEnd, "首页余量缓存原文", FlowTask.ENTRY_URL, PROBE_JS,
+                new String[]{"FLOWKEY", "FLOWRAW"});
+        probeOne(globalEnd, "余量查询页明细", MARGIN_URL, MARGIN_JS,
+                new String[]{"BODY", "LSKEYS", "FLOWRAW"});
+    }
+
+    private static void probeOne(long globalEnd, String title, String url, String js,
+                                 String[] keys) {
         if (System.currentTimeMillis() >= globalEnd) {
-            HookLog.log("FLOW", "探针 · 首页余量缓存原文", "整轮总时限到，跳过流量诊断（不影响券结论）");
+            HookLog.log("FLOW", "探针 · " + title, "整轮总时限到，跳过（不影响券结论）");
             return;
         }
         WebPage page = null;
         try {
-            page = WebPage.openProbe(FlowTask.ENTRY_URL, 8_000L, HOSTS, null, null);
+            page = WebPage.openProbe(url, 6_000L, HOSTS, null, null);
             if (page == null) {
-                HookLog.log("FLOW", "探针 · 首页余量缓存原文", "离屏页没起来");
+                HookLog.log("FLOW", "探针 · " + title, "离屏页没起来");
                 return;
             }
-            long end = Math.min(System.currentTimeMillis() + FLOW_MS, globalEnd);
+            long end = Math.min(System.currentTimeMillis() + AUX_MS, globalEnd);
             String site = null;
             while (System.currentTimeMillis() < end) {
-                site = page.eval(PROBE_JS, 5_000L);
-                if (site != null && fieldOf(site, "FLOWKEY").contains("命中")) {
+                site = page.eval(js, 4_000L);
+                if (site != null && !site.isEmpty()) {
                     break;
                 }
                 sleep(POLL_GAP_MS);
             }
-            HookLog.log("FLOW", "探针 · 首页余量缓存原文",
-                    "首页同源 origin: " + FlowTask.ENTRY_URL
-                            + "\n命中 flowSceneData 缓存: " + (site == null ? "采集失败" : fieldOf(site, "FLOWKEY"))
-                            + "\n缓存原文(前900字, 判断有没有分套餐明细 flowSceneData[]):\n"
-                            + (site == null ? "(空)" : fieldOf(site, "FLOWRAW"))
-                            + "\n说明: 当前「一键查询」只读首页 4 个汇总数字；若原文含 flowSceneData[] "
-                            + "分套餐明细，下一轮可据此解析全字段。本轮只诊断，不改流量逻辑。");
+            StringBuilder sb = new StringBuilder();
+            sb.append("入口: ").append(safeUrl(url)).append('\n');
+            for (String k : keys) {
+                sb.append(k).append(": ").append(site == null ? "(采集失败)" : fieldOf(site, k)).append('\n');
+            }
+            sb.append("说明: 首页 flowSceneData[] 只有 3 个汇总项、无分套餐明细；"
+                    + "余量查询页是否有更细数据见上面 BODY / FLOWRAW。本轮只诊断，不改流量逻辑。");
+            HookLog.log("FLOW", "探针 · " + title, sb.toString());
         } catch (Throwable e) {
-            HookLog.log("FLOW", "探针 · 首页余量缓存原文", "异常: " + e);
+            HookLog.log("FLOW", "探针 · " + title, "异常: " + e);
         } finally {
             if (page != null) {
                 try {
@@ -363,7 +619,8 @@ final class CouponProbe {
         }
     }
 
-    private static String verdict(Result r, int btn, int tpl, int login, int channel) {
+    private static String verdict(Result r, int btn, int tpl, int login, int channel,
+                                  String errs) {
         if (r.site.startsWith("NO_PAGE") || r.site.startsWith("ERROR")) {
             return "页没起来";
         }
@@ -376,8 +633,9 @@ final class CouponProbe {
         if (btn > 0 && tpl == 0) {
             return "✓ 券按钮 " + btn + " 个（可能出券）";
         }
+        boolean hasErr = !errs.isEmpty() && !errs.equals("无") && !errs.equals("?");
         if (tpl > 0) {
-            return "Vue 未渲染（正文仍是模板）";
+            return hasErr ? "Vue 未渲染（有 JS 报错）" : "Vue 未渲染（无 JS 报错）";
         }
         return "0 张（券接口/按钮都无）";
     }
@@ -387,11 +645,31 @@ final class CouponProbe {
         String q = jwt.replace("\\", "\\\\").replace("'", "\\'")
                 .replace("\n", "").replace("\r", "");
         return "(function(){try{localStorage.setItem('QWHDSSOJWT','" + q
-                + "');}catch(e){}})();";
+                + "');window.__cmccSessionJwt=1;}catch(e){}})();";
     }
 
     private static String emptyToNull(String s) {
         return s == null || s.isEmpty() ? null : s;
+    }
+
+    private static String enc(String s) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isLetterOrDigit(c) || c == '-' || c == '_' || c == '.') {
+                sb.append(c);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 导出日志会被用户外发，会话串/token 一律脱敏。 */
+    private static String safeUrl(String u) {
+        if (u == null) {
+            return "";
+        }
+        return u.replaceAll("(?i)(JSESSIONID|UID|ticketID|cmccssotoken|QWHD_SESSION_TOKEN|HLWHD_SESSION_TOKEN|Comment)=[^;&\\s]+",
+                "$1=<已脱敏>");
     }
 
     /** 从 PROBE_JS 的逐行输出里取某个键的值。 */
@@ -405,7 +683,6 @@ final class CouponProbe {
                 return line.substring(prefix.length()).trim();
             }
         }
-        // APIS(12): 这种带资源计数的键，前缀匹配兜底。
         for (String line : site.split("\n")) {
             if (line.startsWith(key + "(")) {
                 int c = line.indexOf("): ");
@@ -433,20 +710,19 @@ final class CouponProbe {
         if (u == null || u.isEmpty()) {
             return "?";
         }
-        String s = u;
+        String s = safeUrl(u);
         if (s.length() > 46) {
             s = s.substring(0, 46);
         }
-        // 表格里竖线会破坏分栏。
         return s.replace("|", "/");
     }
 
-    private static String shortApis(String a) {
-        if (a == null || a.isEmpty() || a.equals("无")) {
-            return "无";
+    private static String shortCell(String a, int max) {
+        if (a == null || a.isEmpty()) {
+            return "-";
         }
-        String s = a.length() > 60 ? a.substring(0, 60) + "…" : a;
-        return s.replace("|", "/");
+        String s = a.length() > max ? a.substring(0, max) + "…" : a;
+        return s.replace("|", "/").replace("\n", " ");
     }
 
     private static void sleep(long ms) {

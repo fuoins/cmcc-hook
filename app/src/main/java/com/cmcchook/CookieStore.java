@@ -267,6 +267,37 @@ final class CookieStore {
         }
     }
 
+    /**
+     * v4.0.7+probe-v2：App 容器把会话串拼进 XHR 参数用的四个键。
+     *
+     * <p>日志实证：App 请求形如
+     * {@code gsmState?JSESSIONID=...;UID=...;Comment=...;Path=/;HTTPOnly;ticketID=POD9;Secure}，
+     * 会话不是靠 touch.10086.cn 的 Cookie 传的（那边的 Path=/cmcc-service 根本不匹配），
+     * 而是拼进请求参数。这里只读本进程已捕获的当前会话值，<b>不换票、不发起登录</b>，
+     * 给离屏页做「会话串作为 URL 参数」一路对照。
+     */
+    static String sessionString() {
+        String[] keys = {"JSESSIONID", "UID", "Comment", "ticketID"};
+        synchronized (LOCK) {
+            ensureLoaded();
+            StringBuilder sb = new StringBuilder();
+            for (String k : keys) {
+                String v = get("10086.cn", k);
+                if (v == null || v.isEmpty()) {
+                    v = firstOf(k);
+                }
+                if (v == null || v.isEmpty()) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append(';');
+                }
+                sb.append(k).append('=').append(v);
+            }
+            return sb.toString();
+        }
+    }
+
     static boolean hasSso() {
         String token = get("cmccssotoken");
         return token != null && token.length() > 8;

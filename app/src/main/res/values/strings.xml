@@ -187,7 +187,7 @@
     <string name="flow_fail">读取失败：%1$s</string>
     <string name="flow_ok">读取完成：%1$d 项余量 · 点「流量详情」逐项展开</string>
     <string name="coupon_section">我的卡券</string>
-    <string name="coupon_hint">【诊断测试版 4.0.7+probe】点一次「一键扫描」，模块会在后台串行测试 6 组离屏方案（A 基线→B 渠道参数→C 会话Cookie→D 真页headers→E SSO jwt→F 主动唤醒），约 1~2 分钟，界面不动、不触发登录。结果写成对照表：导出完整日志看「一键扫描 · 全方案探针汇总」，界面顶部也会显示命中结论。此版只诊断、不采用命中结果，券列表可能仍为空属正常。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
+    <string name="coupon_hint">【诊断测试版 4.0.7+probe-v2】点一次「一键扫描」，先在后台实时读当前会话的渠道 / SSO / 会话串原料，再串行跑 6 组离屏方案（A 基线 → B 缺桥垫片 → C 实时渠道参数 → D 会话 Cookie 回灌 → E 会话串 URL 参数 + JWT → F 主动唤醒），约 2 分钟，界面不动、不触发登录。每组都会抓 JS 报错、资源清单和 Vue 状态，先定位「页面为什么停在模板不渲染」。导出完整日志看「一键扫描 · 全方案探针 v2 汇总」对照表。此版只诊断、不采用命中结果，券列表可能仍为空属正常。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
     <string name="coupon_title">卡券中心</string>
     <string name="coupon_summary_empty">还没扫描，点「一键扫描」读一次</string>
     <string name="coupon_scan">一键扫描</string>
@@ -215,7 +215,7 @@
     <string name="coupon_confirm_use">确认使用</string>
     <string name="coupon_done">批量结束：成功 %1$d 张，失败 %2$d 张</string>
     <string name="coupon_scanning">正在一键扫描…</string>
-    <string name="coupon_scan_fail">【诊断测试版】本版一键扫描只跑全方案探针，不产出券清单。导出完整日志看「一键扫描 · 全方案探针汇总」对照表，判断哪组方案能出券；命中结果将在下一轮精简正式版采用。</string>
+    <string name="coupon_scan_fail">【诊断测试版 v2】本版一键扫描只跑全方案探针，不产出券清单。导出完整日志看「一键扫描 · 全方案探针 v2 汇总」对照表，以及 6 条「探针 v2 · 方案 X」里的 JS 错误 / 资源清单 / Vue 状态，定位 Vue 未渲染的原因；命中结果将在下一轮精简正式版采用。</string>
     <!-- v4.0.4 小米 / HyperOS 短信验证码自检引导 -->
     <string name="sms_help_entry">小米 / HyperOS 读不到验证码？点这里看自检步骤</string>
     <string name="sms_help_title">小米读不到短信验证码 · 自检</string>
