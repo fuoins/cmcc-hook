@@ -57,17 +57,25 @@ final class WebPage {
         /** 文档一开始加载就注入的脚本。晚一步页面自己的 JS 就跑完了。 */
         final String earlyScript;
         final boolean withImages;
+        /** v4.0.7+probe：主文档 loadUrl 附加的额外请求头；null 表示不带。 */
+        final java.util.Map<String, String> extraHeaders;
 
         NavState(String url, String[] hosts) {
-            this(url, hosts, null, false);
+            this(url, hosts, null, false, null);
         }
 
         NavState(String url, String[] hosts, String earlyScript, boolean withImages) {
+            this(url, hosts, earlyScript, withImages, null);
+        }
+
+        NavState(String url, String[] hosts, String earlyScript, boolean withImages,
+                 java.util.Map<String, String> extraHeaders) {
             this.entry = url;
             this.current = url;
             this.hosts = hosts;
             this.earlyScript = earlyScript;
             this.withImages = withImages;
+            this.extraHeaders = extraHeaders;
         }
 
         void remember(String url) {
@@ -121,6 +129,47 @@ final class WebPage {
     static WebPage open(String url, long timeoutMs, String[] allowedHosts,
                         String earlyScript, boolean withImages) {
         return openInternal(url, timeoutMs, allowedHosts, earlyScript, withImages, false);
+    }
+
+    /**
+     * v4.0.7+probe：探针专用开页 —— 可附加主文档请求头、可预注入脚本。
+     *
+     * <p>与 {@link #open(String, long, String[], String, boolean)} 走同一套 build，
+     * 只是把 extraHeaders 透传到 NavState，让 loadUrl 带上真页的请求头做对照。
+     * 刻意用 awaitDoc（不等 Vue 渲染）—— 探针自己会按 SITE_JS 轮询若干秒看券列表
+     * 到底渲不渲染，等渲染反而会错过「被踢到登录页」这个关键中间态。
+     */
+    static WebPage openProbe(String url, long timeoutMs, String[] allowedHosts,
+                             String earlyScript, java.util.Map<String, String> extraHeaders) {
+        final Context ctx = HookLog.context();
+        if (ctx == null || url == null || url.isEmpty()) {
+            return null;
+        }
+        final NavState nav = new NavState(url, allowedHosts, earlyScript, true, extraHeaders);
+        final Object[] holder = {null};
+        final CountDownLatch created = new CountDownLatch(1);
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    holder[0] = build(ctx, url, nav);
+                } catch (Throwable e) {
+                    HookLog.logcat("webpage probe create failed: " + e);
+                } finally {
+                    created.countDown();
+                }
+            }
+        });
+        try {
+            created.await(Math.min(timeoutMs, 8_000L), TimeUnit.MILLISECONDS);
+        } catch (InterruptedException ignored) {
+        }
+        if (holder[0] == null) {
+            return null;
+        }
+        WebPage page = new WebPage(holder[0], nav);
+        page.awaitDoc(Math.min(timeoutMs, 12_000L));
+        return page;
     }
 
     /**
@@ -350,7 +399,21 @@ final class WebPage {
         AppBridges.injectInto(webView, bridgeName);
         final Object target = webView;
         try {
-            XposedHelpers.callMethod(webView, "loadUrl", url);
+            // v4.0.7+probe：探针方案要重放真页 loadUrl 的额外请求头。
+            // 只有探针开的页带 extraHeaders；生产任务的 open() 一律 null，
+            // 走的还是原来那句单参 loadUrl，行为完全不变。
+            boolean loaded = false;
+            if (nav.extraHeaders != null && !nav.extraHeaders.isEmpty()) {
+                try {
+                    XposedHelpers.callMethod(webView, "loadUrl", url, nav.extraHeaders);
+                    loaded = true;
+                } catch (Throwable he) {
+                    HookLog.logcat("loadUrl(headers) unsupported, fallback: " + he);
+                }
+            }
+            if (!loaded) {
+                XposedHelpers.callMethod(webView, "loadUrl", url);
+            }
             // onPageStarted 万一没回调（不同 X5 版本行为不一样），文档建立后
             // 补一次垫片；幂等，页面已经加载了真 SDK 也不会被顶掉。
             XposedHelpers.callMethod(webView, "postDelayed", new Runnable() {

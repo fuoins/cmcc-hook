@@ -48,7 +48,7 @@ final class FlowTask {
      * localStorage 里。必须与首页同域，否则 localStorage 读不到。
      * 刻意不带 {@code channelId/yx} 等 App 现场参数（硬编码等于伪造现场数据）。
      */
-    private static final String ENTRY_URL =
+    static final String ENTRY_URL =
             "https://h.app.coc.10086.cn/cmcc-app/app-pages/home.html";
 
     /** 页面加载 + 缓存就绪的最长等待。缓存通常秒读，留足余量给页面自己刷新。 */

@@ -403,6 +403,28 @@ final class CouponTask {
     }
 
     static void scan() {
+        // v4.0.7+probe：诊断测试版 —— 一键扫描临时改为「全方案探针」，
+        // 一次点击串行跑 A~F 六组累加方案，用一份日志的对照表定位到底哪一步
+        // 能出券。纯离屏、界面不动、不触发登录。正式扫描逻辑保留在 scanOnce /
+        // openHostForScan 等一整套方法里没动，得出命中方案后下一轮切回精简版。
+        if (busy) {
+            sendList("{\"stage\":\"busy\",\"count\":0,\"items\":[]}");
+            return;
+        }
+        busy = true;
+        try {
+            CouponProbe.run();
+        } catch (Throwable e) {
+            HookLog.log("COUPON", "全方案探针 · 异常", String.valueOf(e));
+            sendList("{\"stage\":\"error\",\"count\":0,\"items\":[]}");
+        } finally {
+            busy = false;
+        }
+    }
+
+    /** v4.0.7 正式扫描主体（诊断版期间不调用，完整保留供下一轮精简版切回）。 */
+    @SuppressWarnings("unused")
+    private static void scanLegacy() {
         if (busy) {
             sendList("{\"stage\":\"busy\",\"count\":0,\"items\":[]}");
             return;
@@ -880,8 +902,8 @@ final class CouponTask {
         send(intent);
     }
 
-    private static void sendProgress(String stage, int idx, String name,
-                                     int ok, int fail, int total, String msg) {
+    static void sendProgress(String stage, int idx, String name,
+                             int ok, int fail, int total, String msg) {
         Intent intent = base(ACT_PROGRESS);
         if (intent == null) {
             return;
@@ -907,7 +929,7 @@ final class CouponTask {
         send(intent);
     }
 
-    private static void sendDone(int ok, int fail, int total, String msg) {
+    static void sendDone(int ok, int fail, int total, String msg) {
         Intent intent = base(ACT_DONE);
         if (intent == null) {
             return;

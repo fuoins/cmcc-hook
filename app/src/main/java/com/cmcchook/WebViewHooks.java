@@ -118,6 +118,18 @@ final class WebViewHooks {
                     attachCoupon(url, param.thisObject);
                     attachWisdom(url, param.thisObject);
                     attachGoose(param, url);
+                    // v4.0.7+probe：记下前台真页卡券入口的「当次现场原料」（带参 URL +
+                    // loadUrl headers + Cookie 快照 + 时间戳），供全方案探针复用。
+                    // 只记前台真页：离屏页正是被对照的对象，把它记进来等于自证循环。
+                    if (url.contains("mycoupons")) {
+                        boolean off = isOffscreenPage(param.thisObject);
+                        if (!off && CouponTask.URL.equals(url) && OffscreenWeb.current() != null) {
+                            off = true;
+                        }
+                        if (!off) {
+                            CouponScene.note(url, firstMap(param.args));
+                        }
+                    }
                     if (!UrlFilter.interesting(url)) {
                         return;
                     }
