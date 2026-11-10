@@ -777,6 +777,12 @@ final class WebViewHooks {
     private static volatile long lastCouponAttachLog;
 
     private static void attachCoupon(String url, Object view) {
+        // 顺手把用户亲手打开的「余量查询」真页登记给 FlowTask：真页有会话、有 App 现场参数，
+        // 页面会自己请求并解密，读它的 Vuex 比离屏稳（11-10 18:12 日志实证）。
+        try {
+            FlowTask.noteReal(url, view);
+        } catch (Throwable ignored) {
+        }
         if (url == null || !url.contains("mycoupons")) {
             return;
         }

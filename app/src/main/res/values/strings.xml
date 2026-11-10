@@ -175,7 +175,7 @@
     <string name="flow_title">流量余量</string>
     <string name="flow_refresh">一键查询</string>
     <string name="flow_refreshing">正在后台离屏读取余量明细（通常 3~8 秒）…</string>
-    <string name="flow_never">进本页自动离屏查询一次。数据源换成「余量查询」页面的 Vuex 全量树：按分类 → 套餐 → 流量项逐条列出，含套餐名、有效期、总量/已用/剩余，共享流量单列。离屏后台读取，页面不会跳到前台；只读页面自己解密后的结果，模块不发请求、不解密、不拼签名。万一全量树拿不到，会自动退回首页明文缓存。下方消耗测速与流量领取入口不受影响。</string>
+    <string name="flow_never">进本页自动查询一次。数据源是「余量查询」页面的 Vuex 全量树：按分类 → 套餐 → 流量项逐条列出，含套餐名、有效期、总量/已用/剩余，共享流量单列。优先读你刚打开过的「余量查询」真页；真页没开时后台离屏读取，并复用真页地址与已捕获的会话 Cookie，页面不会跳到前台。只读页面自己解密后的结果，模块不发请求、不解密、不拼签名。万一全量树拿不到，会自动退回首页明文缓存（只有 3 项汇总）；这时先在 App 里点一次首页那张流量卡打开余量页，再回来重查即可。下方消耗测速与流量领取入口不受影响。</string>
     <string name="flow_at">更新于 %1$s</string>
     <string name="flow_hero_label">国内通用流量 · 剩余</string>
     <string name="flow_hero_hint">已用 %1$s / 共 %2$s</string>

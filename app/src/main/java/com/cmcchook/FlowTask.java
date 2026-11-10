@@ -7,6 +7,9 @@ import android.content.Intent;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.Collections;
+import java.util.Map;
+
 /**
  * 流量余量「一键离屏查询」—— v4.0.2。
  *
@@ -65,6 +68,33 @@ final class FlowTask {
 
     /** 余量页允许停留的域；页面内部跳转 10086.cn 各子域都放行，广告/下载页照旧拦截。 */
     private static final String[] MARGIN_HOSTS = {"wx.10086.cn", "10086.cn", "app.10086.cn"};
+
+    /**
+     * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
+     * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
+     */
+    static final String BUILD = "flowcred-20261110";
+
+    /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
+    private static final long REAL_TTL_MS = 10L * 60_000L;
+
+    /**
+     * 用户亲手打开的余量页（前台真页）。
+     *
+     * <p>11-10 18:12 日志实证：同一个 App 里，真页 {@code marginQuery?channelId=...&yx=...}
+     * 能发出 10 个余量接口并全部 200，而模块离屏页用裸地址打开、19 秒内
+     * <b>一个请求都没发</b>，Vuex 停在 {@code loadInit}。差别就在「真页会话 + App 现场参数」。
+     * 所以只要真页还开着，直接读它的 Vuex，比离屏稳得多。
+     */
+    private static volatile Object realView;
+    private static volatile String realUrl;
+    private static volatile long realAt;
+
+    /**
+     * 离屏任务进行中的截止时间。期间 {@link #noteReal} 一律丢弃 —— 那时候页面回调里
+     * 出现的 marginQuery 就是模块自己开的离屏页（本轮开始会给它带参数，光看 URL 分不出来）。
+     */
+    private static volatile long probeBusyUntil;
 
     /** 全量树等待上限。实测 5 秒内出树，留 18 秒兜住网络慢的情况。 */
     private static final long TREE_DEADLINE_MS = 18_000L;
@@ -254,10 +284,11 @@ final class FlowTask {
     static void fetch() {
         long start = System.currentTimeMillis();
         StringBuilder diary = new StringBuilder();
-        diary.append("数据源: 余量查询页 Vuex 全量树（纯离屏、裸地址、不回灌 Cookie）\n");
-        diary.append("入口: ").append(MARGIN_URL).append('\n');
-        diary.append("方式: 离屏 WebView 打开余量页，只读页面自己请求并解密后写进 Vuex 的\n"
-                + "planRemianFlowListRes 全量树；不发请求、不解密、不拼签名、不自动登录。\n");
+        diary.append("build: ").append(BUILD).append('\n');
+        diary.append("数据源: 余量查询页 Vuex 全量树（真页优先；离屏时复用真页地址 + 已捕获会话 Cookie）\n");
+        diary.append("入口: ").append(MARGIN_URL).append(" （离屏兜底；有真页地址时优先用真页那条）\n");
+        diary.append("方式: 只读页面自己请求并解密后写进 Vuex 的 planRemianFlowListRes 全量树；"
+                + "不发请求、不解密、不拼签名、不自动登录。\n");
 
         JSONObject tree = readTree(diary);
         if (tree != null && countItems(tree) > 0) {
@@ -273,7 +304,8 @@ final class FlowTask {
             String rt = tree.optString("rawTree", "");
             diary.append("全量树原文(前 2000 字):\n")
                     .append(rt.length() > 2000 ? rt.substring(0, 2000) + "…" : rt).append('\n');
-            HookLog.log("FLOW", "流量余量 · 全量树 " + countItems(tree) + " 条", diary.toString());
+            HookLog.log("FLOW", "流量余量 · 全量树 " + countItems(tree) + " 条 · " + BUILD,
+                    diary.toString());
             send(tree);
             return;
         }
@@ -296,56 +328,174 @@ final class FlowTask {
      * {@code login} / {@code empty}），完全拿不到页时返回 {@code null}。
      */
     private static JSONObject readTree(StringBuilder diary) {
+        JSONObject live = readLive(diary);
+        if (live != null && countItems(live) > 0) {
+            return live;
+        }
+        return readOffscreen(diary);
+    }
+
+    /**
+     * 第 1 级：真页余量页还开着，直接读它的 Vuex。
+     *
+     * <p>真页是 App 用带参 URL 打开的、带完整 JS 桥、会话齐全，页面自己已经请求并解密完，
+     * 模块只是把结果读出来 —— 不发请求、不碰签名、不唤醒任何东西。
+     */
+    private static JSONObject readLive(StringBuilder diary) {
+        Object view = realPage();
+        if (view == null) {
+            diary.append("真页: 未登记（10 分钟内没打开过余量页）\n");
+            return null;
+        }
+        long age = System.currentTimeMillis() - realAt;
+        diary.append("真页: 已登记 ").append(age / 1000).append("s 前打开的余量页，优先直读\n");
+        diary.append("真页地址: ").append(shortUrl(realUrl)).append('\n');
         WebPage page = null;
-        JSONObject last = null;
-        int rounds = 0;
-        long start = System.currentTimeMillis();
         try {
-            page = WebPage.openProbe(MARGIN_URL, 9_000L, MARGIN_HOSTS, null, null);
+            page = WebPage.attach(view);
+            if (page == null) {
+                return null;
+            }
+            JSONObject o = pollTree(page, 6_000L, 800L, diary, "真页");
+            if (o != null && countItems(o) > 0) {
+                diary.append("真页直读成功，未新建任何 WebView\n");
+            }
+            return o;
+        } catch (Throwable t) {
+            diary.append("真页直读异常: ").append(t).append('\n');
+            return null;
+        }
+    }
+
+    /**
+     * 第 2 级：离屏打开余量页。
+     *
+     * <p>相比 4.0.7 的三处修正（依据 11-10 18:12 日志）：
+     * <ul>
+     *   <li>优先用<b>真页用过的完整地址</b>（带 {@code channelId/yx}）——裸地址那次
+     *       19 秒零请求，Vuex 停在 {@code loadInit}；</li>
+     *   <li>先 {@link CookieStore#flushToWebView()} 把已捕获的会话刷进 X5，再把
+     *       {@code Cookie} 作为请求头随 loadUrl 带进去（X5 对 setCookie 时灵时不灵，
+     *       两条路一起走）；</li>
+     *   <li>真页地址不可用或读不到时，再退回裸地址 + Cookie 头重试一次。</li>
+     * </ul>
+     */
+    private static JSONObject readOffscreen(StringBuilder diary) {
+        String real = realUrl;
+        boolean fresh = real != null && System.currentTimeMillis() - realAt <= REAL_TTL_MS;
+        JSONObject o = null;
+        if (fresh) {
+            diary.append("离屏第 1 次: 复用真页地址（含 channelId/yx）\n");
+            o = openAndPoll(real, TREE_DEADLINE_MS - 4_000L, diary);
+            if (o != null && countItems(o) > 0) {
+                return o;
+            }
+            diary.append("复用真页地址没读到，换裸地址重试\n");
+        }
+        diary.append("离屏第 ").append(fresh ? 2 : 1).append(" 次: 裸地址 + 会话 Cookie\n");
+        return openAndPoll(MARGIN_URL, TREE_DEADLINE_MS / 2, diary);
+    }
+
+    private static JSONObject openAndPoll(String url, long deadlineMs, StringBuilder diary) {
+        WebPage page = null;
+        long start = System.currentTimeMillis();
+        probeBusyUntil = start + deadlineMs + 30_000L;
+        try {
+            CookieStore.flushToWebView();
+            String cookie = CookieStore.header(url);
+            Map<String, String> headers = null;
+            if (cookie != null && !cookie.isEmpty()) {
+                headers = Collections.singletonMap("Cookie", cookie);
+            }
+            diary.append("Cookie: ").append(headers == null
+                    ? "无（按已捕获会话为空处理）" : ("已带 " + cookie.length() + " 字")).append('\n');
+            page = WebPage.openProbe(url, 9_000L, MARGIN_HOSTS, null, headers);
             if (page == null) {
                 diary.append("余量页: 离屏 WebView 建不起来（App 未运行或 WebView 内核不可用）。\n");
                 return null;
             }
-            long deadline = System.currentTimeMillis() + TREE_DEADLINE_MS;
-            while (System.currentTimeMillis() < deadline) {
-                rounds++;
-                String raw = null;
-                try {
-                    raw = page.eval(TREE_JS, 5_000L);
-                } catch (Throwable e) {
-                    diary.append("第 ").append(rounds).append(" 轮 eval 异常: ").append(e).append('\n');
-                }
-                if (raw != null && raw.startsWith("{")) {
-                    try {
-                        JSONObject o = new JSONObject(raw);
-                        last = o;
-                        String st = o.optString("state", "loading");
-                        // ready/login/error 收工；loading/empty 继续等页面挂载与请求。
-                        if ("ready".equals(st) || "login".equals(st) || "error".equals(st)) {
-                            break;
-                        }
-                    } catch (Throwable ignored) {
-                    }
-                }
-                try {
-                    Thread.sleep(TREE_POLL_MS);
-                } catch (InterruptedException e) {
-                    break;
-                }
-            }
+            return pollTree(page, deadlineMs, TREE_POLL_MS, diary, "离屏");
         } catch (Throwable t) {
             diary.append("余量页异常: ").append(t).append('\n');
+            return null;
         } finally {
+            probeBusyUntil = 0L;
             if (page != null) {
                 try {
                     page.close();
                 } catch (Throwable ignored) {
                 }
             }
+            diary.append("本轮耗时: ").append(System.currentTimeMillis() - start).append("ms\n");
         }
-        diary.append("余量页轮询: ").append(rounds).append(" 轮 · ")
-                .append(System.currentTimeMillis() - start).append("ms\n");
+    }
+
+    /** 轮询 {@link #TREE_JS}，ready/login/error 早收工，loading/empty 继续等页面挂载与请求。 */
+    private static JSONObject pollTree(WebPage page, long deadlineMs, long gapMs,
+                                       StringBuilder diary, String who) {
+        long end = System.currentTimeMillis() + deadlineMs;
+        JSONObject last = null;
+        int rounds = 0;
+        while (System.currentTimeMillis() < end) {
+            rounds++;
+            String raw = null;
+            try {
+                raw = page.eval(TREE_JS, 5_000L);
+            } catch (Throwable e) {
+                diary.append(who).append(" 第 ").append(rounds).append(" 轮 eval 异常: ")
+                        .append(e).append('\n');
+            }
+            if (raw != null && raw.startsWith("{")) {
+                try {
+                    JSONObject o = new JSONObject(raw);
+                    last = o;
+                    String st = o.optString("state", "loading");
+                    if ("ready".equals(st) || "login".equals(st) || "error".equals(st)) {
+                        break;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            try {
+                Thread.sleep(gapMs);
+            } catch (InterruptedException e) {
+                break;
+            }
+        }
+        diary.append(who).append(" 轮询 ").append(rounds).append(" 轮 · ")
+                .append(deadlineMs / 1000).append("s 上限\n");
         return last;
+    }
+
+    /** 真页登记：由 WebViewHooks 在页面回调里喂进来，离屏任务期间的记录一律丢弃。 */
+    static void noteReal(String url, Object view) {
+        try {
+            if (url == null || view == null || url.indexOf("marginQuery") < 0) {
+                return;
+            }
+            if (System.currentTimeMillis() < probeBusyUntil) {
+                return;
+            }
+            realView = view;
+            realUrl = url;
+            realAt = System.currentTimeMillis();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Object realPage() {
+        Object v = realView;
+        if (v == null || System.currentTimeMillis() - realAt > REAL_TTL_MS) {
+            return null;
+        }
+        return v;
+    }
+
+    private static String shortUrl(String url) {
+        if (url == null) {
+            return "无";
+        }
+        return url.length() > 160 ? url.substring(0, 160) + "…" : url;
     }
 
     /**
