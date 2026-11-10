@@ -192,6 +192,10 @@ final class WebSession {
 
     /** 页面建立后的统一收尾：登录态检测、场景快照、挂到 current。 */
     private static boolean settle(String key, WebPage page, long start) {
+        return settle(key, page, start, 0);
+    }
+
+    private static boolean settle(String key, WebPage page, long start, int depth) {
         if (page == null || page.raw() == null) {
             HookLog.log("TASK", "页面打开失败 · " + key, "");
             return false;
@@ -248,17 +252,34 @@ final class WebSession {
         boolean channelBlocked = (title != null && title.contains("渠道未开放"))
                 || (text != null && text.contains("渠道未开放"))
                 || (scene != null && scene.contains("channelNonsupport"));
-        if (channelBlocked) {
-            // 服务端把页面 302 到「访问渠道未开放」：入口 URL 缺 touch_id/yx/channelId。
+        // 11-10 22:27 实证：砸蛋入口缺 A_C_CODE 时，wx 把页面 302 到
+        // /qwhdhub/notice/limited?A_C_CODE=null，标题「访问受限」、正文 548 字节。
+        // 旧判定不认这种页，脚本在空壳上跑完，任务报「完成」但一步都没做。
+        // 先看便宜的线索（标题/首屏/scene 里的 html 长度），可疑了才让页面 eval 复核。
+        boolean suspect = (title != null && (title.contains("受限") || title.contains("无法访问")))
+                || (text != null && (text.contains("受限") || text.contains("无法访问")))
+                || (scene != null && scene.matches(".*html=\\d{1,3}( ·|\\z).*"));
+        boolean limited = !channelBlocked && suspect && RealPage.blocked(page);
+        if ((channelBlocked || limited) && depth == 0) {
+            // 先别急着判死：换一个带渠道参数的入口（学到的 / 真页登记表 /
+            // 内置表 / 鹅蛋球赛的缓存入口）重开一次，多数情况能救回来。
+            WebPage alt = RealPage.reopenBetter(pageUrl, key);
+            if (alt != null && alt.raw() != null) {
+                return settle(key, alt, start, depth + 1);
+            }
+        }
+        if (channelBlocked || limited) {
+            // 服务端把页面 302 到「访问渠道未开放 / 访问受限」：入口 URL 缺渠道参数。
             // 这时候页面同源能发请求，但接口一律返回错误 HTML，继续跑只会白跑一轮。
             // 明确判失败，让上层直接报「活动页没有打开」，日志一眼能定位。
-            HookLog.log("TASK", "访问渠道未开放 · " + key + " · 入口缺渠道参数",
+            HookLog.log("TASK", (limited ? "页面访问受限" : "访问渠道未开放")
+                            + " · " + key + " · 入口缺渠道参数",
                     "URL: " + pageUrl + "\n标题: " + title + "\n现场: " + scene + "\n"
-                            + "活动页地址缺 touch_id / yx / channelId 等渠道参数，服务端把页面"
-                            + "重定向到了「访问渠道未开放」，接口只会返回错误 HTML。\n"
-                            + "已启用现场学习：在中国移动 App 里手动点进一次这个活动，"
-                            + "模块会记住带渠道参数的真实入口；内置表也补了签到入口的实证参数。\n"
-                            + "修好入口后再点一次「执行任务」即可，不会锁定当天任务。");
+                            + "活动页地址缺 A_C_CODE / touch_id / yx / channelId 等渠道参数，"
+                            + "服务端把页面重定向到了受限页，接口只会返回错误 HTML。\n"
+                            + "已尝试换成学到的带参入口重开，仍被拦。\n"
+                            + "在中国移动 App 里手动点进一次这个活动，模块会自动记住带渠道参数的真实入口，"
+                            + "之后再点「执行任务」即可；不会锁定当天任务。");
             page.close();
             return false;
         }

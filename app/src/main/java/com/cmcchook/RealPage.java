@@ -145,6 +145,197 @@ final class RealPage {
         return sb.length() == 0 ? "  · 无\n" : sb.toString();
     }
 
+    /** 登记表里这个 WebView 最近一次加载的地址。 */
+    static String lastUrlOf(Object view) {
+        if (view == null) {
+            return "";
+        }
+        long now = System.currentTimeMillis();
+        String best = "";
+        long bestAt = 0;
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                if (VIEWS[i] != view || now - AT[i] > TTL_MS) {
+                    continue;
+                }
+                if (AT[i] > bestAt) {
+                    bestAt = AT[i];
+                    best = URLS[i];
+                }
+            }
+        }
+        return best;
+    }
+
+    /** 登记表里包含该活动号、且带渠道参数的最新地址（用户手动点活动时留下的）。 */
+    static String recall(String actId) {
+        if (actId == null || actId.isEmpty()) {
+            return "";
+        }
+        long now = System.currentTimeMillis();
+        String best = "";
+        long bestAt = 0;
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                String u = URLS[i];
+                if (u == null || VIEWS[i] == null || now - AT[i] > TTL_MS) {
+                    continue;
+                }
+                if (!u.contains(actId) || !RealEntry.hasChannel(u)) {
+                    continue;
+                }
+                if (AT[i] > bestAt) {
+                    bestAt = AT[i];
+                    best = u;
+                }
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 页面是不是「被服务端重定向到受限页」。
+     *
+     * <p>11-10 22:27 实证：砸蛋入口缺 {@code A_C_CODE} 时，wx 把 {@code /qwhdhub/goldeneggs/…}
+     * 302 到 {@code /qwhdhub/notice/limited?A_C_CODE=null}，标题「访问受限」、
+     * 正文 548 字节、没有 Vue。旧判定只认「渠道未开放」，于是这种页被当成正常页，
+     * 脚本在空壳上跑完，任务报「完成」但实际什么都没做。
+     */
+    static boolean blocked(WebPage page) {
+        if (page == null) {
+            return true;
+        }
+        String probe;
+        try {
+            probe = page.eval("(function(){try{"
+                    + "return (document.title||'')+String.fromCharCode(1)"
+                    + "+(document.body?document.body.innerText.replace(/\\s+/g,' ').slice(0,160):'')"
+                    + "+String.fromCharCode(1)"
+                    + "+(document.body?document.body.innerHTML.length:0);"
+                    + "}catch(e){return ''}})()", 4_000L);
+        } catch (Throwable e) {
+            return false;
+        }
+        if (probe == null || probe.isEmpty()) {
+            return false;
+        }
+        String[] parts = probe.split(String.valueOf((char) 1), -1);
+        String title = parts.length > 0 ? parts[0] : "";
+        String text = parts.length > 1 ? parts[1] : "";
+        String len = parts.length > 2 ? parts[2].trim() : "";
+        if (title.contains("访问受限") || text.contains("访问受限")
+                || title.contains("渠道未开放") || text.contains("渠道未开放")
+                || title.contains("无法访问") || text.contains("渠道不支持")) {
+            return true;
+        }
+        // 空壳页：正文几乎没有、DOM 也很小 —— 正常活动页首屏至少几 KB。
+        int n = 0;
+        try {
+            n = Integer.parseInt(len);
+        } catch (Throwable ignored) {
+        }
+        return n > 0 && n < 900 && text.length() < 40;
+    }
+
+    /**
+     * 当前入口被服务端重定向到受限页时，换一个「带渠道参数」的入口重开。
+     *
+     * <p>候选来源按可信度排：现场学到的（RealEntry 持久化）→ 真页登记表里
+     * 用户手动点活动留下的地址 → 内置表带参地址 → 鹅蛋/球赛的缓存入口。
+     * 一个都不沾边就返回 null，让上层报明确的失败原因，不再假装完成。
+     */
+    static WebPage reopenBetter(String badUrl, String key) {
+        List<String> cands = betterEntries(badUrl, key);
+        if (cands.isEmpty()) {
+            return null;
+        }
+        HookLog.log("TASK", "入口被拦 · 换一个带渠道参数的地址重试",
+                "原地址: " + shortUrl(badUrl) + "\n候选: " + cands.size() + " 条\n"
+                        + "  · " + shortUrl(cands.get(0)));
+        int tried = 0;
+        for (String cand : cands) {
+            if (tried >= 3) {
+                break;
+            }
+            if (cand == null || cand.equals(badUrl)) {
+                continue;
+            }
+            tried++;
+            WebPage p = open(cand, pathKey(cand), 18_000L);
+            if (p == null) {
+                continue;
+            }
+            if (!blocked(p)) {
+                HookLog.log("TASK", "换入口成功 · " + shortUrl(cand), "页面: " + shortUrl(p.href()));
+                return p;
+            }
+            HookLog.logcat("entry retry still blocked: " + shortUrl(cand));
+        }
+        return null;
+    }
+
+    /**
+     * 裸地址换成同类「带渠道参数」的地址（同一个活动、同一个路径才换）。
+     *
+     * <p>只在原地址确实没有渠道参数时才换，且要求路径一致 —— 换错页比裸地址更糟。
+     * 换完仍被拦也没关系，{@link #reopenBetter} 会再兜一层。
+     */
+    private static String preferBetter(String url) {
+        if (url == null || url.isEmpty() || RealEntry.hasChannel(url)) {
+            return url;
+        }
+        String act = RealEntry.actOf(url);
+        if (!act.isEmpty()) {
+            String best = RealEntry.get(act);
+            if (best.isEmpty()) {
+                best = recall(act);
+            }
+            if (best.isEmpty()) {
+                best = WelfareCatalog.builtUrl(act);
+            }
+            if (!best.isEmpty() && RealEntry.hasChannel(best)
+                    && sameHost(best, url) && samePath(best, pathKey(url))) {
+                HookLog.logcat("entry preferred: " + shortUrl(url) + " -> " + shortUrl(best));
+                return best;
+            }
+        }
+        // lyh 的活动入口票据（pc/pk）只存在于「上次 App 现场打开」的那条地址里。
+        if (url.contains("lyh.lncmcc.com")) {
+            String cached = url.contains("footballGuess")
+                    ? SoccerTask.entryUrl() : GooseTask.entryUrl();
+            if (RealEntry.hasChannel(cached) && samePath(cached, pathKey(url))) {
+                HookLog.logcat("entry preferred(lyh): " + shortUrl(cached));
+                return cached;
+            }
+        }
+        return url;
+    }
+
+    private static List<String> betterEntries(String badUrl, String key) {        java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+        String act = RealEntry.actOf(badUrl);
+        if (!act.isEmpty()) {
+            addChannel(set, RealEntry.get(act));
+            addChannel(set, recall(act));
+            addChannel(set, WelfareCatalog.builtUrl(act));
+        }
+        // lyh 的鹅蛋 / 球赛入口靠 URL 上的 pc/pk（一次性票据），只能靠现场学到。
+        if (badUrl != null && badUrl.contains("lyh.lncmcc.com")) {
+            if ("goose".equals(key)) {
+                addChannel(set, GooseTask.entryUrl());
+            } else if ("soccer".equals(key)) {
+                addChannel(set, SoccerTask.entryUrl());
+            }
+        }
+        set.remove(badUrl);
+        return new java.util.ArrayList<>(set);
+    }
+
+    private static void addChannel(java.util.Set<String> set, String url) {
+        if (url != null && !url.isEmpty() && RealEntry.hasChannel(url)) {
+            set.add(url);
+        }
+    }
+
     // ------------------------------------------------------------------ 会话
 
     /** 一次任务开始：串行任务共用第一个真页，避免叠 Activity。 */
@@ -328,6 +519,9 @@ final class RealPage {
         if (url == null || url.isEmpty()) {
             return null;
         }
+        // 先用「带渠道参数」的同类地址替换裸地址：11-10 22:27 的砸蛋就是裸地址
+        // 被 wx 302 到 notice/limited?A_C_CODE=null，白跑一轮还报「完成」。
+        url = preferBetter(url);
         long deadline = System.currentTimeMillis() + Math.max(8_000L, timeoutMs);
         String match = key == null || key.isEmpty() ? pathKey(url) : key;
 

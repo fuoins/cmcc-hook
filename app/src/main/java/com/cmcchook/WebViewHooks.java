@@ -360,29 +360,57 @@ final class WebViewHooks {
             }
         });
 
+        // 任务页最怕被「下载 App / 去 APP 打开」这类引导顶掉：一顶走，原页面的
+        // JS 上下文当场销毁，任务脚本写回的变量再也读不到，表现就是「页面能打开、
+        // 脚本 90 秒不回报」。球赛页 11-07 就是这么挂的，鹅蛋 11-10 22:07 / 22:27
+        // 又挂了一次（dx.10086.cn/A/… → transferDownload）。
+        //
+        // 必须放在 before：after 时段原方法早就返回 false，导航已经开始，
+        // 这时候 setResult(true) 什么也拦不住 —— 11-10 两份日志里 transferDownload
+        // 照跳不误，就是这个原因。before 里 setResult(true) 才是「已处理，别导航」。
+        hookAll(clazz, "shouldOverrideUrlLoading", new XC_MethodHook() {
+            @Override
+            protected void beforeHookedMethod(MethodHookParam param) {
+                try {
+                    String url = firstWebUrl(param.args);
+                    if (url == null) {
+                        return;
+                    }
+                    Object view = webViewOf(param);
+                    boolean taskPage = isOffscreenPage(view) || RealPage.isTaskPage(view);
+                    if (!taskPage) {
+                        return;
+                    }
+                    if (isDetourUrl(url)) {
+                        param.setResult(true);
+                        HookLog.log("TASK", "已拦下外部引导跳转",
+                                "目标: " + UrlFilter.shortForTitle(url)
+                                        + "\n任务页需要留在活动页，已阻止本次导航");
+                        return;
+                    }
+                    // 鹅蛋 / 球赛（lyh.lncmcc.com）页面里有个「下载 App」广告位，
+                    // 换票后 0.2 秒内自动跳 dx.10086.cn/A/…，再一跳就是下载引导页，
+                    // 整个 WebView 被换掉，脚本上下文当场销毁 —— 22:27 鹅蛋卡死就是这么来的。
+                    // 只拦「当前页在 lyh、目标是 dx 短链」这一种组合，其它 dx 短链
+                    // （真正的 SSO 登录中转）照旧放行，避免把登录流程也堵了。
+                    if (isAppJumpShort(url) && currentUrlOf(view).contains("lyh.lncmcc.com")) {
+                        param.setResult(true);
+                        HookLog.log("TASK", "已拦下活动页内的下载引导跳转",
+                                "目标: " + UrlFilter.shortForTitle(url)
+                                        + "\n当前页: " + UrlFilter.shortForTitle(currentUrlOf(view))
+                                        + "\n该页面里的「下载 App」广告位会顶掉活动页，已阻止");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        });
+
         hookAll(clazz, "shouldOverrideUrlLoading", new XC_MethodHook() {
             @Override
             protected void afterHookedMethod(MethodHookParam param) {
                 try {
                     String url = firstWebUrl(param.args);
                     if (url == null) {
-                        return;
-                    }
-                    // 离屏任务页最怕被「下载 App / 去 APP 打开」这类引导顶掉：
-                    // 一顶走，原页面的 JS 上下文当场销毁，任务脚本写回的变量再也读不到，
-                    // 表现就是「页面能打开、脚本 90 秒不回报」。球赛页 11-07 就是这么挂的。
-                    // 只有离屏页拦，用户自己点的 WebView 一律不动。
-                    //
-                    // v4.0.9：任务改到 App 官方真页里跑，同样会被这类引导顶掉 ——
-                    // 11-10 22:07 鹅蛋就死在 dx.10086.cn/A/… → transferDownload 这一跳上。
-                    // 任务会话期间对真页也拦，用户平时自己浏览完全不受影响。
-                    boolean taskPage = isOffscreenPage(webViewOf(param))
-                            || RealPage.isTaskPage(webViewOf(param));
-                    if (taskPage && isDetourUrl(url)) {
-                        param.setResult(true);
-                        HookLog.log("TASK", "已拦下外部引导跳转",
-                                "目标: " + UrlFilter.shortForTitle(url)
-                                        + "\n任务页需要留在活动页，已阻止本次导航");
                         return;
                     }
                     attachGoose(param, url);
@@ -847,8 +875,37 @@ final class WebViewHooks {
         }
     }
 
+    /** dx.10086.cn/A/xxx 这类「打开 App」短链（不是 SSO 登录中转）。 */
+    private static boolean isAppJumpShort(String url) {
+        if (url == null) {
+            return false;
+        }
+        String u = url.toLowerCase(Locale.US);
+        return (u.startsWith("https://dx.10086.cn/a/") || u.startsWith("http://dx.10086.cn/a/"))
+                && !u.contains("login");
+    }
+
+    /** WebView 当前地址；反射拿不到就退回登记表里这个实例最近一条。 */
+    private static String currentUrlOf(Object view) {
+        if (view == null) {
+            return "";
+        }
+        try {
+            Object v = view.getClass().getMethod("getUrl").invoke(view);
+            if (v instanceof String && !((String) v).isEmpty()) {
+                return (String) v;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            return RealPage.lastUrlOf(view);
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
     /**
-     * 「下载 App / 去 APP 打开」这类会把离屏活动页顶掉的中转页。
+     * 「下载 App / 去 APP 打开」这类会把活动页顶掉的中转页。
      *
      * <p>只认明确的几种，不按域名一刀切：球赛活动自己也会跨到 lyh 的其它子页，
      * 拦宽了活动就跑不下去。

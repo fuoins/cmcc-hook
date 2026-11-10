@@ -92,7 +92,7 @@ final class WelfareCatalog {
                     STATE_IMPL, TaskRunner.CMD_SIGN, false, true),
 
             new Item("egg", "天天砸金蛋", "8 个浏览任务 + 当日次数抽完",
-                    WX + "/qwhdhub/goldeneggs/1026071510", "1026071510",
+                    WX + "/qwhdhub/goldeneggs/1026071510?A_C_CODE=HraVsPIWok", "1026071510",
                     STATE_IMPL, TaskRunner.CMD_EGG, false, true),
 
             new Item("goose", "收鹅蛋 换好礼", "打卡 / 投喂 / 收蛋 / 领任务",

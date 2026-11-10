@@ -476,6 +476,11 @@ final class RealEntry {
         return "";
     }
 
+    /** 活动号（供入口候选、真页登记表回溯共用）。 */
+    static String actOf(String url) {
+        return actIdOf(url);
+    }
+
     private static String actIdOf(String url) {
         if (url == null) {
             return "";

@@ -23,7 +23,8 @@ import org.json.JSONObject;
 final class MiaoTask {
 
     static final String ACT_MIAO =
-            "https://dev.coc.10086.cn/coc3/canvas/rightsmarket-h5-canvas/online/2026dmycj";
+            "https://dev.coc.10086.cn/coc3/canvas/rightsmarket-h5-canvas/online/2026dmycj"
+                    + "?channelCode=P00000153130";
 
     private MiaoTask() {
     }
