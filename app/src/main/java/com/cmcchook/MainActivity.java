@@ -84,6 +84,17 @@ public final class MainActivity extends AppCompatActivity {
     private long flowAutoAt = 0L;         // 上次「进页自动查询」时间，做节流防抖
     private static final long FLOW_AUTO_GAP_MS = 60_000L;   // 60s 内不重复自动查
     private static final long FLOW_FRESH_MS = 10 * 60_000L; // 缓存 10 分钟内视为新鲜
+    /** v4.1.0：券页进页自动刷新的节流与新鲜度（和流量同一套规则）。 */
+    private long couponAutoAt = 0L;
+    /** 本次刷新是进页自动触发的（静默）：读完不弹「扫描完成」Toast。 */
+    private boolean couponQuietScan = false;
+    private static final long COUPON_AUTO_GAP_MS = 60_000L;
+    private static final long COUPON_FRESH_MS = 10 * 60_000L;
+    /**
+     * 流量刷新整体超时。真页要拉起 + 等页面请求解密（最长 20s），读不到还要重载、
+     * 再退离屏兜底，50 秒会误报超时 —— 放宽到 120 秒，结果回来会提前收工。
+     */
+    private static final long FLOW_TIMEOUT_MS = 120_000L;
     private TextView pageTitle;
     /** v4.0.9：顶部蓝色品牌区。增强页不需要它，隐藏后内容顶到状态栏下，省一屏空间。 */
     private View appHeader;
@@ -134,15 +145,16 @@ public final class MainActivity extends AppCompatActivity {
     private TextView couponBar;
     private MaterialButton btnCouponScan;
     private MaterialButton btnCouponAll;
-    private MaterialButton btnCouponInvert;
-    private MaterialButton btnCouponUseAll;
+    /** v4.1.0：一键勾选流量券 / 话费兑换券（替换旧版的「反选」「一键全用」）。 */
+    private MaterialButton btnCouponPickFlow;
+    private MaterialButton btnCouponPickPhone;
     private MaterialButton btnCouponUse;
     /**
      * v3.52：冷启动时清一次券清单（只清一次，旋转屏幕重建 Activity 不清）。
      * 用户要求「关闭软件重进后重新扫描，别直接显示之前的卡券数据，不然会出错」。
      */
     private static boolean sCouponPurged = false;
-    /** v3.42：按有效期排序（快到期在前）、隐藏不可选券两个开关。 */
+    /** v3.42：按有效期排序；v4.1.0：「隐藏不可选」改为「隐藏满减券」。 */
     private CheckBox cbCouponSort;
     private CheckBox cbCouponHide;
     private boolean couponSortByValid = true;
@@ -183,14 +195,14 @@ public final class MainActivity extends AppCompatActivity {
         }
     };
 
-    /** v4.0 流量刷新超时兜底：50 秒没收到结果就解锁，别让「正在读取」一直挂着。 */
+    /** 流量刷新超时兜底：{@link #FLOW_TIMEOUT_MS} 没收到结果就解锁，别让「正在读取」一直挂着。 */
     private final Runnable flowTimeout = new Runnable() {
         @Override
         public void run() {
             if (flowLoading) {
                 flowLoading = false;
                 if (flowNotify != null) {
-                    flowNotify.setText("读取超时：没收到数据。请确认中国移动 App 已打开过、模块已注入，再点「一键查询」重试。");
+                    flowNotify.setText("读取超时：没收到数据。请确认中国移动 App 已打开过、模块已注入，再点「刷新」重试。");
                 }
             }
         }
@@ -265,19 +277,20 @@ public final class MainActivity extends AppCompatActivity {
         couponBar = findViewById(R.id.couponBar);
         btnCouponScan = findViewById(R.id.btnCouponScan);
         btnCouponAll = findViewById(R.id.btnCouponAll);
-        btnCouponInvert = findViewById(R.id.btnCouponInvert);
-        btnCouponUseAll = findViewById(R.id.btnCouponUseAll);
+        btnCouponPickFlow = findViewById(R.id.btnCouponPickFlow);
+        btnCouponPickPhone = findViewById(R.id.btnCouponPickPhone);
         btnCouponUse = findViewById(R.id.btnCouponUse);
-        // v4.0.6：「跳转卡券中心」+「扫描」合并为一个「一键扫描」按钮。
-        // 点它直接走 CMD_SCAN —— 目标进程里离屏加载卡券页读券（读不到自动回退真页），
-        // 不再需要用户手动点进卡券中心。
+        // v4.1.0：券页按钮 = 刷新 / 全选 / 勾选流量券 / 勾选话费兑换券 / 使用。
+        // 「反选」「一键全用」已删除；进页会自动刷新一次。
         btnCouponScan.setOnClickListener(v -> couponScan());
         btnCouponAll.setOnClickListener(v -> couponSelectAll());
-        if (btnCouponInvert != null) {
-            btnCouponInvert.setOnClickListener(v -> couponInvert());
+        if (btnCouponPickFlow != null) {
+            btnCouponPickFlow.setOnClickListener(v -> couponPick(false));
         }
-        btnCouponUseAll.setOnClickListener(v -> couponUse(true));
-        btnCouponUse.setOnClickListener(v -> couponUse(false));
+        if (btnCouponPickPhone != null) {
+            btnCouponPickPhone.setOnClickListener(v -> couponPick(true));
+        }
+        btnCouponUse.setOnClickListener(v -> couponUse());
         // v4.0.8：券页只留「一键扫描」，删掉 v4.0.7 的「打开卡券中心」前置入口。
         // 扫描改为纯离屏，AppBridges 已把真页的私有 JS 桥装回离屏页。
         // v4.0.4：小米 / HyperOS 的「验证码安全保护」是系统开关，模块不能代改，
@@ -371,8 +384,12 @@ public final class MainActivity extends AppCompatActivity {
         }
         // v4.0.2：从中国移动 App 切回模块、当前正停在「增强·流量」页时，
         // 顺手自动查一次（缓存新鲜/节流会挡住重复查询）。
-        if (tab == TAB_COUPON && flowTab) {
-            maybeAutoFlow();
+        if (tab == TAB_COUPON) {
+            if (flowTab) {
+                maybeAutoFlow();
+            } else {
+                maybeAutoCoupon();
+            }
         }
     }
 
@@ -426,9 +443,12 @@ public final class MainActivity extends AppCompatActivity {
             buildCoupon();
             if (flowTab && pageFlow != null) {
                 FlowView.render(this, pageFlow);
-                // v4.0.2：进「增强·流量」页自动一键离屏查询，不用手动点按钮、
+                // v4.0.2：进「增强·流量」页自动刷新余量，不用手动点按钮、
                 // 更不用手动进中国移动 App 的余量查询页。带节流，缓存新鲜就跳过。
                 maybeAutoFlow();
+            } else if (!flowTab) {
+                // v4.1.0：进「优惠券」子页也自动刷新一次券列表。
+                maybeAutoCoupon();
             }
         }
         if (target == TAB_LOG) {
@@ -1241,7 +1261,10 @@ public final class MainActivity extends AppCompatActivity {
             boolean blocked = couponBlocked(it);
             if (!blocked) {
                 usable++;
-            } else if (couponHideBlocked) {
+            }
+            // v4.1.0：「隐藏满减券」—— 只藏满减/折扣这类点了会跳充值页的券，
+            // 其余不可用券（待生效、已失效等）照常显示、置灰，用户看得见全貌。
+            if (couponHideBlocked && couponDiscount(it)) {
                 hidden++;
                 continue;
             }
@@ -1336,12 +1359,14 @@ public final class MainActivity extends AppCompatActivity {
         int n = couponSelectedCount();
         couponBar.setText(n > 0 ? getString(R.string.coupon_bar_selected, n)
                 : getString(R.string.coupon_bar_idle));
-        boolean enable = !couponRunning && (n > 0 || couponSelectableCount() > 0);
-        btnCouponUse.setEnabled(enable && n > 0);
-        btnCouponUseAll.setEnabled(enable && couponSelectableCount() > 0);
-        btnCouponAll.setEnabled(!couponRunning && couponSelectableCount() > 0);
-        if (btnCouponInvert != null) {
-            btnCouponInvert.setEnabled(!couponRunning && couponSelectableCount() > 0);
+        boolean enable = !couponRunning && couponSelectableCount() > 0;
+        btnCouponUse.setEnabled(!couponRunning && n > 0);
+        btnCouponAll.setEnabled(enable);
+        if (btnCouponPickFlow != null) {
+            btnCouponPickFlow.setEnabled(enable);
+        }
+        if (btnCouponPickPhone != null) {
+            btnCouponPickPhone.setEnabled(enable);
         }
         btnCouponScan.setEnabled(!couponRunning);
         btnCouponScan.setText(couponRunning ? R.string.coupon_scanning : R.string.coupon_scan);
@@ -1378,23 +1403,63 @@ public final class MainActivity extends AppCompatActivity {
         sendCouponCmd(CouponTask.CMD_SCAN, getString(R.string.coupon_scanning));
     }
 
-    /** v3.52：反选 —— 已勾选的取消，未勾选且可用的勾上。 */
-    private void couponInvert() {
+    /**
+     * v4.1.0：一键勾选某一类券 —— 只勾这类，其余全部取消（干净、可预期）。
+     *
+     * @param phone true = 话费兑换券；false = 流量券
+     */
+    private void couponPick(boolean phone) {
         int n = 0;
         for (int i = 0; i < couponChecked.length; i++) {
             org.json.JSONObject it = couponItems.optJSONObject(i);
-            if (it == null || couponBlocked(it)) {
-                couponChecked[i] = false;
-                continue;
-            }
-            couponChecked[i] = !couponChecked[i];
-            if (couponChecked[i]) {
+            boolean hit = it != null && !couponBlocked(it) && couponIsPhone(it) == phone
+                    && (phone || couponIsFlow(it));
+            couponChecked[i] = hit;
+            if (hit) {
                 n++;
             }
         }
         buildCoupon();
-        Toast.makeText(this, n > 0 ? ("反选后已选 " + n + " 张") : "反选后没有勾选任何券",
+        String what = phone ? "话费兑换券" : "流量券";
+        Toast.makeText(this, n > 0 ? ("已勾选 " + n + " 张" + what) : ("没有可用的" + what),
                 Toast.LENGTH_SHORT).show();
+    }
+
+    /** 流量券（券名/类型含「流量」，且是券）。 */
+    private boolean couponIsFlow(org.json.JSONObject item) {
+        String name = item.optString("name");
+        String type = item.optString("type");
+        return (type.contains("流量") || name.contains("流量"))
+                && (name + type).contains("券");
+    }
+
+    /** 话费兑换券（兑换类的话费券；满减、折扣不算）。 */
+    private boolean couponIsPhone(org.json.JSONObject item) {
+        String name = item.optString("name");
+        String all = name + " " + item.optString("type");
+        if (all.contains("满减") || all.contains("折扣") || all.contains("加赠")) {
+            return false;
+        }
+        return name.contains("话费兑换券") || (all.contains("话费") && name.contains("兑换券"));
+    }
+
+    /**
+     * v4.1.0：满减券 —— 名字/类型带「满减」「满X减Y」「折扣」或充值门槛说明。
+     * 只用于「隐藏满减券」这个显示开关，不影响能否勾选（勾选仍走白名单）。
+     */
+    private boolean couponDiscount(org.json.JSONObject item) {
+        String name = item.optString("name");
+        String type = item.optString("type");
+        String raw = item.optString("raw");
+        String all = name + " " + type;
+        if (all.contains("满减") || all.contains("折扣")) {
+            return true;
+        }
+        if (java.util.regex.Pattern.compile("满\\s*[0-9]+(\\.[0-9]+)?\\s*减")
+                .matcher(all).find()) {
+            return true;
+        }
+        return raw.contains("满") && raw.contains("减");
     }
 
     private void couponSelectAll() {
@@ -1405,8 +1470,8 @@ public final class MainActivity extends AppCompatActivity {
         buildCoupon();
     }
 
-    /** @param all true = 一键全用（忽略勾选，用掉所有可用券）；false = 按勾选批量。 */
-    private void couponUse(boolean all) {
+    /** 按勾选批量使用（「一键全用」已在 v4.1.0 删除）。 */
+    private void couponUse() {
         if (couponRunning) {
             Toast.makeText(this, "上一批还在跑，先等它结束", Toast.LENGTH_SHORT).show();
             return;
@@ -1417,7 +1482,7 @@ public final class MainActivity extends AppCompatActivity {
             if (it == null || couponBlocked(it)) {
                 continue;
             }
-            if (all || (i < couponChecked.length && couponChecked[i])) {
+            if (i < couponChecked.length && couponChecked[i]) {
                 org.json.JSONObject one = new org.json.JSONObject();
                 try {
                     one.put("name", it.optString("name"));
@@ -1432,30 +1497,17 @@ public final class MainActivity extends AppCompatActivity {
             }
         }
         if (picked.length() == 0) {
-            Toast.makeText(this, all ? "没有可用券" : "没有勾选任何券", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "没有勾选任何券", Toast.LENGTH_SHORT).show();
             return;
         }
         final int count = picked.length();
-        final String payload = picked.toString();
-        Runnable go = () -> {
-            ensureSmsPermission(true);
-            couponRunning = true;
-            couponNeedingCode = false;
-            dismissCodeDialog();
-            refreshCouponBar();
-            sendCouponCmd(CouponTask.CMD_USE + payload,
-                    getString(R.string.coupon_running, 1, count, "准备中"));
-        };
-        if (all) {
-            new MaterialAlertDialogBuilder(this)
-                    .setTitle(R.string.coupon_all_confirm_title)
-                    .setMessage(getString(R.string.coupon_all_confirm_message, count))
-                    .setNegativeButton(R.string.cancel, null)
-                    .setPositiveButton(R.string.coupon_confirm_use, (d, w) -> go.run())
-                    .show();
-        } else {
-            go.run();
-        }
+        ensureSmsPermission(true);
+        couponRunning = true;
+        couponNeedingCode = false;
+        dismissCodeDialog();
+        refreshCouponBar();
+        sendCouponCmd(CouponTask.CMD_USE + picked,
+                getString(R.string.coupon_running, 1, count, "准备中"));
     }
 
     private void sendCouponCmd(String cmd, String hint) {
@@ -1484,12 +1536,17 @@ public final class MainActivity extends AppCompatActivity {
             if (LogReceiver.ACTION_COUPON_LIST.equals(action)) {
                 buildCoupon();
                 // v3.52：扫描成功 Toast + 扫描耗时（用户要求「加上扫描的时间 + 扫描成功 toast」）。
-                long cost = CouponStore.cost(this);
-                int n = couponItems == null ? 0 : couponItems.length();
-                String tip = n > 0
-                        ? ("扫描完成：" + n + " 张券" + (cost > 0 ? "，耗时 " + fmtCost(cost) : ""))
-                        : "扫描完成，但没读到券";
-                Toast.makeText(this, tip, Toast.LENGTH_SHORT).show();
+                // v4.1.0：进页自动刷新是静默的，不弹这个 Toast。
+                boolean quiet = couponQuietScan;
+                couponQuietScan = false;
+                if (!quiet) {
+                    long cost = CouponStore.cost(this);
+                    int n = couponItems == null ? 0 : couponItems.length();
+                    String tip = n > 0
+                            ? ("刷新完成：" + n + " 张券" + (cost > 0 ? "，耗时 " + fmtCost(cost) : ""))
+                            : "刷新完成，但没读到券";
+                    Toast.makeText(this, tip, Toast.LENGTH_SHORT).show();
+                }
             } else if (LogReceiver.ACTION_COUPON_PROGRESS.equals(action)) {
                 String stage = intent.getStringExtra("stage");
                 int idx = intent.getIntExtra("idx", -1);
@@ -1570,13 +1627,16 @@ public final class MainActivity extends AppCompatActivity {
             if (tab == TAB_COUPON) {
                 maybeAutoFlow();
             }
+        } else if (!showFlow && tab == TAB_COUPON) {
+            // v4.1.0：切到「优惠券」子页也自动刷新一次券列表（带节流）。
+            maybeAutoCoupon();
         }
     }
 
     /** 点「一键查询」：发 flow 命令让目标进程离屏读首页余量缓存，结果由 FlowWatcher 回来。 */
     private void flowRefresh() {
         if (flowLoading) {
-            Toast.makeText(this, "正在离屏读取，稍候…", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "正在读取，稍候…", Toast.LENGTH_SHORT).show();
             return;
         }
         boolean alive = System.currentTimeMillis()
@@ -1586,7 +1646,7 @@ public final class MainActivity extends AppCompatActivity {
             if (flowNotify != null) {
                 flowNotify.setText("中国移动 App 没在运行：请先打开一次中国移动 App（让登录态就绪），再点「一键查询」。");
             }
-            Toast.makeText(this, "请先打开一次中国移动 App 再查询流量", Toast.LENGTH_LONG).show();
+            Toast.makeText(this, "请先打开一次中国移动 App 再刷新流量", Toast.LENGTH_LONG).show();
             return;
         }
         flowAutoAt = System.currentTimeMillis();
@@ -1597,7 +1657,7 @@ public final class MainActivity extends AppCompatActivity {
             flowNotify.setText(R.string.flow_refreshing);
         }
         handler.removeCallbacks(flowTimeout);
-        handler.postDelayed(flowTimeout, 50_000L);
+        handler.postDelayed(flowTimeout, FLOW_TIMEOUT_MS);
         if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
             handler.removeCallbacks(flowTimeout);
             flowLoading = false;
@@ -1649,12 +1709,42 @@ public final class MainActivity extends AppCompatActivity {
             flowNotify.setText(R.string.flow_refreshing);
         }
         handler.removeCallbacks(flowTimeout);
-        handler.postDelayed(flowTimeout, 50_000L);
+        handler.postDelayed(flowTimeout, FLOW_TIMEOUT_MS);
         if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
             handler.removeCallbacks(flowTimeout);
             flowLoading = false;
             // 静默：指令发不出去也不打扰用户，等下次进页重试
         }
+    }
+
+    /**
+     * v4.1.0：进「优惠券」子页自动刷新一次券列表（静默）。
+     *
+     * <p>和 {@link #maybeAutoFlow()} 一个思路：正在跑 / 目标不在线 / 60 秒内刷过 /
+     * 本地清单还新鲜 —— 任一命中就跳过，别每切一次页就重读一遍。
+     */
+    private void maybeAutoCoupon() {
+        if (couponRunning || flowTab || tab != TAB_COUPON) {
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (now - couponAutoAt < COUPON_AUTO_GAP_MS) {
+            return;
+        }
+        if (couponItems.length() > 0 && now - CouponStore.at(this) < COUPON_FRESH_MS) {
+            return;
+        }
+        if (now - AppPrefs.getLastHeartbeat(this) >= 90_000L) {
+            return; // 目标没在线，广播没人收；用户手动点「刷新」才有明确提示
+        }
+        couponAutoAt = now;
+        couponQuietScan = true;
+        CouponStore.markScanStart(this);
+        if (couponAt != null) {
+            couponAt.setText(R.string.coupon_scanning);
+        }
+        // 静默：不发 Toast、不主动拉起 App，发不出去就等下次进页重试。
+        sendTaskBroadcast(CouponTask.CMD_SCAN);
     }
 
     /** 流量结果广播回来：解锁 + 重画流量页（数据已由 LogReceiver 落盘）。 */

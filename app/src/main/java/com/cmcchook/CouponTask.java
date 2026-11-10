@@ -622,7 +622,11 @@ final class CouponTask {
                 JSONObject st = waitOne(host, k, total, name, seq);
                 boolean good = st != null && st.optBoolean("itemOk", false);
                 boolean unknown = st != null && st.optBoolean("itemUnknown", false);
-                boolean noCard = st != null && st.optBoolean("noCard", false);
+                // v4.1.0：只有「列表确实渲染出来了，但一张可用券都没有」才提前收尾。
+                // 列表压根没渲染（listReady=false）算这一张失败，继续下一张 ——
+                // 11-10 23:31 就是把「页面还没渲染」误判成「没券可做」，一张都没点。
+                boolean noCard = st != null && st.optBoolean("noCard", false)
+                        && st.optBoolean("listReady", false);
                 String msg = st == null ? "页面没有回报结果" : st.optString("msg", "");
 
                 if (noCard) {
@@ -1336,7 +1340,7 @@ final class CouponTask {
     private static final String USE_DEF_A = """
             (function(){
               var ID='__cmcc_coupon_use';
-              var S={stage:'idle',idx:-1,name:'',total:0,ok:0,fail:0,needCode:false,codeSent:false,msg:'',results:[],lines:[],lineSeq:0,prevBtn:null,itemOk:false,itemUnknown:false,noCard:false,aborted:false};
+              var S={stage:'idle',idx:-1,name:'',total:0,ok:0,fail:0,needCode:false,codeSent:false,msg:'',results:[],lines:[],lineSeq:0,prevBtn:null,itemOk:false,itemUnknown:false,noCard:false,listReady:false,aborted:false};
               window[ID]=S;
               window.__cmcc_coupon_code='';
 
@@ -1350,7 +1354,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 4.0.7+bridgefix 已装载 · 一键扫描纯离屏：App 私有 JS 桥全量装回离屏页 + 主动唤醒券列表 + 放宽 DOM 选择器');
+              line('券脚本 4.1.0 已装载 · 刷新读 App 官方卡券真页 + 等券列表渲染再动手（不再抢跑判空）');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){
@@ -2752,6 +2756,22 @@ final class CouponTask {
               //   每张开始前重进卡券页 → 注入脚本 → 只做这一张 → 立刻返回结果 → 下一张。
               // 队列、进度、成功失败全在 Java 侧，页面刷新不会丢状态；
               // 页面这边不存任何跨张数据，也就不存在 sessionStorage/恢复时序的坑。
+              // ---------- v4.1.0：等券列表真正渲染出来 ----------
+              // 11-10 23:31 日志实证：重进卡券页后 20ms 就开始做券，而页面到 165ms 后
+              // 才发出 getBannerList 去取券，DOM 里一张都没有 → collectCards()=0
+              // → 直接判「列表里没有可用的白名单券了」，一张都没点。
+              // 现在先等列表出现（最多 15 秒），等到再判断；等不到就是「页面没加载完」，
+              // 不是「没券」，不能收尾整批。
+              async function waitList(){
+                var t0=Date.now(),n=0;
+                while(Date.now()-t0<15000){
+                  if(offPage()) return -1;
+                  n=collectCards().length;
+                  if(n>0) return n;
+                  await wait(300);
+                }
+                return 0;
+              }
               // 处理一张券。返回 false = 应该中止整批（跳去了充值/支付页）。
               async function one(it){
                 it=it||{};
@@ -2759,7 +2779,24 @@ final class CouponTask {
                 await clearStale();
                 S.name=it.name||'这张券';
                 S.stage='click'; S.needCode=false; S.codeSent=false; S.msg=''; S.itemOk=false;
+                S.listReady=false;
+                var ln=await waitList();
+                if(ln<0){ abort('等列表时被切出了卡券页，自动中止'); return false }
+                if(ln===0){
+                  // 列表 15 秒没渲染：页面没加载完，不是「没券」。不设 noCard，
+                  // Java 侧不会据此提前收尾整批。
+                  line('券列表 15 秒内没渲染出来（页面没加载完）');
+                  finish(false,'券列表没加载出来（超时），不是没有券');
+                  return true;
+                }
+                S.listReady=true;
                 var card=pickCard(it);
+                if(!card){
+                  // 列表出来了但名单这张还没出现（券列表是异步刷新的），再给它 5 秒。
+                  await wait(2_500);
+                  if(offPage()){ abort('等券刷新时被切出了卡券页，自动中止'); return false }
+                  card=pickCard(it);
+                }
                 if(!card){
                   // v3.61：列表里一张可用的白名单券都没有 = 没券可做了，
                   // 不是失败。第 10 张「列表里没找到」其实是前 9 张全用完了。
@@ -2883,6 +2920,7 @@ final class CouponTask {
               window.__cmcc_coupon_one=function(it){
                 S.stage='start'; S.idx=0; S.needCode=false; S.codeSent=false;
                 S.msg=''; S.itemOk=false; S.itemUnknown=false; S.noCard=false;
+                S.listReady=false;
                 S.aborted=false; S.results=[];
                 (async function(){
                   try{

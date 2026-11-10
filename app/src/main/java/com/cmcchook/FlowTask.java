@@ -11,7 +11,7 @@ import java.util.Collections;
 import java.util.Map;
 
 /**
- * 流量余量「一键离屏查询」—— v4.0.2。
+ * 流量余量「刷新」—— v4.0.2，v4.1.0 起与任务内完全同一条真页路径。
  *
  * <p>严格守红线：<b>不解密接口、不拼签名、不伪造票据、不发任何业务请求</b>。
  *
@@ -73,10 +73,17 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "realpage4-20261110";
+    static final String BUILD = "realpage5-20261111";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
+
+    /**
+     * 本轮自己用 App 容器打开的余量页。跑完必须关掉 —— 用户明确要求
+     * 「每个任务跑完之后把页面关了，不然会攒一堆」。
+     */
+    private static volatile Object openedView;
+    private static volatile String openedUrl;
 
     /**
      * 用户亲手打开的余量页（前台真页）。
@@ -280,19 +287,26 @@ final class FlowTask {
             "}catch(e){return JSON.stringify({state:'error',items:[],error:'PROBE 异常: '+e,domText:''});}" +
             "})()";
 
-    /** 模块点「一键查询」→ TaskReceiver 起独立线程调这里。不进任务队列、不记今日状态。 */
+    /** 模块点「刷新」→ TaskReceiver 起独立线程调这里。不进任务队列、不记今日状态。 */
     static void fetch() {
         long start = System.currentTimeMillis();
         StringBuilder diary = new StringBuilder();
         diary.append("build: ").append(BUILD).append('\n');
-        diary.append("数据源: 余量查询页 Vuex 全量树（App 官方真页优先）\n");
-        diary.append("入口: ").append(MARGIN_URL)
-                .append(" （已开过真页时用真页那条带 channelId/yx 的地址；离屏只做兜底）\n");
-        diary.append("方式: App 不在前台会先自动拉起；用 App 自己的 H5 容器打开余量页，"
-                + "只读页面自己请求并解密后写进 Vuex 的 planRemianFlowListRes 全量树；"
-                + "不发请求、不解密、不拼签名、不自动登录。\n");
+        diary.append("数据源: 余量查询页 Vuex 全量树（App 官方真页）\n");
+        diary.append("入口: ").append(MARGIN_URL).append('\n');
+        diary.append("方式: 和「跑任务」完全同一条路 —— App 不在前台会先自动拉起，"
+                + "用 App 自己的 H5 容器打开余量页，等页面自己把数据请求并解密完，"
+                + "只读 Vuex 里的 planRemianFlowListRes 全量树；"
+                + "不发请求、不解密、不拼签名、不自动登录。跑完关掉自己开的页。\n");
 
-        JSONObject tree = readTree(diary);
+        JSONObject tree;
+        RealPage.beginSession();
+        try {
+            tree = readTree(diary);
+        } finally {
+            RealPage.endSession();
+            closeOpened(diary);
+        }
         if (tree != null && countItems(tree) > 0) {
             try {
                 tree.put("at", System.currentTimeMillis());
@@ -313,7 +327,7 @@ final class FlowTask {
         }
 
         String st = tree == null ? "" : tree.optString("state", "");
-        String why = tree == null ? "离屏余量页没有返回"
+        String why = tree == null ? "真页/离屏都没返回"
                 : ("state=" + st + " · " + tree.optString("error", ""));
         diary.append("全量树未拿到: ").append(why).append('\n');
         if ("login".equals(st)) {
@@ -326,8 +340,13 @@ final class FlowTask {
     }
 
     /**
-     * 开离屏余量页并轮询 Vuex 全量树。返回最后一轮探针结果（可能为 {@code loading} /
-     * {@code login} / {@code empty}），完全拿不到页时返回 {@code null}。
+     * 读全量树，三级顺序（和任务内一致）：
+     * <ol>
+     *   <li>已开着的余量真页，直接读它的 Vuex（最快，零成本）；</li>
+     *   <li>没有就主动用 App 容器打开余量页，再读；</li>
+     *   <li>页面在但树没出来（复用旧页时 Vuex 常已 reset）→ 重载一次再读；</li>
+     * </ol>
+     * 三级都空才退回离屏，离屏再空才用首页 localStorage 的 3 条汇总兜底。
      */
     private static JSONObject readTree(StringBuilder diary) {
         JSONObject live = readLive(diary);
@@ -341,11 +360,18 @@ final class FlowTask {
             if (live != null && countItems(live) > 0) {
                 return live;
             }
+            // 11-10 23:32 日志：真页开着、轮询 2 轮就空手而归（单次 eval 超时吃掉
+            // 全部预算）。光等不够，再给它一次干净的加载。
+            reloadOpened(diary);
+            live = readLive(diary);
+            if (live != null && countItems(live) > 0) {
+                return live;
+            }
         }
         return readOffscreen(diary);
     }
 
-    /** 用 App 自己的 H5 容器打开余量页，并登记给 readLive。 */
+    /** 用 App 自己的 H5 容器打开余量页，并登记给 readLive。跑完由 closeOpened 关掉。 */
     private static boolean openRealPage(StringBuilder diary) {
         try {
             String url = realUrl;
@@ -362,11 +388,62 @@ final class FlowTask {
             String href = page.href();
             diary.append("真页: 已打开 ").append(shortUrl(href))
                     .append(" · ").append(page.kernel()).append('\n');
-            noteReal(href, page.raw());
+            Object raw = page.raw();
+            openedView = raw;
+            openedUrl = href == null || href.isEmpty() ? url : href;
+            noteReal(openedUrl, raw);
             return true;
         } catch (Throwable t) {
             diary.append("真页打开异常: ").append(t).append('\n');
             return false;
+        }
+    }
+
+    /** 真页在、树没出来时，让它重新加载一次（复用旧页时 Vuex 多半已经 reset）。 */
+    private static void reloadOpened(StringBuilder diary) {
+        Object view = openedView;
+        if (view == null) {
+            return;
+        }
+        try {
+            diary.append("真页: 重载一次再读\n");
+            HookLog.logcat("flow reload real page");
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        de.robv.android.xposed.XposedHelpers.callMethod(view, "reload");
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            Thread.sleep(2_500L);
+        } catch (Throwable t) {
+            diary.append("真页重载异常: ").append(t).append('\n');
+        }
+    }
+
+    /** 关掉本轮自己打开的余量页，清掉登记。用户自己点开的页一律不动。 */
+    private static void closeOpened(StringBuilder diary) {
+        Object view = openedView;
+        openedView = null;
+        if (view == null) {
+            return;
+        }
+        if (realView == view) {
+            realView = null;
+            realUrl = null;
+            realAt = 0L;
+        }
+        if (!RealPage.isOwned(view)) {
+            diary.append("真页: 这一页不是本轮打开的（用户自己的），不关\n");
+            return;
+        }
+        try {
+            boolean ok = RealPage.closePage(view);
+            diary.append("真页: 收页 ").append(ok ? "已完成" : "失败").append('\n');
+        } catch (Throwable t) {
+            diary.append("真页收页异常: ").append(t).append('\n');
         }
     }
 
@@ -375,23 +452,47 @@ final class FlowTask {
      *
      * <p>真页是 App 用带参 URL 打开的、带完整 JS 桥、会话齐全，页面自己已经请求并解密完，
      * 模块只是把结果读出来 —— 不发请求、不碰签名、不唤醒任何东西。
+     *
+     * <p>11-10 23:32 日志的教训：只认本类 {@code noteReal} 的私有登记，会漏掉
+     * 「任务刚跑完、真页仍在，但登记已被清」的情况，于是白白重开一次。
+     * 现在先问 {@link RealPage#find}（全 App 共享的真页登记表），再回退私有登记。
      */
     private static JSONObject readLive(StringBuilder diary) {
-        Object view = realPage();
+        Object view = null;
+        String url = null;
+        try {
+            Object found = RealPage.find("marginQuery", REAL_TTL_MS);
+            if (found != null) {
+                view = found;
+                url = RealPage.lastUrlOf(found);
+                if (url == null || url.indexOf("marginQuery") < 0) {
+                    url = realUrl != null ? realUrl : MARGIN_URL;
+                }
+                diary.append("真页: 命中 App 真页登记（").append(shortUrl(url)).append("）\n");
+            }
+        } catch (Throwable ignored) {
+        }
         if (view == null) {
-            diary.append("真页: 未登记（10 分钟内没打开过余量页）\n");
+            view = realPage();
+            url = realUrl;
+            if (view != null) {
+                long age = System.currentTimeMillis() - realAt;
+                diary.append("真页: 本轮登记 ").append(age / 1000).append("s 前的余量页\n");
+            }
+        }
+        if (view == null) {
+            diary.append("真页: 未找到已打开的余量页\n");
             return null;
         }
-        long age = System.currentTimeMillis() - realAt;
-        diary.append("真页: 已登记 ").append(age / 1000).append("s 前打开的余量页，优先直读\n");
-        diary.append("真页地址: ").append(shortUrl(realUrl)).append('\n');
-        WebPage page = null;
+        diary.append("真页地址: ").append(shortUrl(url)).append('\n');
         try {
-            page = WebPage.attachReal(view, realUrl);
+            WebPage page = WebPage.attachReal(view, url);
             if (page == null) {
+                diary.append("真页: attach 失败（页面已销毁？）\n");
                 return null;
             }
-            JSONObject o = pollTree(page, 6_000L, 800L, diary, "真页");
+            // 20 秒上限：单次 eval 自己就吃 3 秒，预算不够会出现「轮询 2 轮就判死」。
+            JSONObject o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "真页");
             if (o != null && countItems(o) > 0) {
                 diary.append("真页直读成功，未新建任何 WebView\n");
             }
@@ -465,17 +566,25 @@ final class FlowTask {
         }
     }
 
-    /** 轮询 {@link #TREE_JS}，ready/login/error 早收工，loading/empty 继续等页面挂载与请求。 */
+    /**
+     * 轮询 {@link #TREE_JS}。
+     *
+     * <p>只把 {@code ready} / {@code login} / 明确 {@code error} 当终态；
+     * {@code loading} / {@code empty}（页面 Vue 还没挂上、loadState 还没到 loadCompleted）
+     * 一律继续等 —— 11-10 23:32 日志里「真页轮询 2 轮 · 6s 上限」就是被提前判死，
+     * 页面其实还在请求数据。单次 eval 超时从 5s 收到 3s，免得一次卡顿吃掉全部预算。
+     */
     private static JSONObject pollTree(WebPage page, long deadlineMs, long gapMs,
                                        StringBuilder diary, String who) {
         long end = System.currentTimeMillis() + deadlineMs;
         JSONObject last = null;
         int rounds = 0;
+        String lastState = "";
         while (System.currentTimeMillis() < end) {
             rounds++;
             String raw = null;
             try {
-                raw = page.eval(TREE_JS, 5_000L);
+                raw = page.eval(TREE_JS, 3_000L);
             } catch (Throwable e) {
                 diary.append(who).append(" 第 ").append(rounds).append(" 轮 eval 异常: ")
                         .append(e).append('\n');
@@ -485,7 +594,12 @@ final class FlowTask {
                     JSONObject o = new JSONObject(raw);
                     last = o;
                     String st = o.optString("state", "loading");
-                    if ("ready".equals(st) || "login".equals(st) || "error".equals(st)) {
+                    lastState = st;
+                    if (countItems(o) > 0) {
+                        break;
+                    }
+                    boolean hard = "login".equals(st) || "error".equals(st);
+                    if (hard) {
                         break;
                     }
                 } catch (Throwable ignored) {
@@ -498,7 +612,8 @@ final class FlowTask {
             }
         }
         diary.append(who).append(" 轮询 ").append(rounds).append(" 轮 · ")
-                .append(deadlineMs / 1000).append("s 上限\n");
+                .append(deadlineMs / 1000).append("s 上限 · 末轮 ")
+                .append(lastState.isEmpty() ? "无返回" : lastState).append('\n');
         return last;
     }
 
@@ -648,11 +763,11 @@ final class FlowTask {
             diary.append("探针原始返回(前 3000 字):\n")
                     .append(lastRaw.length() > 3000 ? lastRaw.substring(0, 3000) + "…" : lastRaw);
 
-            HookLog.log("FLOW", "流量余量一键离屏查询 · state=" + result.optString("state", "")
+            HookLog.log("FLOW", "流量余量刷新 · state=" + result.optString("state", "")
                     + " · " + items + " 条", diary.toString());
             send(result);
         } catch (Throwable t) {
-            HookLog.error("流量余量一键离屏查询异常", t);
+            HookLog.error("流量余量刷新异常", t);
             diary.append("异常: ").append(t).append('\n');
             send(error("读取异常：" + t, diary));
         } finally {
@@ -678,7 +793,7 @@ final class FlowTask {
             o.put("state", "error");
             o.put("error", msg);
             o.put("at", System.currentTimeMillis());
-            HookLog.log("FLOW", "流量余量一键离屏查询 · 失败",
+            HookLog.log("FLOW", "流量余量刷新 · 失败",
                     diary.append("失败: ").append(msg).toString());
             return o;
         } catch (Throwable t) {

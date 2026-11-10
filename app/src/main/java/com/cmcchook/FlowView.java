@@ -536,7 +536,7 @@ final class FlowView {
         LinearLayout box = card(c);
         if (items.isEmpty()) {
             TextView e = new TextView(c);
-            e.setText("暂无数据，点「一键查询」读取一次余量缓存");
+            e.setText("暂无数据，点「刷新」读取一次余量");
             e.setTextSize(12);
             e.setTextColor(col(c, R.color.text_secondary));
             box.addView(e);
@@ -795,7 +795,7 @@ final class FlowView {
     private static View emptyCard(Context c) {
         LinearLayout box = card(c);
         TextView t = new TextView(c);
-        t.setText("这次没读到余量缓存，进页会自动重试，也可点「一键查询」。\n"
+        t.setText("这次没读到余量，进页会自动重试，也可点「刷新」。\n"
                 + "数据源是中国移动首页自己写进 localStorage 的明文余量，不用手动进「余量查询」页。");
         t.setTextSize(12);
         t.setTextColor(col(c, R.color.text_secondary));

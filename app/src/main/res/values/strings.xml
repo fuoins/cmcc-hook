@@ -173,8 +173,8 @@
     <string name="sub_flow">流量</string>
     <string name="sub_coupon">优惠券</string>
     <string name="flow_title">流量余量</string>
-    <string name="flow_refresh">一键查询</string>
-    <string name="flow_refreshing">正在打开 App 官方余量页读取明细（通常 3~10 秒；App 不在前台会自动拉起）…</string>
+    <string name="flow_refresh">刷新</string>
+    <string name="flow_refreshing">正在打开 App 官方余量页读取明细（通常 5~15 秒；App 不在前台会自动拉起，读完自动关页）…</string>
     <string name="flow_never">进本页自动查询一次，按钮也一直可用。所有读取都在中国移动 App 官方的「余量查询」真页里做：App 不在前台会先自动拉起，再用它自己的 H5 容器打开余量页，模块只读页面自己请求并解密后写进 Vuex 的全量树，按分类 → 套餐 → 流量项逐条列出，含套餐名、有效期、总量/已用/剩余，共享流量单列。不发请求、不解密、不拼签名、不自动登录。真页万一打不开才退回离屏页与首页明文缓存（只有 3 项汇总）。</string>
     <string name="flow_at">更新于 %1$s</string>
     <string name="flow_hero_label">国内通用流量 · 剩余</string>
@@ -187,17 +187,17 @@
     <string name="flow_fail">读取失败：%1$s</string>
     <string name="flow_ok">读取完成：%1$d 项（含套餐明细）· 点「流量详情」逐项展开</string>
     <string name="coupon_section">我的卡券</string>
-    <string name="coupon_hint">点一次「一键扫描」，模块会把中国移动 App 切到前台并用它自己的 H5 容器打开「我的卡券」真页，在页面上读渲染好的券列表（不发接口、不解密、不拼签名）。App 不在前台会自动拉起。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
+    <string name="coupon_hint">进这一页会自动刷新，也可以点「刷新」重读。模块把中国移动 App 切到前台，用它自己的 H5 容器打开「我的卡券」真页，在页面上读渲染好的券列表（不发接口、不解密、不拼签名）。App 不在前台会自动拉起。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；可用「勾选流量券」「勾选话费兑换券」一键圈定；默认按有效期排序、快到期的在前；可隐藏满减券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
     <string name="coupon_title">卡券中心</string>
-    <string name="coupon_summary_empty">还没扫描，点「一键扫描」读一次</string>
-    <string name="coupon_scan">一键扫描</string>
-    <string name="coupon_never">还没扫描，点「一键扫描」读取卡券页</string>
+    <string name="coupon_summary_empty">还没刷新，点「刷新」读一次</string>
+    <string name="coupon_scan">刷新</string>
+    <string name="coupon_never">还没刷新，点「刷新」读取卡券页</string>
     <string name="coupon_at">扫描于 %1$s</string>
     <string name="coupon_at_cost">扫描于 %1$s · 耗时 %2$s</string>
     <string name="coupon_select_all">全选</string>
-    <string name="coupon_invert">反选</string>
+    <string name="coupon_pick_flow">勾选流量券</string>
     <string name="coupon_use">使用</string>
-    <string name="coupon_use_all">一键全用</string>
+    <string name="coupon_pick_phone">勾选话费兑换券</string>
     <string name="coupon_bar_idle">仅流量券 / 话费兑换券可用，其余置灰；验证码自动读取。</string>
     <string name="coupon_bar_selected">已选 %1$d 张</string>
     <string name="coupon_running">正在用第 %1$d/%2$d 张：%3$s</string>
@@ -210,11 +210,8 @@
     <string name="coupon_perm_grant">去授权</string>
     <string name="coupon_perm_later">以后再说</string>
     <string name="coupon_perm_denied">没拿到短信权限，验证码需要手动输入</string>
-    <string name="coupon_all_confirm_title">一键全用</string>
-    <string name="coupon_all_confirm_message">将使用全部 %1$d 张可用券（仅流量券 / 话费兑换券，快到期的先用）。券一经使用不可撤销，确认继续？</string>
-    <string name="coupon_confirm_use">确认使用</string>
     <string name="coupon_done">批量结束：成功 %1$d 张，失败 %2$d 张</string>
-    <string name="coupon_scanning">正在一键扫描…</string>
+    <string name="coupon_scanning">正在刷新…</string>
     <string name="coupon_scan_fail">【诊断测试版 v2】本版一键扫描只跑全方案探针，不产出券清单。导出完整日志看「一键扫描 · 全方案探针 v2 汇总」对照表，以及 6 条「探针 v2 · 方案 X」里的 JS 错误 / 资源清单 / Vue 状态，定位 Vue 未渲染的原因；命中结果将在下一轮精简正式版采用。</string>
     <!-- v4.0.4 小米 / HyperOS 短信验证码自检引导 -->
     <string name="sms_help_entry">小米 / HyperOS 读不到验证码？点这里看自检步骤</string>
@@ -227,7 +224,7 @@
     <string name="coupon_excluded">不可用</string>
     <string name="coupon_usable">可使用</string>
     <string name="coupon_sort_valid">按有效期排序</string>
-    <string name="coupon_hide_blocked">隐藏不可选</string>
+    <string name="coupon_hide_blocked">隐藏满减券</string>
     <string name="coupon_used">已用</string>
     <string name="coupon_failed">失败</string>
 </resources>

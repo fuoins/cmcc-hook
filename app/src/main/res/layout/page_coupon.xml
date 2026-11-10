@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  v4.0.6：券页「跳转卡券中心」+「扫描」合并成一个「一键扫描」（占 2 份宽，主操作）。
-  现为 5 个按钮：第一行 一键扫描 / 全选；第二行 反选 / 使用 / 一键全用。
+  v4.1.0：券页按钮重排 —— 第一行 刷新(2) / 全选(1)；第二行 勾选流量券 / 勾选话费兑换券 / 使用。
+  删掉「反选」「一键全用」（用户要求），「隐藏不可选」改为「隐藏满减券」。
 
   注意：couponSummary / couponAt / couponBar 三个 TextView 必须保留在布局里，
   MainActivity 会直接对它们 setText()，删掉会空指针崩溃。
@@ -40,9 +40,8 @@
                 android:paddingTop="10dp"
                 android:paddingEnd="12dp">
 
-                <!-- v4.0.6：「跳转卡券中心」+「扫描」合并成一个「一键扫描」。
-                     点它直接离屏加载卡券页并读券（离屏读不到自动回退前台真页），
-                     不再需要用户手动点进卡券中心。占 2 份宽，作为本页主操作。 -->
+                <!-- v4.1.0：按钮文案「刷新」。进页会自动刷新一次，点它可重读。
+                     占 2 份宽，作为本页主操作。 -->
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnCouponScan"
                     style="@style/Widget.Material3.Button.OutlinedButton"
@@ -83,7 +82,7 @@
                     app:minWidth="0dp" />
             </LinearLayout>
 
-            <!-- 第二行：反选 / 使用 / 一键全用 -->
+            <!-- 第二行：勾选流量券 / 勾选话费兑换券 / 使用 -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -95,7 +94,7 @@
                 android:paddingBottom="10dp">
 
                 <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnCouponInvert"
+                    android:id="@+id/btnCouponPickFlow"
                     style="@style/Widget.Material3.Button.OutlinedButton"
                     android:layout_width="0dp"
                     android:layout_height="40dp"
@@ -106,7 +105,27 @@
                     android:minWidth="0dp"
                     android:paddingStart="2dp"
                     android:paddingEnd="2dp"
-                    android:text="@string/coupon_invert"
+                    android:text="@string/coupon_pick_flow"
+                    android:textAllCaps="false"
+                    android:textSize="12sp"
+                    app:cornerRadius="999dp"
+                    app:elevation="0dp"
+                    app:minWidth="0dp" />
+
+                <com.google.android.material.button.MaterialButton
+                    android:id="@+id/btnCouponPickPhone"
+                    style="@style/Widget.Material3.Button.OutlinedButton"
+                    android:layout_width="0dp"
+                    android:layout_height="40dp"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:insetTop="0dp"
+                    android:insetBottom="0dp"
+                    android:maxLines="1"
+                    android:minWidth="0dp"
+                    android:paddingStart="2dp"
+                    android:paddingEnd="2dp"
+                    android:text="@string/coupon_pick_phone"
                     android:textAllCaps="false"
                     android:textSize="12sp"
                     app:cornerRadius="999dp"
@@ -132,26 +151,6 @@
                     app:cornerRadius="999dp"
                     app:elevation="0dp"
                     app:minWidth="0dp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnCouponUseAll"
-                    style="@style/Widget.Material3.Button.OutlinedButton"
-                    android:layout_width="0dp"
-                    android:layout_height="40dp"
-                    android:layout_marginStart="8dp"
-                    android:layout_weight="1"
-                    android:insetTop="0dp"
-                    android:insetBottom="0dp"
-                    android:maxLines="1"
-                    android:minWidth="0dp"
-                    android:paddingStart="2dp"
-                    android:paddingEnd="2dp"
-                    android:text="@string/coupon_use_all"
-                    android:textAllCaps="false"
-                    android:textSize="12sp"
-                    app:cornerRadius="999dp"
-                    app:elevation="0dp"
-                    app:minWidth="0dp" />
             </LinearLayout>
         </LinearLayout>
 
@@ -166,8 +165,7 @@
             android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
-        <!-- v4.0.8：一键扫描改为纯离屏（补齐 App 私有 JS 桥），不再需要
-             「先打开卡券中心」的前置入口，券页只留一个「一键扫描」按钮。 -->
+        <!-- v4.1.0：券列表读的是 App 官方「我的卡券」真页；进页自动刷新。 -->
 
         <!-- v4.0.4：小米 / HyperOS 短信验证码自检入口。
              系统级「验证码安全保护」模块不能代改，只能把步骤摆到用户面前。 -->
