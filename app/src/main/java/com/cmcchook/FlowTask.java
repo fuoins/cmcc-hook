@@ -131,6 +131,17 @@ final class FlowTask {
 
     /** 模块点「一键查询」→ TaskReceiver 起独立线程调这里。不进任务队列、不记今日状态。 */
     static void fetch() {
+        // v4.0.7+flowprobe 诊断版：一键查询临时委托给流量专项探针，正式逻辑完整保留
+        // 在 fetchLegacy()，下一轮据探针结论恢复 / 精简。
+        FlowProbe.run();
+    }
+
+    /**
+     * 正式流量查询逻辑（首页同源 localStorage 明文缓存），诊断版期间完整保留，
+     * 不作为一键查询入口，下一轮据 {@link FlowProbe} 结论决定恢复或替换数据源。
+     */
+    @SuppressWarnings("unused")
+    private static void fetchLegacy() {
         long start = System.currentTimeMillis();
         Object wv = null;
         StringBuilder diary = new StringBuilder();
@@ -281,8 +292,8 @@ final class FlowTask {
         }
     }
 
-    /** 显式广播回模块 App（静态 LogReceiver，FLAG 保证进程没起来也能拉起）。 */
-    private static void send(JSONObject o) {
+    /** 显式广播回模块 App（静态 LogReceiver，FLAG 保证进程没起来也能拉起）。包级可见，供流量探针回传诊断结果。 */
+    static void send(JSONObject o) {
         Context ctx = HookLog.context();
         if (ctx == null) {
             return;

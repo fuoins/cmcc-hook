@@ -174,14 +174,14 @@
     <string name="sub_coupon">优惠券</string>
     <string name="flow_title">流量余量</string>
     <string name="flow_refresh">一键查询</string>
-    <string name="flow_refreshing">正在离屏读取首页余量缓存…</string>
-    <string name="flow_never">进入本页自动离屏查询一次。余量卡片按 flow-assistant 的样式重画：点「流量详情」逐项展开、点分类卡展开该组每一包；下方还有消耗测速与流量领取入口。数据只读首页明文缓存，不解密接口、不提交请求。</string>
+    <string name="flow_refreshing">【诊断测试版 4.0.7+flowprobe】正在后台跑流量专项探针（4 组对照，约 1 分钟）…</string>
+    <string name="flow_never">【诊断测试版 4.0.7+flowprobe】本版「一键查询」临时改为流量专项探针，不产出正式余量明细：后台串行跑 4 组（A 首页缓存基线 / B 接口直连·裸重放证伪 / C 余量页读 Vuex 全量树 / D 会话 Cookie 回灌），界面不动、不触发登录。目的是定位「分套餐明细」的数据源能不能在纯离屏、一键、后台拿到。请导出完整日志看「流量专项探针汇总」对照表。正式查询逻辑完整保留，下一轮据结论恢复。下方消耗测速与流量领取入口不受影响。</string>
     <string name="flow_at">更新于 %1$s</string>
     <string name="flow_hero_label">国内通用流量 · 剩余</string>
     <string name="flow_hero_hint">已用 %1$s / 共 %2$s</string>
     <string name="flow_summary_title">分类余量</string>
     <string name="flow_detail_title">套餐明细</string>
-    <string name="flow_hint">余量来自中国移动首页 localStorage 里页面自己解密缓存的明文数据（通用/定向/其他流量 + 话费 + 通话），模块只读取、不解密接口、不拼签名、不提交请求。消耗测速会真实产生流量，累计字节不等于计费值，连 WiFi 时消耗的是 WiFi；领取入口用系统浏览器打开官方活动页，模块不代领、不提交领取请求。余量与计费以中国移动为准，活动有地域/资格限制。</string>
+    <string name="flow_hint">【诊断测试版 4.0.7+flowprobe】本版只跑流量专项探针，不改动正式余量逻辑。已核实：分套餐明细在页面 Vuex 的 planRemianFlowListRes 全量树里，首页 localStorage 的 flowSceneData[] 只有 3 项汇总；余量接口请求/响应均为国密密文且带动态签名，会话串重放拿不到明文。正式版余量原本只读首页明文缓存，不解密接口、不拼签名、不提交请求。消耗测速会真实产生流量，累计字节不等于计费值，连 WiFi 时消耗的是 WiFi；领取入口用系统浏览器打开官方活动页，模块不代领、不提交领取请求。余量与计费以中国移动为准，活动有地域/资格限制。</string>
     <string name="flow_empty">这次没读到余量缓存，会自动重试；也可点「一键查询」手动刷新。</string>
     <string name="flow_login">首页缓存未就绪：请打开一次中国移动 App（登录态就绪）后再查询，不需要进「余量查询」页。</string>
     <string name="flow_fail">读取失败：%1$s</string>

@@ -414,6 +414,30 @@ final class WebPage {
             if (!loaded) {
                 XposedHelpers.callMethod(webView, "loadUrl", url);
             }
+            // v4.0.7+flowprobe：earlyScript 注入改为「不依赖内核类型」。
+            // 原来只有系统内核分支的匿名 WebViewClient.onPageStarted 会注入；X5 分支
+            // 只 newInstance 了一个空 WebViewClient，onPageStarted 链根本不通，导致
+            // 4.0.7+probe-v2 全轮 DIAG:无(earlyScript 未生效) —— JS 报错是假阴性、
+            // 缺桥垫片 / JWT / 唤醒脚本全部空转。这里在 loadUrl 之后用 postDelayed
+            // 多点重复注入，覆盖「文档刚建立→脚本陆续加载」各阶段，对系统内核与 X5
+            // 一视同仁；earlyScript 自带幂等守卫，重复执行无害。
+            // 用 JsInjector.postRaw（反射 evaluateJavascript(js,null)，X5 兼容），
+            // 与 SdkBridge 垫片同一条已验证生效的通道。
+            if (nav.earlyScript != null && !nav.earlyScript.isEmpty()) {
+                final String early = nav.earlyScript;
+                for (long delay : new long[]{60L, 350L, 1_000L, 2_400L}) {
+                    try {
+                        XposedHelpers.callMethod(webView, "postDelayed", new Runnable() {
+                            @Override
+                            public void run() {
+                                JsInjector.postRaw(target, early);
+                            }
+                        }, delay);
+                    } catch (Throwable e) {
+                        HookLog.logcat("early script post failed: " + e);
+                    }
+                }
+            }
             // onPageStarted 万一没回调（不同 X5 版本行为不一样），文档建立后
             // 补一次垫片；幂等，页面已经加载了真 SDK 也不会被顶掉。
             XposedHelpers.callMethod(webView, "postDelayed", new Runnable() {
