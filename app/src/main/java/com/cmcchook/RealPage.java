@@ -41,8 +41,9 @@ final class RealPage {
     /** 登记超过这么久就不再用（页面可能已经销毁或被切走）。 */
     static final long TTL_MS = 10L * 60_000L;
 
-    /** 任务会话：串行任务共用同一个真页 WebView。 */
+    /** 任务会话：串行任务共用同一个真页 WebView（仅限同域）。 */
     private static volatile Object sessionView;
+    private static volatile String sessionUrl = "";
     private static volatile int sessionDepth;
 
     private RealPage() {
@@ -156,7 +157,71 @@ final class RealPage {
         sessionDepth = left < 0 ? 0 : left;
         if (sessionDepth == 0) {
             sessionView = null;
+            sessionUrl = "";
         }
+    }
+
+    /** 两个地址是不是同一个域（含子域）。 */
+    private static boolean sameHost(String a, String b) {
+        String ha = hostOf(a);
+        String hb = hostOf(b);
+        if (ha.isEmpty() || hb.isEmpty()) {
+            return false;
+        }
+        return ha.equals(hb) || ha.endsWith("." + hb) || hb.endsWith("." + ha);
+    }
+
+    private static String hostOf(String url) {
+        if (url == null) {
+            return "";
+        }
+        try {
+            String u = url;
+            int s = u.indexOf("://");
+            if (s >= 0) {
+                u = u.substring(s + 3);
+            }
+            int e = u.length();
+            for (int i = 0; i < u.length(); i++) {
+                char c = u.charAt(i);
+                if (c == '/' || c == '?' || c == '#') {
+                    e = i;
+                    break;
+                }
+            }
+            String host = u.substring(0, e);
+            int colon = host.indexOf(':');
+            return colon >= 0 ? host.substring(0, colon) : host;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    /**
+     * 这次跳转是不是发生在「任务用真页」上。
+     *
+     * <p>真页是 App 自己的容器，模块不能换它的 WebViewClient（换了 App 的 SDK 回调就断了），
+     * 但可以在 {@code shouldOverrideUrlLoading} 这一层把「下载 App / 去 APP 打开」的中转页拦掉。
+     * 11-10 22:07 日志实证：鹅蛋真页被 {@code dx.10086.cn/A/…} 带去 transferDownload，
+     * 原页面 JS 上下文当场销毁，脚本再也读不到数据，任务就卡在那儿。
+     */
+    static boolean isTaskPage(Object view) {
+        if (sessionDepth <= 0 || sessionView == null) {
+            return false;
+        }
+        if (view == null || sessionView == view) {
+            return true;
+        }
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                if (VIEWS[i] == view) {
+                    return true;
+                }
+            }
+        }
+        // X5 回调传进来的可能是 WebView 的内部类实例，和登记的实例不是同一个；
+        // 任务期间只有一个真页在服役，按会话状态放行即可（只对下载类中转页生效）。
+        return true;
     }
 
     // ------------------------------------------------------------------ 前台
@@ -271,7 +336,11 @@ final class RealPage {
 
         if (view == null) {
             Object sv = sessionView;
-            if (sv != null) {
+            // 只在同一个域里复用。跨域（wx.10086.cn → lyh.lncmcc.com）必须新开一个真页：
+            // 11-10 22:07 日志实证，同一个 WebView 跨域导航后，页面里的广告位把整页
+            // 顶到了 transferDownload 下载引导页（标题「中国移动客户端」），鹅蛋脚本
+            // 当场失去 JS 上下文，任务卡死。用户手动点开活动是「新开一个页面」，这里对齐。
+            if (sv != null && sameHost(sessionUrl, url)) {
                 view = sv;
                 reused = true;
             }
@@ -311,6 +380,7 @@ final class RealPage {
             }
         }
         sessionView = view;
+        sessionUrl = url;
         HookLog.log("PAGE", (reused ? "复用真页" : "打开真页") + " · " + shortUrl(url),
                 "页面: " + shortUrl(page.href()) + "\n内核: " + page.kernel());
         return page;

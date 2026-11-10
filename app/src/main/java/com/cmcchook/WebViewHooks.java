@@ -372,11 +372,17 @@ final class WebViewHooks {
                     // 一顶走，原页面的 JS 上下文当场销毁，任务脚本写回的变量再也读不到，
                     // 表现就是「页面能打开、脚本 90 秒不回报」。球赛页 11-07 就是这么挂的。
                     // 只有离屏页拦，用户自己点的 WebView 一律不动。
-                    if (isOffscreenPage(webViewOf(param)) && isDetourUrl(url)) {
+                    //
+                    // v4.0.9：任务改到 App 官方真页里跑，同样会被这类引导顶掉 ——
+                    // 11-10 22:07 鹅蛋就死在 dx.10086.cn/A/… → transferDownload 这一跳上。
+                    // 任务会话期间对真页也拦，用户平时自己浏览完全不受影响。
+                    boolean taskPage = isOffscreenPage(webViewOf(param))
+                            || RealPage.isTaskPage(webViewOf(param));
+                    if (taskPage && isDetourUrl(url)) {
                         param.setResult(true);
                         HookLog.log("TASK", "已拦下外部引导跳转",
                                 "目标: " + UrlFilter.shortForTitle(url)
-                                        + "\n离屏页需要留在活动页，已阻止本次导航");
+                                        + "\n任务页需要留在活动页，已阻止本次导航");
                         return;
                     }
                     attachGoose(param, url);
