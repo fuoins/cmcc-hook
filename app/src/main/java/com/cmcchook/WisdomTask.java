@@ -101,9 +101,18 @@ final class WisdomTask {
         if (i > 0) {
             base = entry.substring(0, i + 10);
         }
-        // token 在 ? 和 hash 里各放一份：这站读 search 还是读 hash query 没有实证，
-        // 放两处任取其一都能换到 ssoId。
-        return base + "?h5token=" + token + "#/signInLottery?h5token=" + token;
+        // 11-10 22:57 实证：旧实现拼的是 index.html?h5token=X#/signInLottery?h5token=X
+        // （外层 + hash 双写），jtH5Login 回 500「系统登录异常」；App 现场下发的是
+        // 单 hash 形态。既然现在票是现场领来的、且现场能拿到答题页，就直接进答题路由，
+        // 由 QUIZ_JS 自己判「已在答题路由、不切路由」。
+        return base + "#/answerQuestions?h5token=" + token;
+    }
+
+    /** 用一张新鲜票拼出本次任务的入口（单 hash 形态，和 App 现场下发的一致）。 */
+    static String entryWithToken(String cmd, String token) {
+        String route = TaskRunner.CMD_QUIZ.equals(cmd) ? "answerQuestions" : "signInLottery";
+        return "https://digismart.lncmcc.com/wisdom-h5/index.html#/" + route
+                + "?h5token=" + token;
     }
 
     /**
@@ -225,7 +234,17 @@ final class WisdomTask {
         // 超时误锁机会，还把用户正在手动抽奖的页面切走（用户反馈「软件内打开有问题」）。
         // 现在：前台登记的不是问答页，就直接快速跳过 —— 不注入、不切路由、不等待、不锁机会。
         String front = WisdomPage.loggedRoute();
-        if (WisdomPage.get() != null && !"answerquestions".equals(front)) {
+        // 11-10 23:19：问答不再「一律跳过」。任务进来前已经用新鲜票开好答题页，
+        // 只要当前现场页确实在 #/answerQuestions 上就直接答；只有现场页明确还是
+        // 用户那张签到抽奖页时，才保持原来的保守策略（不切别人的页面）。
+        WebPage current = WebSession.current();
+        String curUrl = "";
+        try {
+            curUrl = current == null ? "" : String.valueOf(current.href());
+        } catch (Throwable ignored) {
+        }
+        boolean onQuiz = curUrl.toLowerCase(java.util.Locale.US).contains("answerquestions");
+        if (!onQuiz && WisdomPage.get() != null && "signinlottery".equals(front)) {
             detail.append("现场: 前台登记的是「").append(front.isEmpty() ? "未知路由" : front)
                     .append("」页，不是问答页\n");
             return TaskRunner.Result.skip("乡友问答 · 请在福利专区单独打开问答页",

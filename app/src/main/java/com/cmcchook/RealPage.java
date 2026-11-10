@@ -81,22 +81,64 @@ final class RealPage {
         }
     }
 
-    /** 无参地址（scheme://host/path），用来做「同一个页面」的比较键。 */
+    /**
+     * 页面比较键：{@code scheme://host/path#/路由}，query 一律丢掉。
+     *
+     * <p>11-10 22:57 实证：wisdom-h5 是 hash 路由的 SPA，
+     * {@code index.html#/signInLottery} 和 {@code index.html#/answerQuestions}
+     * 只差一个 hash。旧实现把 hash 一起丢掉，问答任务就被判成「已经在这一页」，
+     * 一次都没导航，直接跑在签抽页上，然后报「请在福利专区单独打开问答页」。
+     */
     static String pathKey(String url) {
         if (url == null) {
             return "";
         }
-        int q = url.indexOf('?');
-        return q < 0 ? url : url.substring(0, q);
+        String base = url;
+        String hash = "";
+        int h = base.indexOf('#');
+        if (h >= 0) {
+            hash = base.substring(h);
+            base = base.substring(0, h);
+        }
+        int q = base.indexOf('?');
+        if (q >= 0) {
+            base = base.substring(0, q);
+        }
+        int hq = hash.indexOf('?');
+        if (hq >= 0) {
+            hash = hash.substring(0, hq);
+        }
+        return base + hash;
     }
 
-    /** 已登记地址与目标页是否同一个路径（参数忽略）。 */
+    /**
+     * 页面是不是「被服务端重定向到受限页」，只看站点给的明确特征。
+     *
+     * <p>11-10 22:56 实证：周三充值日的首屏 {@code html=790}、Vue 还没 mount，
+     * 旧实现按「DOM 小于 900 字节」判成受限页，把正常活动整条跳过。空壳判定只在
+     * 「地址本身没有渠道参数」时才用 —— 带渠道参数还被重定向成空壳的情况，
+     * 站点会把标题写成「访问受限」，走上一段的特征串就能认出来。
+     */
+    private static boolean shellPage(String url, String text, String len) {
+        if (url != null && RealEntry.hasChannel(url)) {
+            return false;
+        }
+        int n = 0;
+        try {
+            n = Integer.parseInt(len);
+        } catch (Throwable ignored) {
+        }
+        return n > 0 && n < 900 && text.length() < 40;
+    }
+
+    /** 已登记地址与目标页是否同一个路径（参数忽略，大小写不敏感）。 */
     private static boolean samePath(String registered, String key) {
         if (registered == null || key == null || key.isEmpty()) {
             return false;
         }
-        String bare = pathKey(registered);
-        return bare.equals(key) || bare.startsWith(key) || key.startsWith(bare);
+        String bare = pathKey(registered).toLowerCase(java.util.Locale.US);
+        String k = key.toLowerCase(java.util.Locale.US);
+        return bare.equals(k) || bare.startsWith(k) || k.startsWith(bare);
     }
 
     /**
@@ -118,7 +160,12 @@ final class RealPage {
                 if (v == null || now - AT[i] > maxAgeMs) {
                     continue;
                 }
-                if (!URLS[i].contains(key) && !samePath(URLS[i], key)) {
+                if (URLS[i] == null) {
+                    continue;
+                }
+                // 大小写不敏感：调用方传 "signlottery"，站点地址写的是 "signInLottery"。
+                if (!URLS[i].toLowerCase(java.util.Locale.US).contains(key.toLowerCase(java.util.Locale.US))
+                        && !samePath(URLS[i], key)) {
                     continue;
                 }
                 if (AT[i] > bestAt) {
@@ -228,13 +275,15 @@ final class RealPage {
                 || title.contains("无法访问") || text.contains("渠道不支持")) {
             return true;
         }
-        // 空壳页：正文几乎没有、DOM 也很小 —— 正常活动页首屏至少几 KB。
-        int n = 0;
+        String href = "";
         try {
-            n = Integer.parseInt(len);
+            href = page.href();
         } catch (Throwable ignored) {
         }
-        return n > 0 && n < 900 && text.length() < 40;
+        if (href != null && (href.contains("notice/limited") || href.contains("A_C_CODE=null"))) {
+            return true;
+        }
+        return shellPage(href, text, len);
     }
 
     /**
@@ -349,6 +398,129 @@ final class RealPage {
         if (sessionDepth == 0) {
             sessionView = null;
             sessionUrl = "";
+        }
+    }
+
+    // ------------------------------------------------------------------ 收页
+    //
+    // 11-10 23:19 用户要求：每个活动跑完就把页面关掉，否则一键过 15 个活动会在
+    // App 里攒一摞 CommonHtml5Activity。只关「我们打开的」页面，用户自己点开的
+    // 页面一律不动。
+
+    private static final java.util.List<Object> OWNED = new java.util.ArrayList<>();
+
+    static void markOwned(Object view) {
+        if (view == null) {
+            return;
+        }
+        synchronized (OWNED) {
+            for (int i = 0; i < OWNED.size(); i++) {
+                if (OWNED.get(i) == view) {
+                    return;
+                }
+            }
+            OWNED.add(view);
+        }
+    }
+
+    /** 这一页是不是模块自己打开的（只有这种才能关）。 */
+    static boolean isOwned(Object view) {
+        if (view == null) {
+            return false;
+        }
+        synchronized (OWNED) {
+            for (int i = 0; i < OWNED.size(); i++) {
+                if (OWNED.get(i) == view) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 关掉本次任务里由模块打开的真页，并清空会话。 */
+    static void closeOwned() {
+        java.util.List<Object> copy;
+        synchronized (OWNED) {
+            copy = new java.util.ArrayList<>(OWNED);
+            OWNED.clear();
+        }
+        int closed = 0;
+        for (int i = 0; i < copy.size(); i++) {
+            if (closePage(copy.get(i))) {
+                closed++;
+            }
+        }
+        sessionView = null;
+        sessionUrl = "";
+        if (closed > 0) {
+            HookLog.logcat("closed " + closed + " task page(s)");
+        }
+    }
+
+    /**
+     * 关掉承载这个 WebView 的 Activity。
+     *
+     * <p>真页是 App 自己的容器（{@code CommonHtml5Activity}），销毁 WebView 会和
+     * App 的 SDK 回调打架；关 Activity 才等同于用户按返回键。
+     */
+    static boolean closePage(Object view) {
+        if (view == null) {
+            return false;
+        }
+        // 关掉的页面不能继续当会话现场，否则下一项活动会 attach 到一个死 WebView。
+        if (sessionView == view) {
+            sessionView = null;
+            sessionUrl = "";
+        }
+        synchronized (OWNED) {
+            for (int i = 0; i < OWNED.size(); i++) {
+                if (OWNED.get(i) == view) {
+                    OWNED.remove(i);
+                    break;
+                }
+            }
+        }
+        try {
+            Activity act = activityOf(view);
+            if (act != null) {
+                if (!act.isFinishing()) {
+                    act.runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            try {
+                                act.finish();
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    });
+                }
+                return true;
+            }
+            // 拿不到 Activity 时至少把页面清空，别把旧 DOM 留在后台。
+            java.lang.reflect.Method m = view.getClass()
+                    .getMethod("loadUrl", String.class);
+            m.invoke(view, "about:blank");
+            return true;
+        } catch (Throwable e) {
+            HookLog.logcat("close page failed: " + e);
+            return false;
+        }
+    }
+
+    /** 从 WebView 的 Context 往上找 Activity。 */
+    private static Activity activityOf(Object view) {
+        try {
+            Object ctx = view.getClass().getMethod("getContext").invoke(view);
+            while (ctx instanceof android.content.ContextWrapper) {
+                if (ctx instanceof Activity) {
+                    return (Activity) ctx;
+                }
+                ctx = ((android.content.ContextWrapper) ctx).getBaseContext();
+            }
+            return ctx instanceof Activity ? (Activity) ctx : null;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -558,6 +730,8 @@ final class RealPage {
                 return null;
             }
             reused = false;
+            // 这一页是我们拉起来的，任务结束要回收。
+            markOwned(view);
         }
 
         WebPage page = WebPage.attachReal(view, url);

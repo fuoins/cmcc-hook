@@ -497,6 +497,8 @@ final class TaskRunner {
                     try {
                         result = dispatch(cmd);
                     } finally {
+                        // 任务结束把页面关掉，不留一堆窗口在 App 里。
+                        RealPage.closeOwned();
                         RealPage.endSession();
                     }
                 } catch (Throwable e) {
@@ -789,6 +791,25 @@ final class TaskRunner {
                     "内置表里没有这个活动，采集缓存里也没有。",
                     "这个活动可能已经下线，等下个版本更新内置表。");
         }
+        // 11-10 22:57 实证：wisdom-h5 的 h5token 是一次性短时效凭据，旧票一律
+        // 回 500。这里先确认手上有没有 30 分钟内的票，没有就自动去福利专区领一张
+        // （打开福利专区真页 → 点「签到抽奖」→ 等 App 下发），全程不需要手动点。
+        boolean wisdomTask = CMD_SIGNLOTTERY.equals(cmd) || CMD_QUIZ.equals(cmd);
+        if (wisdomTask && RealEntry.tokenIn(url).isEmpty()) {
+            StringBuilder mint = new StringBuilder();
+            String tk = WelfareToken.ensure(mint);
+            if (!tk.isEmpty()) {
+                url = WisdomTask.entryWithToken(cmd, tk);
+            }
+            HookLog.log("TASK", "领取入口票据 · " + label(cmd), mint.toString());
+        }
+        if (wisdomTask && RealEntry.tokenIn(url).isEmpty()) {
+            // 没有票就绝不进页面：这站裸地址必回 403/500，还可能白占问答机会。
+            return Result.skip(label(cmd) + "：这次没领到入口票据，没有进页面",
+                    "入口: " + briefUrl(url) + "\n"
+                            + "模块已经自动去福利专区点过「签到抽奖」，App 这次没有下发 h5token。\n",
+                    "稍后再点一次「执行任务」即可；模块下次会重新领票，不需要手动点福利专区。");
+        }
         // v3.63：乡友问答每天只有一次机会，而且「进去就算用过」。
         // 所以进之前必须确认两件事：今天还没用过、地址上确实带着能换 ssoId 的
         // h5token。缺一样就不进 —— 白进一次比不进糟得多。
@@ -800,12 +821,13 @@ final class TaskRunner {
             }
             String token = RealEntry.tokenIn(url);
             if (token.isEmpty()) {
-                return Result.skip(label(cmd) + "：缺登录入口，今天没进",
+                return Result.skip(label(cmd) + "：这次没领到入口票据，今天没进",
                         "入口: " + briefUrl(url) + "\n"
                                 + "地址上没有 h5token。这站只认地址上的 token 换 ssoId，"
                                 + "裸地址进去只会停在未登录，取不到题，还白占当天一次机会。\n",
-                        "先在福利专区点一次「签到抽奖赢好礼」（同一个站点，不消耗答题机会），"
-                                + "模块会记住带 token 的地址；再跑问答就能一次进对。");
+                        "模块已经自动去福利专区试过一次领票（点「签到抽奖」由 App 现场下发），"
+                                + "这次没拿到。等 App 页面加载慢的时候再点一次「执行任务」即可，"
+                                + "不需要手动进福利专区。");
             }
             // 先停在签到页把 ssoId 换出来，再切答题路由 —— 这一步才是「进入」。
             // token 失效时停在签到页就能发现，答题机会一次都不浪费。
@@ -955,6 +977,9 @@ final class TaskRunner {
                 continue;
             }
             brief.append(name).append(' ');
+            // 上一项跑完/跳过的页面在这里收掉：一键过 15 个活动如果不关，
+            // App 里会攒一摞 CommonHtml5Activity。只关模块自己打开的页面。
+            RealPage.closeOwned();
             HookLog.log("TASK", "活动开始 · " + name,
                     "进度: " + (idx + 1) + "/" + cmds.length
                             + "　今日: " + todayLine(HookLog.context()));
@@ -1007,6 +1032,8 @@ final class TaskRunner {
                 text.append(name).append("：异常 ").append(e).append('\n');
             }
         }
+        // 最后一项的页面也关掉，跑完不留窗口。
+        RealPage.closeOwned();
         if (aborted) {
             HookLog.log("TASK", "一键过全部 · 登录态熔断",
                     "连续 " + authFailStreak + " 项因登录/会话失效失败，剩下的 "

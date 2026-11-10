@@ -168,9 +168,11 @@ final class WelfareCatalog {
             // v3.81：票只放 hash 一处。14:19 日志实证：同一张票双写（外层 + hash）
             // 会让 jtH5Login 回 500「系统登录异常」，只写 hash 才回 0000。
             new Item("signlottery", "签到抽奖赢好礼", "每日签到 + 任务 + 转盘抽奖",
+                    // 11-10 22:57 实证：这行以前写死的是一张早已过期的票
+                    // （jtH5Login 回 500「系统登录异常」），模块一直拿它硬闯。
+                    // 现在只留路由，票由「福利专区现场领取」补进来。
                     "https://digismart.lncmcc.com/wisdom-h5/index.html"
-                            + "#/signInLottery"
-                            + "?h5token=YZsidssolgfd8d770e4e220dd131d38a4075c661c7",
+                            + "#/signInLottery",
                     "signinlottery", STATE_IMPL, TaskRunner.CMD_SIGNLOTTERY, false, true),
 
             // 同一个 SPA 的答题路由：getQuestions 直接下发 isRight，答对率 100%。
@@ -178,7 +180,7 @@ final class WelfareCatalog {
             // 裸地址换不到 ssoId，进去只会看到未登录。token 与签到抽奖共用一份。
             new Item("quiz", "乡友农业知识问答", "每天 3 道判断题，答案随题目下发",
                     "https://digismart.lncmcc.com/wisdom-h5/index.html"
-                            + "#/answerQuestions?h5token=YZsidssolgfd8d770e4e220dd131d38a4075c661c7",
+                            + "#/answerQuestions",
                     "answerquestions", STATE_IMPL, TaskRunner.CMD_QUIZ, false, true),
     };
 

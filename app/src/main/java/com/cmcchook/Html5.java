@@ -84,6 +84,8 @@ final class Html5 {
             return false;
         }
         try {
+            // 这是模块自己开的页，登记一下，别让它被当成「App 现场下发的新票」。
+            RealEntry.markSelfOpen(url);
             activity.startActivity(buildIntent(url));
             HookLog.logcat("open html5 (same task): " + url);
             return true;
@@ -101,6 +103,7 @@ final class Html5 {
         Intent intent = buildIntent(url);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         try {
+            RealEntry.markSelfOpen(url);
             ctx.startActivity(intent);
             HookLog.logcat("open html5 ok (new task): " + url);
             return true;

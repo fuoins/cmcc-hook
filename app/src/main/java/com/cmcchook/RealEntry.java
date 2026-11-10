@@ -32,6 +32,54 @@ final class RealEntry {
     private static final String KEY = "entries";
     private static final long MAX_AGE = 30L * 24 * 3600 * 1000;
 
+    /**
+     * wisdom-h5 的 h5token 是一次性短时效凭据，不能按 30 天算。
+     *
+     * <p>11-10 22:57 实证：内置表里 13:35 那张票 {@code YZsidssolgfd8d7…}
+     * 到 22:57 还在用，jtH5Login 直接回 500「系统登录异常」，页面拿不到 ssoId，
+     * 整个签到抽奖/问答都跑不起来。改成 30 分钟，过期就当没有，重新去领。
+     */
+    static final long WISDOM_TTL_MS = 30L * 60_000L;
+
+    /**
+     * 模块自己打开过的地址。
+     *
+     * <p>不加这个标记，模块用旧票 openH5 打开页面后，{@link #learn} 会把这次
+     * 「自开」当成「App 现场下发的新票」，日志写「票据已刷新」，其实是自己刚
+     * 用旧票打开的那一条 —— 越刷越旧，永远拿不到真票。
+     */
+    private static final java.util.HashMap<String, Long> SELF_OPEN = new java.util.HashMap<>();
+    private static final long SELF_OPEN_MS = 20_000L;
+
+    /** 模块自己开页前调用，登记一下，{@link #learn} 会跳过这些地址。 */
+    static void markSelfOpen(String url) {
+        if (url == null || url.isEmpty()) {
+            return;
+        }
+        synchronized (SELF_OPEN) {
+            long now = System.currentTimeMillis();
+            SELF_OPEN.put(url, now);
+            if (SELF_OPEN.size() > 16) {
+                java.util.Iterator<java.util.Map.Entry<String, Long>> it = SELF_OPEN.entrySet().iterator();
+                while (it.hasNext()) {
+                    if (now - it.next().getValue() > SELF_OPEN_MS) {
+                        it.remove();
+                    }
+                }
+            }
+        }
+    }
+
+    private static boolean selfOpened(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        synchronized (SELF_OPEN) {
+            Long at = SELF_OPEN.get(url);
+            return at != null && System.currentTimeMillis() - at < SELF_OPEN_MS;
+        }
+    }
+
     /** 渠道参数名：命中任意一个就认为这份地址是「带渠道的真实入口」。 */
     private static final String[] CHANNEL_KEYS = {
             "touch_id", "yx", "channelId", "channelid", "channelCode", "channelcode",
@@ -69,6 +117,10 @@ final class RealEntry {
     /** 从现场看到的一个 URL 里学习真实入口。带渠道参数才采信。 */
     static void learn(String url) {
         if (url == null || !url.startsWith("http")) {
+            return;
+        }
+        // 模块自己刚用旧票打开的地址不算「现场学到的新票」。
+        if (selfOpened(url)) {
             return;
         }
         String actId = actIdOf(url);
@@ -155,7 +207,8 @@ final class RealEntry {
                 return "";
             }
             long at = one.optLong("at", 0);
-            if (at > 0 && System.currentTimeMillis() - at > MAX_AGE) {
+            long ttl = wisdomId(actId) ? WISDOM_TTL_MS : MAX_AGE;
+            if (at > 0 && System.currentTimeMillis() - at > ttl) {
                 return "";
             }
             String u = one.optString("u", "");
@@ -313,6 +366,9 @@ final class RealEntry {
                     continue;
                 }
                 long at = one == null ? 0 : one.optLong("at", 0);
+                if (at > 0 && System.currentTimeMillis() - at > WISDOM_TTL_MS) {
+                    continue;
+                }
                 if (at > bestAt) {
                     best = t;
                     bestAt = at;
@@ -326,14 +382,8 @@ final class RealEntry {
         // v3.68：缓存里一条带 token 的都没有时，退回内置表那条签到抽奖地址。
         // 两站同域、token 通用，总比返回空、让上层发裸地址强。
         // v3.80：这张是备用旧票，可能已经过期，调用方要在日志里如实标出来。
-        try {
-            String built = WelfareCatalog.builtUrl("signlottery");
-            String t = tokenIn(built);
-            if (!t.isEmpty()) {
-                return t;
-            }
-        } catch (Throwable ignored) {
-        }
+        // 11-10 22:57 实证这张内置票确实已过期（jtH5Login 回 500），
+        // 所以不再拿它兜底 —— 宁可不进页面，也不要用死票白跑一轮。
         return "";
     }
 
@@ -368,6 +418,9 @@ final class RealEntry {
                     continue;
                 }
                 long at = one == null ? 0 : one.optLong("at", 0);
+                if (at > 0 && System.currentTimeMillis() - at > WISDOM_TTL_MS) {
+                    continue;
+                }
                 if (at > bestAt) {
                     best = u;
                     bestAt = at;

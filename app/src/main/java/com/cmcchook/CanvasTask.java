@@ -1005,6 +1005,29 @@ final class CanvasTask {
                   return true;
                 }catch(e2){ return false }
               }
+              // 11-10 23:19：周周有好礼直发 /lottery 接口时体里是 operDfp:null，
+              // 服务端判成「风险操作」(SCORE_REFUSE/risk:true)，一次都没抽成。
+              // 改成点页面自己的翻牌按钮 —— 事件进到 Vue 的 click 处理器里，
+              // 设备指纹、referer 这些由页面自己补齐，和用户手点完全一致。
+              function clickDrawExact(){
+                var want=/翻牌|抽奖|开启|立即抽|抽取/;
+                var bad=/记录|规则|说明|详情|我的|奖品|次数|剩余|已抽/;
+                var tags=document.querySelectorAll('button,a,div,span,img');
+                var best=null,area=0;
+                for(var i=0;i<tags.length;i++){
+                  var e=tags[i];
+                  var t=ownText(e);
+                  if(!t||t.length>8) continue;
+                  if(bad.test(t)||!want.test(t)) continue;
+                  var r=e.getBoundingClientRect();
+                  if(!r||r.width<18||r.height<18) continue;
+                  var a=r.width*r.height;
+                  if(a>area){ area=a; best=e }
+                }
+                if(!best) return '';
+                var txt=ownText(best)||String(best.innerText||'').replace(/\\s+/g,'').slice(0,8);
+                return tapEl(best)?txt:'';
+              }
               // v3.89：只点「自己就写着签到/打卡」的元素，文本必须精确等于。
               function clickSignExact(){
                 var words=['立即签到','签到','立即打卡','打卡','立即领取','领取'];
@@ -1414,7 +1437,13 @@ final class CanvasTask {
                         await wait(900);
                       }
                     }
-                    if((draw.apiOk||0)===0){
+                    if(draw.risk>0){
+                      // 命中风险后不再直发接口：改点页面自己的翻牌按钮，由页面
+                      // 自己组织请求体（operDfp 等设备指纹只有页面能补）。
+                      var hd=clickDrawExact();
+                      if(hd){ draw.try++; line('  风控后改用页面真实点击: '+hd+'（等网络证据）'); await wait(2200) }
+                      else line('  风控后没找到可点的翻牌按钮');
+                    } else if((draw.apiOk||0)===0){
                       // 接口抽不了时，才用页面自己的抽奖按钮/组件方法兜底。
                       var dc=[];
                       for(var i=0;i<comps.length;i++){
