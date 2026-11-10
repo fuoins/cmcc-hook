@@ -52,12 +52,43 @@ final class WebSession {
         if (current != null && key.equals(currentKey)) {
             return current.ok();
         }
+        long start = System.currentTimeMillis();
+        // v4.0.9：先走 App 官方真页 —— 页面、会话、容器初始化全都是 App 自己的，
+        // 模块只换了个「在哪执行」。真页拿不到才退回离屏，保证不比以前差。
+        WebPage real = tryReal(key, url, timeoutMs);
+        if (real != null) {
+            boolean ok = settle(key, real, start);
+            if (ok) {
+                HookLog.logcat("session real ok: " + key + " · " + real.href());
+                return true;
+            }
+            HookLog.logcat("real page rejected, fallback offscreen: " + key);
+        }
         end();
         suppressAuto = true;
-        long start = System.currentTimeMillis();
         WebPage page = WebPage.open(url, timeoutMs, hostsFor(key));
         suppressAuto = false;
         return settle(key, page, start);
+    }
+
+    /**
+     * 用 App 自己的 H5 容器打开目标页。
+     *
+     * <p>真页优先是 v4.0.9 的核心改动：离屏页缺 App 容器的初始化流程，
+     * 券 Vue 不 mount、余量模块停在 loadInit；同一个地址在真页里一切正常。
+     */
+    private static WebPage tryReal(String key, String url, long timeoutMs) {
+        try {
+            long budget = Math.min(Math.max(timeoutMs, 12_000L), 28_000L);
+            WebPage page = RealPage.open(url, RealPage.pathKey(url), budget);
+            if (page != null) {
+                HookLog.logcat("session real page: " + key + " -> " + page.href());
+            }
+            return page;
+        } catch (Throwable e) {
+            HookLog.logcat("session real page failed: " + e);
+            return null;
+        }
     }
 
     /**
@@ -68,6 +99,24 @@ final class WebSession {
      * 切换活动就是一次 navigateFast（文档建立即可），毫秒级换场。
      */
     static boolean beginFast(String key, String url, long timeoutMs) {
+        long realStart = System.currentTimeMillis();
+        // v4.0.9：真页优先。签到/砸蛋/鹅蛋这些原本靠离屏页换票、换场，
+        // 现在统一放到 App 官方活动页里执行；同一个任务会话内共用同一个真页。
+        WebPage live = null;
+        suppressAuto = true;
+        try {
+            live = tryReal(key, url, timeoutMs);
+        } finally {
+            suppressAuto = false;
+        }
+        if (live != null) {
+            boolean ok = settle(key, live, realStart);
+            if (ok) {
+                HookLog.logcat("session real fast ok: " + key + " · " + live.href());
+                return true;
+            }
+            HookLog.logcat("real fast page rejected, fallback offscreen: " + key);
+        }
         suppressAuto = true;
         long start = System.currentTimeMillis();
         WebPage page = null;

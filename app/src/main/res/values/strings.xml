@@ -174,8 +174,8 @@
     <string name="sub_coupon">优惠券</string>
     <string name="flow_title">流量余量</string>
     <string name="flow_refresh">一键查询</string>
-    <string name="flow_refreshing">正在后台离屏读取余量明细（通常 3~8 秒）…</string>
-    <string name="flow_never">进本页自动查询一次。数据源是「余量查询」页面的 Vuex 全量树：按分类 → 套餐 → 流量项逐条列出，含套餐名、有效期、总量/已用/剩余，共享流量单列。优先读你刚打开过的「余量查询」真页；真页没开时后台离屏读取，并复用真页地址与已捕获的会话 Cookie，页面不会跳到前台。只读页面自己解密后的结果，模块不发请求、不解密、不拼签名。万一全量树拿不到，会自动退回首页明文缓存（只有 3 项汇总）；这时先在 App 里点一次首页那张流量卡打开余量页，再回来重查即可。下方消耗测速与流量领取入口不受影响。</string>
+    <string name="flow_refreshing">正在打开 App 官方余量页读取明细（通常 3~10 秒；App 不在前台会自动拉起）…</string>
+    <string name="flow_never">进本页自动查询一次，按钮也一直可用。所有读取都在中国移动 App 官方的「余量查询」真页里做：App 不在前台会先自动拉起，再用它自己的 H5 容器打开余量页，模块只读页面自己请求并解密后写进 Vuex 的全量树，按分类 → 套餐 → 流量项逐条列出，含套餐名、有效期、总量/已用/剩余，共享流量单列。不发请求、不解密、不拼签名、不自动登录。真页万一打不开才退回离屏页与首页明文缓存（只有 3 项汇总）。</string>
     <string name="flow_at">更新于 %1$s</string>
     <string name="flow_hero_label">国内通用流量 · 剩余</string>
     <string name="flow_hero_hint">已用 %1$s / 共 %2$s</string>
@@ -187,7 +187,7 @@
     <string name="flow_fail">读取失败：%1$s</string>
     <string name="flow_ok">读取完成：%1$d 项（含套餐明细）· 点「流量详情」逐项展开</string>
     <string name="coupon_section">我的卡券</string>
-    <string name="coupon_hint">【诊断测试版 4.0.7+probe-v2】点一次「一键扫描」，先在后台实时读当前会话的渠道 / SSO / 会话串原料，再串行跑 6 组离屏方案（A 基线 → B 缺桥垫片 → C 实时渠道参数 → D 会话 Cookie 回灌 → E 会话串 URL 参数 + JWT → F 主动唤醒），约 2 分钟，界面不动、不触发登录。每组都会抓 JS 报错、资源清单和 Vue 状态，先定位「页面为什么停在模板不渲染」。导出完整日志看「一键扫描 · 全方案探针 v2 汇总」对照表。此版只诊断、不采用命中结果，券列表可能仍为空属正常。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
+    <string name="coupon_hint">点一次「一键扫描」，模块会把中国移动 App 切到前台并用它自己的 H5 容器打开「我的卡券」真页，在页面上读渲染好的券列表（不发接口、不解密、不拼签名）。App 不在前台会自动拉起。只有「流量券」和「话费兑换券」可勾选使用，其余置灰；默认按有效期排序、快到期的在前，可切换；也能隐藏不可选的券。验证码自动读短信填入，兑换成功弹窗会自动点掉。</string>
     <string name="coupon_title">卡券中心</string>
     <string name="coupon_summary_empty">还没扫描，点「一键扫描」读一次</string>
     <string name="coupon_scan">一键扫描</string>

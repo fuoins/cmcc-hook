@@ -280,6 +280,16 @@ final class CouponTask {
                     "location.href: " + String.valueOf(href));
             CouponPage.detach(live);
         }
+        // v4.0.9：没有现成真页就用 App 容器开一个 —— 批量使用同样在真页上跑。
+        try {
+            WebPage real = RealPage.open(URL, "mycoupons", 28_000L);
+            if (real != null) {
+                HookLog.log("COUPON", "卡券页打开 · 官方真页", "页面: " + real.href());
+                return new LiveHost(real.raw());
+            }
+        } catch (Throwable e) {
+            HookLog.logcat("open real coupon failed: " + e);
+        }
         WebPage page = WebPage.open(URL, 30_000L, HOSTS);
         return page == null ? null : new OffHost(page);
     }
@@ -303,7 +313,41 @@ final class CouponTask {
      * 券列表接口、body 长什么样」写进日志 —— 万一仍 0 张，下一份日志能一次定位。
      */
     private static Host openHostForScan() {
-        HookLog.log("COUPON", "卡券扫描 · 离屏一键",
+        // v4.0.9：扫描现场 = App 官方「我的卡券」真页。
+        // 离屏页那条路保留成兜底：真页起不来（App 拉不起来 / 容器没响应）时仍可用。
+        String entry = CouponScene.entryUrl();
+        if (entry == null || !entry.contains("mycoupons")) {
+            entry = URL;
+        }
+        WebPage real = RealPage.open(entry, "mycoupons", 28_000L);
+        if (real != null) {
+            HookLog.log("COUPON", "卡券扫描 · 官方真页",
+                    "入口: " + entry
+                            + "\n页面: " + real.href()
+                            + "\n内核: " + real.kernel()
+                            + "\n方式: 用 App 自己的 H5 容器打开卡券页，模块在页面上读券列表；"
+                            + "不发接口、不解密、不拼签名。");
+            LiveHost live = new LiveHost(real.raw());
+            long end = System.currentTimeMillis() + SCAN_LIST_WAIT_MS;
+            boolean ready = false;
+            while (System.currentTimeMillis() < end) {
+                if ("1".equals(live.eval(LIST_JS, 3_000L))) {
+                    ready = true;
+                    break;
+                }
+                sleep(400L);
+            }
+            String site = String.valueOf(live.eval(SITE_JS, 6_000L));
+            HookLog.log("COUPON", "卡券页现场 · 真页",
+                    "地址: " + real.href()
+                            + "\n券列表已渲染: " + ready
+                            + "\n页面现场:\n" + site);
+            if (ready) {
+                return live;
+            }
+            HookLog.logcat("real coupon page not rendered, fallback offscreen");
+        }
+        HookLog.log("COUPON", "卡券扫描 · 离屏兜底",
                 "入口: " + URL
                         + "\n模块在中国移动进程里离屏加载卡券页，用户界面不动、不用手动点进去。\n"
                         + "已把 App 真页注册过的私有 JS 桥全量装回离屏页（见「App 私有 JS 桥」日志）。\n"
@@ -403,27 +447,12 @@ final class CouponTask {
     }
 
     static void scan() {
-        // v4.0.7+probe：诊断测试版 —— 一键扫描临时改为「全方案探针」，
-        // 一次点击串行跑 A~F 六组累加方案，用一份日志的对照表定位到底哪一步
-        // 能出券。纯离屏、界面不动、不触发登录。正式扫描逻辑保留在 scanOnce /
-        // openHostForScan 等一整套方法里没动，得出命中方案后下一轮切回精简版。
-        if (busy) {
-            sendList("{\"stage\":\"busy\",\"count\":0,\"items\":[]}");
-            return;
-        }
-        busy = true;
-        try {
-            CouponProbe.run();
-        } catch (Throwable e) {
-            HookLog.log("COUPON", "全方案探针 · 异常", String.valueOf(e));
-            sendList("{\"stage\":\"error\",\"count\":0,\"items\":[]}");
-        } finally {
-            busy = false;
-        }
+        // v4.0.9：一键扫描回到正式逻辑，执行现场换成 App 官方「我的卡券」真页。
+        // 探针只用来定位过根因（离屏页 Vue 不 mount），现在不再需要。
+        scanLegacy();
     }
 
-    /** v4.0.7 正式扫描主体（诊断版期间不调用，完整保留供下一轮精简版切回）。 */
-    @SuppressWarnings("unused")
+    /** 正式扫描主体：真页优先，真页起不来才退回离屏。 */
     private static void scanLegacy() {
         if (busy) {
             sendList("{\"stage\":\"busy\",\"count\":0,\"items\":[]}");

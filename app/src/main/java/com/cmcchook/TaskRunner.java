@@ -482,9 +482,23 @@ final class TaskRunner {
                     // 入场门禁：等 App 真正起来再动手。
                     // 之前这里固定等 4 秒，冷启动时页面还是白的，鹅蛋必然判「未登录」。
                     boolean ui = hostVisible(activity);
+                    // v4.0.9：所有执行都改在 App 官方真页里跑，所以先把 App 拉到前台。
+                    // 在前台这个判断就是一次进程重要性查询，不产生任何额外动作。
+                    if (!RealPage.foreground()) {
+                        HookLog.log("TASK", "App 不在前台 · 自动拉起",
+                                "任务: " + label(cmd) + "（" + from + "触发）\n"
+                                        + "所有功能都在 App 官方真页里执行，会先把中国移动拉到前台。");
+                        RealPage.ensureForeground();
+                        ui = hostVisible(activity);
+                    }
                     boolean ready = AppReady.await(ui, ui ? 45_000L : 20_000L);
                     HookLog.logcat("app ready=" + ready + " (" + AppReady.brief() + ")");
-                    result = dispatch(cmd);
+                    RealPage.beginSession();
+                    try {
+                        result = dispatch(cmd);
+                    } finally {
+                        RealPage.endSession();
+                    }
                 } catch (Throwable e) {
                     result = Result.fail("任务异常：" + e, android.util.Log.getStackTraceString(e),
                             "把日志发我。");

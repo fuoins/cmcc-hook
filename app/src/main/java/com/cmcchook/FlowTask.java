@@ -73,7 +73,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "flowcred-20261110";
+    static final String BUILD = "realpage-20261110";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -285,9 +285,11 @@ final class FlowTask {
         long start = System.currentTimeMillis();
         StringBuilder diary = new StringBuilder();
         diary.append("build: ").append(BUILD).append('\n');
-        diary.append("数据源: 余量查询页 Vuex 全量树（真页优先；离屏时复用真页地址 + 已捕获会话 Cookie）\n");
-        diary.append("入口: ").append(MARGIN_URL).append(" （离屏兜底；有真页地址时优先用真页那条）\n");
-        diary.append("方式: 只读页面自己请求并解密后写进 Vuex 的 planRemianFlowListRes 全量树；"
+        diary.append("数据源: 余量查询页 Vuex 全量树（App 官方真页优先）\n");
+        diary.append("入口: ").append(MARGIN_URL)
+                .append(" （已开过真页时用真页那条带 channelId/yx 的地址；离屏只做兜底）\n");
+        diary.append("方式: App 不在前台会先自动拉起；用 App 自己的 H5 容器打开余量页，"
+                + "只读页面自己请求并解密后写进 Vuex 的 planRemianFlowListRes 全量树；"
                 + "不发请求、不解密、不拼签名、不自动登录。\n");
 
         JSONObject tree = readTree(diary);
@@ -332,7 +334,40 @@ final class FlowTask {
         if (live != null && countItems(live) > 0) {
             return live;
         }
+        // v4.0.9：余量页没开着就主动用 App 容器拉起来 —— 所有功能都走真页，
+        // 真页起不来才退回离屏（离屏那条路 18:12 日志里是零请求，只做兜底）。
+        if (openRealPage(diary)) {
+            live = readLive(diary);
+            if (live != null && countItems(live) > 0) {
+                return live;
+            }
+        }
         return readOffscreen(diary);
+    }
+
+    /** 用 App 自己的 H5 容器打开余量页，并登记给 readLive。 */
+    private static boolean openRealPage(StringBuilder diary) {
+        try {
+            String url = realUrl;
+            if (url == null || url.indexOf("marginQuery") < 0
+                    || System.currentTimeMillis() - realAt > REAL_TTL_MS) {
+                url = MARGIN_URL;
+            }
+            diary.append("真页: 主动打开 ").append(shortUrl(url)).append('\n');
+            WebPage page = RealPage.open(url, "marginQuery", 28_000L);
+            if (page == null) {
+                diary.append("真页: 拉不起来（App 未运行或容器无响应），转离屏\n");
+                return false;
+            }
+            String href = page.href();
+            diary.append("真页: 已打开 ").append(shortUrl(href))
+                    .append(" · ").append(page.kernel()).append('\n');
+            noteReal(href, page.raw());
+            return true;
+        } catch (Throwable t) {
+            diary.append("真页打开异常: ").append(t).append('\n');
+            return false;
+        }
     }
 
     /**
@@ -352,7 +387,7 @@ final class FlowTask {
         diary.append("真页地址: ").append(shortUrl(realUrl)).append('\n');
         WebPage page = null;
         try {
-            page = WebPage.attach(view);
+            page = WebPage.attachReal(view, realUrl);
             if (page == null) {
                 return null;
             }

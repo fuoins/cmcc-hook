@@ -7,6 +7,7 @@
 
     <!-- 顶部品牌区：蓝色渐变 header + 白色标题/副标题/状态行 -->
     <LinearLayout
+        android:id="@+id/appHeader"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:background="@drawable/bg_header"

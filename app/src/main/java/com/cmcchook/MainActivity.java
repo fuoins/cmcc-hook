@@ -85,6 +85,8 @@ public final class MainActivity extends AppCompatActivity {
     private static final long FLOW_AUTO_GAP_MS = 60_000L;   // 60s 内不重复自动查
     private static final long FLOW_FRESH_MS = 10 * 60_000L; // 缓存 10 分钟内视为新鲜
     private TextView pageTitle;
+    /** v4.0.9：顶部蓝色品牌区。增强页不需要它，隐藏后内容顶到状态栏下，省一屏空间。 */
+    private View appHeader;
     private TextView statusText;
     private TextView accountText;
     private View statusDot;
@@ -213,6 +215,7 @@ public final class MainActivity extends AppCompatActivity {
         pageLog = findViewById(R.id.pageLog);
         pageCoupon = findViewById(R.id.pageCoupon);
         pageTitle = findViewById(R.id.pageTitle);
+        appHeader = findViewById(R.id.appHeader);
         statusText = findViewById(R.id.statusText);
         accountText = findViewById(R.id.accountText);
         statusDot = findViewById(R.id.statusDot);
@@ -403,6 +406,14 @@ public final class MainActivity extends AppCompatActivity {
         pageFunc.setVisibility(target == TAB_FUNC ? View.VISIBLE : View.GONE);
         pageLog.setVisibility(target == TAB_LOG ? View.VISIBLE : View.GONE);
         pageCoupon.setVisibility(target == TAB_COUPON ? View.VISIBLE : View.GONE);
+        // v4.0.9：增强页去掉顶部蓝色标题框，内容直接顶到状态栏下，省出一屏空间。
+        if (appHeader != null) {
+            appHeader.setVisibility(target == TAB_COUPON ? View.GONE : View.VISIBLE);
+        }
+        if (pageCoupon != null) {
+            // header 拿掉后要自己让出状态栏高度，否则内容会钻到状态栏底下。
+            pageCoupon.setPadding(0, target == TAB_COUPON ? statusBarPx() : 0, 0, 0);
+        }
         pageTitle.setText(target == TAB_HOME ? R.string.tab_home
                 : target == TAB_WELFARE ? R.string.tab_welfare
                 : target == TAB_FUNC ? R.string.tab_func
@@ -425,6 +436,18 @@ public final class MainActivity extends AppCompatActivity {
             handler.removeCallbacks(logTick);
             handler.postDelayed(logTick, LOG_AUTO_MS);
         }
+    }
+
+    /** 状态栏高度（px）；取不到就按 24dp 估。 */
+    private int statusBarPx() {
+        int id = getResources().getIdentifier("status_bar_height", "dimen", "android");
+        if (id > 0) {
+            int px = getResources().getDimensionPixelSize(id);
+            if (px > 0) {
+                return px;
+            }
+        }
+        return (int) (24 * getResources().getDisplayMetrics().density);
     }
 
     private void paintNav() {
@@ -1568,6 +1591,8 @@ public final class MainActivity extends AppCompatActivity {
         }
         flowAutoAt = System.currentTimeMillis();
         flowLoading = true;
+        // v4.0.9：余量也在 App 官方余量页里读，先把 App 切到前台。
+        bringTargetToFront();
         if (flowNotify != null) {
             flowNotify.setText(R.string.flow_refreshing);
         }
@@ -1795,6 +1820,9 @@ public final class MainActivity extends AppCompatActivity {
 
     private boolean sendTaskBroadcast(String cmd) {
         try {
+            // v4.0.9：所有执行都改在 App 官方真页里跑，先把中国移动切到前台。
+            // 模块界面此刻在前台，这里 startActivity 不受后台启动限制。
+            bringTargetToFront();
             Intent intent = new Intent(TaskReceiver.ACTION_RUN);
             intent.setPackage(AppPrefs.TARGET_PACKAGE);
             intent.putExtra("cmd", cmd);
@@ -1802,6 +1830,26 @@ public final class MainActivity extends AppCompatActivity {
             return true;
         } catch (Throwable e) {
             return false;
+        }
+    }
+
+    /**
+     * v4.0.9：把中国移动切到前台。
+     *
+     * <p>所有功能都改成在 App 官方真页里执行，页面必须在前面，用户才看得到执行过程，
+     * 容器也才会正常初始化。App 已在前台时这次调用只是把它的任务栈提到最前，无副作用。
+     */
+    private void bringTargetToFront() {
+        try {
+            Intent intent = getPackageManager()
+                    .getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
+            if (intent == null) {
+                return;
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                    | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
+            startActivity(intent);
+        } catch (Throwable ignored) {
         }
     }
 

@@ -41,6 +41,8 @@ final class WebPage {
     private final NavState nav;
 
     private final Object webView;
+    /** true 表示这是 App 自己的真页 WebView：不建新页、不销毁、不做导航拦截。 */
+    private final boolean real;
     private volatile String title = "";
     private volatile boolean finished;
     private static volatile long lastBlockLog;
@@ -94,8 +96,50 @@ final class WebPage {
     }
 
     private WebPage(Object webView, NavState nav) {
+        this(webView, nav, false);
+    }
+
+    private WebPage(Object webView, NavState nav, boolean real) {
         this.webView = webView;
         this.nav = nav;
+        this.real = real;
+    }
+
+    /**
+     * 包住 App 自己的一个真页 WebView。
+     *
+     * <p>与 {@link #attach(Object)} 的区别：真页不做拦截、不注入任何东西、不销毁。
+     * 页面已经在跑，模块只是在它上面执行同一套脚本。
+     */
+    static WebPage attachReal(Object webView, String url) {
+        if (webView == null) {
+            return null;
+        }
+        NavState nav = new NavState(url == null ? "" : url, null);
+        WebPage page = new WebPage(webView, nav, true);
+        page.finished = true;
+        return page;
+    }
+
+    boolean isReal() {
+        return real;
+    }
+
+    /** 页面当前真实地址（真页实时读；离屏用登记的当前地址）。 */
+    String href() {
+        if (!real) {
+            return nav.current;
+        }
+        try {
+            String h = evalRaw("(function(){try{return location.href}catch(e){return ''}})()",
+                    1_800L);
+            if (h != null && !h.isEmpty() && !"null".equals(h)) {
+                nav.current = h;
+                return h;
+            }
+        } catch (Throwable ignored) {
+        }
+        return nav.current;
     }
 
     /**
@@ -593,11 +637,14 @@ final class WebPage {
 
     /** 离屏页用的哪套内核：X5 和系统 WebView 的 Cookie/桥行为不一样，日志要能看出来。 */
     String kernel() {
-        return webView == null ? "无" : webView.getClass().getName();
+        if (webView == null) {
+            return "无";
+        }
+        return (real ? "真页 · " : "") + webView.getClass().getName();
     }
 
     String url() {
-        return nav.current;
+        return real ? href() : nav.current;
     }
 
     /** 页面这一轮自己去请求过的地址（主文档 + 子资源 + XHR）。 */
@@ -701,7 +748,7 @@ final class WebPage {
      * fetch、Cookie 环境；页面业务 JS 跑没跑完不影响我们直发请求。
      * 留 800ms 让页面初始化（种 Cookie、注册 JS 桥），之后放行。
      */
-    private void awaitDoc(long timeoutMs) {
+    void awaitDoc(long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
         String state = "";
         while (System.currentTimeMillis() < deadline) {
@@ -953,6 +1000,11 @@ final class WebPage {
     void close() {
         final Object view = webView;
         if (view == null) {
+            return;
+        }
+        if (real) {
+            // 用户正在看的官方页面：绝不销毁，也不切断它和 App 的任何绑定。
+            HookLog.logcat("real page kept alive: " + nav.current);
             return;
         }
         MAIN.post(new Runnable() {

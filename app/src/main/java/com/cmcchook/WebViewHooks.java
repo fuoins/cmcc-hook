@@ -115,6 +115,12 @@ final class WebViewHooks {
                     }
                     // loadUrl 的 thisObject 就是 WebView 本体，比 WebViewClient 回调里的
                     // args[0] 稳（X5 回调参数顺序会随版本变）。App 自己开的卡券页在这里登记。
+                    // v4.0.9：同时登记到 RealPage —— 所有「执行」都改在 App 官方真页里跑，
+                    // 这里就是「真页在哪」的唯一来源（离屏页在 note 内部会被排除）。
+                    try {
+                        RealPage.note(param.thisObject, url);
+                    } catch (Throwable ignored) {
+                    }
                     attachCoupon(url, param.thisObject);
                     attachWisdom(url, param.thisObject);
                     attachGoose(param, url);
