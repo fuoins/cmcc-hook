@@ -158,12 +158,10 @@ final class MarkTasks {
             return out(detail, d, 0);
         }
         String taskUrl = taskUrl(entry);
-        if (!page.navigate(taskUrl, 28_000L)) {
-            d.append("任务页打不开: ").append(shortUrl(taskUrl)).append('\n');
+        if (!openTaskPage(page, taskUrl)) {
+            d.append("任务页打不开或没渲染: ").append(shortUrl(taskUrl)).append('\n');
             return out(detail, d, 0);
         }
-        WebPage.sleep(3_000L);
-
         int left = waitTodo(page, 3);
         if (left < 0) {
             d.append("页面上找不到「功能体验区」（可能还在加载），跳过\n");
@@ -214,11 +212,10 @@ final class MarkTasks {
             }
             WebPage.sleep(LIVE_STAY_MS);
 
-            if (!page.navigate(taskUrl, 28_000L)) {
+            if (!openTaskPage(page, taskUrl)) {
                 d.append("  拉回任务页失败，停止\n");
                 break;
             }
-            WebPage.sleep(3_000L);
             int now = waitTodo(page, 3);
             if (now >= 0 && now < left) {
                 done++;
@@ -250,9 +247,29 @@ final class MarkTasks {
         return done;
     }
 
+    /**
+     * 打开任务页并确认渲染完成。
+     *
+     * <p>任务页是同一个 uni-app 里的 hash 路由（{@code #/pages/qwhdmark/views/task/index}），
+     * {@code loadUrl} 只改 hash、不触发 {@code onPageFinished}，所以不能用
+     * {@link WebPage#navigate}（它会一直等到超时再返回 false，正好被误判成「打不开」）。
+     * 这里用 {@link WebPage#navigateFast} 发完就走，判据交给「页面上有没有『功能体验区』」；
+     * 真没渲染出来时整页跳一次兜底。
+     */
+    private static boolean openTaskPage(WebPage page, String taskUrl) {
+        page.navigateFast(taskUrl, 4_000L);
+        WebPage.sleep(2_500L);
+        if (waitTodo(page, 2) >= 0) {
+            return true;
+        }
+        // hash 没生效（页面还停在签到首页）：直接改 location.href 让整页重新起路由。
+        page.eval("(function(){try{location.href='" + taskUrl + "';}catch(e){}})()", 3_000L);
+        WebPage.sleep(3_000L);
+        return waitTodo(page, 2) >= 0;
+    }
+
     /** 入口地址 + 任务页路由；去掉入口自带的 hash，避免拼出两段路由。 */
-    private static String taskUrl(String entry) {
-        String base = entry == null ? "" : entry;
+    private static String taskUrl(String entry) {        String base = entry == null ? "" : entry;
         int i = base.indexOf('#');
         if (i >= 0) {
             base = base.substring(0, i);
