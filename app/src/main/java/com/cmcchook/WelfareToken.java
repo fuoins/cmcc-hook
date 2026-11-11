@@ -19,6 +19,20 @@ final class WelfareToken {
             "https://wx.10086.cn/website/businessPlatform/shop"
                     + "?pageid=f38143861a4a4a9fac920fdeecd119bb&channelId=P00000054178&yx=1597107001";
 
+    /**
+     * 签到抽奖的 SSO 短链。
+     *
+     * <p>11-11 10:40 日志实证：用户手动在福利专区点「签到抽奖」，App 走的就是这条 —
+     * {@code rr.ln139.cn/rr/dwz/0EL7vw → ssoJump.html → wisdom-h5/index.html#/signInLottery?h5token=…}。
+     * 福利专区是 uni-app 壳，卡片文本不在 {@code document.body.innerText} 里（只剩页脚备案号），
+     * 模块永远点不到，所以补这条「直接打开短链、让 App 自己走 SSO」的兜底。
+     */
+    static final String SHORT_LINK = "https://rr.ln139.cn/rr/dwz/0EL7vw";
+
+    /** 签到抽奖裸入口：短链也不通时最后试一次，页面自己可能补 SSO。 */
+    static final String SIGN_ENTRY =
+            "https://digismart.lncmcc.com/wisdom-h5/index.html#/signInLottery";
+
     private WelfareToken() {
     }
 
@@ -56,9 +70,9 @@ final class WelfareToken {
                 log.append("  福利专区没打开（App 容器没起来）\n");
                 return "";
             }
-            // 等页面把卡片渲染出来，再点。最多 10 秒。
+            // 等页面把卡片渲染出来，再点。最多 20 秒（uni-app 首屏慢，10 秒常常不够）。
             boolean ready = false;
-            long until = System.currentTimeMillis() + 10_000L;
+            long until = System.currentTimeMillis() + 20_000L;
             while (System.currentTimeMillis() < until) {
                 String txt = page.eval("(function(){try{return (document.body?document.body.innerText:'')"
                         + ".replace(/\\s+/g,'')}catch(e){return ''}})()", 3_000L);
@@ -69,8 +83,13 @@ final class WelfareToken {
                 sleep(700L);
             }
             if (!ready) {
-                log.append("  福利专区里没找到「签到抽奖」卡片（可能还没渲染完）\n");
-                return "";
+                log.append("  福利专区里没找到「签到抽奖」卡片（uni-app 壳，文本读不到）\n");
+                // 11-11 10:40 实证：这一页的卡片在 uni-app 里，innerText 只有页脚，
+                // 所以这里不再直接放弃，改走 App 自己那条 SSO 短链。
+                // 先把福利页收掉，免得两个页面抢前台；置空避免 finally 二次关闭。
+                closeQuiet(page);
+                page = null;
+                return viaShortLink(log);
             }
             HookLog.log("TASK", "领票 · 自动点「签到抽奖」", "入口页: " + WELFARE);
             String clicked = "";
@@ -95,8 +114,8 @@ final class WelfareToken {
                 // 这一层点不出页面，往上一层再试。
                 clicked = "";
             }
-            log.append("  点了入口但没等到带票的页面\n");
-            return "";
+            log.append("  点了入口但没等到带票的页面，改走短链\n");
+            return viaShortLink(log);
         } catch (Throwable e) {
             log.append("  领票异常: ").append(e).append('\n');
             return "";
@@ -106,6 +125,84 @@ final class WelfareToken {
                 RealPage.closePage(page.raw());
             }
         }
+    }
+
+    /** 直接打开 SSO 短链，让 App 自己把 h5token 换出来。 */
+    private static String viaShortLink(StringBuilder log) {
+        log.append("  改走 SSO 短链: ").append(SHORT_LINK).append('\n');
+        WebPage page = null;
+        try {
+            page = RealPage.open(SHORT_LINK, "rr/dwz", 25_000L);
+            if (page == null) {
+                log.append("  短链没打开（App 容器没起来）\n");
+                return viaBareEntry(log);
+            }
+            String t = waitToken(20_000L);
+            if (!t.isEmpty()) {
+                log.append("  短链落地后拿到票 ").append(head(t)).append('\n');
+                return t;
+            }
+            log.append("  短链打开后没等到带票页面（落地 ").append(brief(page.url())).append("）\n");
+            return viaBareEntry(log);
+        } catch (Throwable e) {
+            log.append("  短链异常: ").append(e).append('\n');
+            return "";
+        } finally {
+            closeQuiet(page);
+        }
+    }
+
+    /** 最后兜底：裸入口打开，页面自己可能补一遍 SSO。 */
+    private static String viaBareEntry(StringBuilder log) {
+        log.append("  再试裸入口: ").append(SIGN_ENTRY).append('\n');
+        WebPage page = null;
+        try {
+            page = RealPage.open(SIGN_ENTRY, "signInLottery", 20_000L);
+            if (page == null) {
+                log.append("  裸入口也没打开\n");
+                return "";
+            }
+            String t = waitToken(15_000L);
+            if (!t.isEmpty()) {
+                log.append("  裸入口拿到票 ").append(head(t)).append('\n');
+                return t;
+            }
+            log.append("  裸入口没拿到票（落地 ").append(brief(page.url())).append("）\n");
+            return "";
+        } catch (Throwable e) {
+            log.append("  裸入口异常: ").append(e).append('\n');
+            return "";
+        } finally {
+            closeQuiet(page);
+        }
+    }
+
+    private static String waitToken(long ms) {
+        long until = System.currentTimeMillis() + ms;
+        while (System.currentTimeMillis() < until) {
+            String t = tokenOfRegistered();
+            if (!t.isEmpty()) {
+                return t;
+            }
+            sleep(500L);
+        }
+        return "";
+    }
+
+    private static void closeQuiet(WebPage page) {
+        try {
+            if (page != null && RealPage.isOwned(page.raw())) {
+                RealPage.closePage(page.raw());
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String brief(String u) {
+        if (u == null) {
+            return "";
+        }
+        return u.length() > 90 ? u.substring(0, 90) + "…" : u;
     }
 
     /** 真页登记表里最新一条带 h5token 的 wisdom 地址的票。 */

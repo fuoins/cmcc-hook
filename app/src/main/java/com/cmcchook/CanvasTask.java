@@ -269,8 +269,13 @@ final class CanvasTask {
                             .toString(), summary);
         }
         if (drawOk > 0 || signOk > 0 || metricUp) {
-            if (metricFlat || (submitN <= 0 && !metricUp)) {
-                String why = metricFlat
+            // v4.2.2：周周这类「只翻牌、不签到」的活动（kind==KIND_WEEKLY）累计签到次数
+            // 永远是 0→0（metricFlat）。旧判据拿 metricFlat 一票否决，会把页面真的
+            // 翻牌中奖判成「未确认完成」。现在只有需要签到的活动才要求签到次数变化；
+            // 抽奖成功本身就是有效回执。
+            boolean needSignKind = kind != KIND_WEEKLY;
+            if ((needSignKind && metricFlat) || (submitN <= 0 && !metricUp && drawOk <= 0)) {
+                String why = (needSignKind && metricFlat)
                         ? "累计签到次数没变（" + metric0 + "→" + metric1 + "），没签到"
                         : "没有提交类回执，只有查询/失败响应";
                 String idleSummary = name + " · 未确认完成（" + why + "）";
@@ -887,6 +892,48 @@ final class CanvasTask {
                 }catch(e){}
                 return false;
               }
+              // v4.2.2：11-11 10:39 日志实证 —— 模块直连 lottery 的请求缺
+              // gr-risk-p3 头与 wasmParams 字段（请求体 referer 也是空的），必回
+              // SCORE_REFUSE/risk:true；同一分钟用户手动点翻牌，页面自己发同一接口
+              // 就中了奖（code 60000）。风控参数只有页面里的 SDK 能生成，模块不伪造，
+              // 改成调页面组件自己的 goLottery，由页面组织请求体与风控头。
+              // 只有组件里确实没有这个方法时，才退回直连。
+              async function drawViaPage(id,list){
+                var c=null;
+                for(var i=0;i<list.length;i++){
+                  var one=list[i];
+                  try{
+                    if(isFn(one.goLottery)){ c=one; break }
+                    var ms=one.$options&&one.$options.methods;
+                    if(ms&&isFn(ms.goLottery)){ c=one; break }
+                  }catch(e){}
+                }
+                if(!c) return null;
+                var mark=NET.length;
+                var tries=[id,{activityId:id},undefined];
+                for(var t=0;t<tries.length;t++){
+                  try{
+                    var rt=invoke(c,'goLottery',tries[t]);
+                    if(rt&&isFn(rt.then)) await rt;
+                  }catch(e){ line('  goLottery 调用异常: '+e) }
+                  await wait(2600);
+                  if(NET.length>mark) break;
+                }
+                if(NET.length<=mark) return null;
+                var hit=null;
+                for(var q=mark;q<NET.length;q++){
+                  if(/\\/lottery\\/lottery/.test(NET[q].u)){ hit=NET[q]; break }
+                }
+                if(!hit) return {ok:false,code:'',msg:'页面没发抽奖请求',risk:false,via:'page'};
+                var code='',msg='';
+                try{
+                  var d=JSON.parse(hit.b);
+                  code=String(d.code==null?'':d.code);
+                  msg=String(d.msg||d.message||'');
+                }catch(e){}
+                return {ok:(code==='60000'||code==='200'),code:code,msg:msg,
+                        risk:riskOf(hit.b),data:hit.b,via:'page'};
+              }
               async function lotteryOnce(id){
                 var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/lottery',
                            '/coc3-market-activity/cmpp-manage/lottery/lottery'];
@@ -1440,7 +1487,13 @@ final class CanvasTask {
                       await wait(2600);
                       for(var k=0;k<times;k++){
                         draw.try++;
-                        var r=await lotteryOnce(id);
+                        // 先走页面自己的翻牌方法：风控头/wasm 参数由页面补，
+                        // 和用户手点完全同一条路。没有这个方法才退回直连。
+                        var r=await drawViaPage(id,comps);
+                        if(r&&r.via==='page'&&r.ok!==false){
+                          line('  抽奖 '+id+' 走页面 goLottery（页面自带风控参数）');
+                        }
+                        if(!r) r=await lotteryOnce(id);
                         // v3.91：命中服务端风控立即收手，绝不再补刀重试。
                         if(r.risk){
                           draw.risk=(draw.risk||0)+1;
@@ -1450,7 +1503,8 @@ final class CanvasTask {
                         if(!r.ok && /频繁|-1/.test(String(r.code)+' '+String(r.msg))){
                           line('  抽奖 '+id+' 触发限频，等 3 秒重试');
                           await wait(3000);
-                          r=await lotteryOnce(id);
+                          r=await drawViaPage(id,comps);
+                          if(!r) r=await lotteryOnce(id);
                         }
                         // v3.91：重试那一发也可能带回风控，同样立即停。
                         if(r.risk){

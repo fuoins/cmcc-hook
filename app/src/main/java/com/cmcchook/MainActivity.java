@@ -200,7 +200,7 @@ public final class MainActivity extends AppCompatActivity {
      * 用户要求「关闭软件重进后重新扫描，别直接显示之前的卡券数据，不然会出错」。
      */
     private static boolean sCouponPurged = false;
-    /** v3.42：按有效期排序；v4.1.0：「隐藏不可选」改为「隐藏满减券」。 */
+    /** v3.42：按有效期排序；v4.2.2：「隐藏满减券」实际藏的是所有不可用券。 */
     private CheckBox cbCouponSort;
     private CheckBox cbCouponHide;
     private boolean couponSortByValid = true;
@@ -1373,9 +1373,10 @@ public final class MainActivity extends AppCompatActivity {
             if (!blocked) {
                 usable++;
             }
-            // v4.1.0：「隐藏满减券」—— 只藏满减/折扣这类点了会跳充值页的券，
-            // 其余不可用券（待生效、已失效等）照常显示、置灰，用户看得见全貌。
-            if (couponHideBlocked && couponDiscount(it)) {
+            // v4.2.2：按钮仍叫「隐藏满减券」，但实际效果改成「隐藏不可用」——
+            // 凡是被 couponBlocked 拦下、列表里置灰勾不上的（满减/折扣/加赠、
+            // 待生效、已失效、已使用、会员权益券等）全部不显示，只留能批量的。
+            if (couponHideBlocked && blocked) {
                 hidden++;
                 continue;
             }
@@ -1552,25 +1553,6 @@ public final class MainActivity extends AppCompatActivity {
             return false;
         }
         return name.contains("话费兑换券") || (all.contains("话费") && name.contains("兑换券"));
-    }
-
-    /**
-     * v4.1.0：满减券 —— 名字/类型带「满减」「满X减Y」「折扣」或充值门槛说明。
-     * 只用于「隐藏满减券」这个显示开关，不影响能否勾选（勾选仍走白名单）。
-     */
-    private boolean couponDiscount(org.json.JSONObject item) {
-        String name = item.optString("name");
-        String type = item.optString("type");
-        String raw = item.optString("raw");
-        String all = name + " " + type;
-        if (all.contains("满减") || all.contains("折扣")) {
-            return true;
-        }
-        if (java.util.regex.Pattern.compile("满\\s*[0-9]+(\\.[0-9]+)?\\s*减")
-                .matcher(all).find()) {
-            return true;
-        }
-        return raw.contains("满") && raw.contains("减");
     }
 
     private void couponSelectAll() {

@@ -673,7 +673,41 @@ final class GooseTask {
         return sb.toString();
     }
 
+    /** 业务数据没就绪时由脚本报出来，主线程据此决定要不要 reload 再来一轮。 */
+    private static volatile String lastStage = "";
+
+    /**
+     * 跑鹅蛋动作链；页面业务数据没就绪时，重载页面再跑一轮。
+     *
+     * <p>11-11 10:36 日志：模块打开的页面只初始化了一半（数组字段全 0、首屏
+     * 「--个 / 加载中」），而同一时刻用户手动打开的页面 2 秒内就把 10 个接口发齐。
+     * 半初始化是「重开一次 / 被下载引导页顶走」留下的，reload 能恢复；所以这里
+     * 不再一判 notready 就整轮放弃，而是最多再来一次。
+     */
     private static TaskRunner.Result runVue(WebPage page, StringBuilder detail) {
+        TaskRunner.Result first = runVueOnce(page, detail);
+        if (first == null || !"notready".equals(lastStage)) {
+            return first;
+        }
+        String url = page.url();
+        detail.append("数据没就绪，重载活动页再来一轮 · ").append(brief(url)).append('\n');
+        if (!page.navigate(url, 30_000L)) {
+            detail.append("重载没完成，保持本轮结果\n");
+            return first;
+        }
+        sleep(2_500L);
+        if (!waitLogged(page, 15_000L)) {
+            detail.append("重载后页面没恢复登录，保持本轮结果\n");
+            return first;
+        }
+        TaskRunner.Result second = runVueOnce(page, detail);
+        return second != null ? second : first;
+    }
+
+    private static TaskRunner.Result runVueOnce(WebPage page, StringBuilder detail) {
+        lastStage = "";
+        // 上一轮的结果还挂在 window 上时，注入新脚本后可能先读到它。先清空再注入。
+        page.eval("(function(){try{window.__cmcc_goose=''}catch(e){}})()", 3_000L);
         page.eval(VUE_SCRIPT, 8_000L);
         String raw = null;
         // 这套动作是串行等的：刷新+出游领取 → 日常任务（每个 1.7 秒）→ 打卡 →
@@ -690,7 +724,7 @@ final class GooseTask {
             sleep(600L);
         }
         if (raw == null) {
-            detail.append("页面组件脚本超时（95 秒没有回报）\n");
+            detail.append("页面组件脚本超时（150 秒没有回报）\n");
             return null;
         }
         try {
@@ -728,12 +762,13 @@ final class GooseTask {
                 detail.append("组件数组字段: ").append(out.optString("arrayFields", "")).append('\n');
                 appendReceipt(detail, out);
                 String summary = "收鹅蛋 · 本轮零提交（页面业务数据未就绪）";
+                lastStage = "notready";
                 return TaskRunner.Result.skip(summary, detail.toString(),
-                        "这一轮鹅蛋页面数据没加载出来（[API-GOOSE] 返回的是 dataEn 密文，"
-                                + "读不到明文余量/鹅蛋数）。模块不解密、不拼加密请求、没有冒充完成，"
+                        "这一轮鹅蛋页面数据没加载出来（首屏还停在「加载中 / --个」，"
+                                + "任务清单和蛋箱都是空的）。模块不解密、不拼加密请求、没有冒充完成，"
                                 + "也不记失败次数，机会还在。\n"
-                                + "请在 App 里手动打开一次「收鹅蛋换好礼」前台真页，让页面自己把数据渲染出来，"
-                                + "再回来执行；或直接在 App 内手动完成。\n"
+                                + "这次已经自动重载页面重跑过一轮；若还是这样，在 App 里手动打开一次"
+                                + "「收鹅蛋换好礼」，等页面数据出来，再回来执行。\n"
                                 + "导出完整日志看 [API-GOOSE] 与 [GOOSE] 段落可逐条核对。");
             }
             JSONObject before = out.optJSONObject("before");
@@ -1057,14 +1092,17 @@ final class GooseTask {
                 // v3.96：07:45 日志实证 —— 旧判据只认 eggCount!=null，'--个' 也算就绪，
                 // 于是动作链全是「跳过」，零提交却报「已跑完一轮」。
                 // 现在要求首屏出现真实数字，且不含「加载中 / --个」；期间主动刷 index 帮页面取数。
-                // v4.0.5：19:24 日志实证 —— 接口只回 dataEn 密文时页面永远等不到
-                // 明文数据，旧版空等 30×500ms ≈ 15 秒才报 notready，白占一整轮。
-                // 缩到 12 次（6 秒），照样不跑动作链（零提交），把时间还给后面的活动。
+                // v4.2.2：11-11 10:36 日志实证 —— 模块打开的这一页只发出了 index 一条，
+                // 首屏一直「已有鹅蛋：--个 / 加载中…」，脚本等 6 秒就判 notready 跳过；
+                // 同一时段用户手动进页面，一次连发 getNoticeList/index/userState/taskIndex
+                // 等 10 个接口，2 秒内就齐了。说明不是「接口不给数据」，是这一页只初始化了
+                // 一半（重开/被下载页顶走后 Vue 没跑完整）。等 6 秒太短，延长到 30 秒，
+                // 每 5 秒主动催一次 index，仍不齐就交给主线程 reload 重来一轮。
                 var ready=false, bt=bodyText();
-                for(var wl=0;wl<12;wl++){
+                for(var wl=0;wl<60;wl++){
                   bt=bodyText();
                   if(readyNow(c,bt)){ ready=true; break }
-                  if(wl>0 && wl%6===0 && typeof c.indexFun==='function'){
+                  if(wl>0 && wl%10===0 && typeof c.indexFun==='function'){
                     try{ c.indexFun('1') }catch(e){}
                   }
                   await wait(500);
