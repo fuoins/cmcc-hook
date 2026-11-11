@@ -200,7 +200,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.00 已装载 · 每次都走短链换票 + 点卡片做任务",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.01 已装载 · 短链换票 + 点卡片做任务（带 toDoTask 兜底）",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -936,17 +936,36 @@ final class GooseTask {
                 var todo=undone(c.taskListArr||[]);
                 if(!todo.length)return JSON.stringify({none:1});
                 var t=todo[0];
-                var title=String(t.jobTitle||t.taskKey||'').replace(/[「」『』]/g,'');
-                var key=title.slice(0,6);
+                var title=String(t.jobTitle||t.taskKey||'');
+                // 12:55 日志：任务数据里 jobTitle 是「浏览我的亲友圈」这种不带括号的，
+                // 页面上渲染出来的却是「浏览「我的亲友圈」 +10」—— 去掉引号再比，
+                // 否则 indexOf 永远不命中，日志只会写「任务卡片没找到」。
+                function norm(s){return String(s||'').replace(/[「」『』【】"\\s]/g,'')}
+                var key=norm(title).slice(0,6);
+                var qm=/[「『【]([^」』】]+)[」』】]/.exec(title);
+                var alt=qm&&qm[1]?norm(qm[1]):'';
                 var nodes=document.querySelectorAll('.doTaskDiv *,div,span,a,button,p');
                 var best=null,bestLen=99999;
                 for(var i=0;i<nodes.length;i++){
-                  var e=nodes[i],tx=(e.innerText||'').replace(/\\s+/g,'');
+                  var e=nodes[i],tx=norm(e.innerText);
                   if(!tx||tx.length>160)continue;
-                  if(tx.indexOf(key)<0)continue;
+                  var hitC=(key&&tx.indexOf(key)>=0)||(alt&&tx.indexOf(alt)>=0);
+                  if(!hitC)continue;
                   if(tx.length<bestLen){best=e;bestLen=tx.length}
                 }
-                if(!best)return JSON.stringify({err:'任务卡片没找到',name:title});
+                if(!best){
+                  // DOM 里认不出卡片时，退回组件自己的入口：toDoTask 内部就是
+                  // 「发 doTask → toJump 打开落地页」，和手点同一条逻辑。
+                  // 注意别再覆盖 c.toJump —— 12:02 那次「登记成功但人没去」就是被摘掉了跳转。
+                  try{
+                    if(typeof c.toDoTask==='function'){
+                      var idx=(c.taskListArr||[]).indexOf(t);
+                      c.toDoTask(t, idx<0?0:idx);
+                      return JSON.stringify({name:title,btn:false,via:'toDoTask'});
+                    }
+                  }catch(e2){}
+                  return JSON.stringify({err:'任务卡片没找到',name:title});
+                }
                 var btn=null,inner=best.querySelectorAll('button,a,span,div,p');
                 for(var j=0;j<inner.length;j++){
                   var s=(inner[j].innerText||'').replace(/\\s+/g,'');
@@ -1025,34 +1044,25 @@ final class GooseTask {
                 break;
             }
             String name = o.optString("name", "");
+            String via = o.optString("via", "");
             detail.append("浏览任务 ").append(i + 1).append(": 点「").append(name).append("」")
-                    .append(o.optBoolean("btn") ? "（按钮）" : "（卡片）").append('\n');
+                    .append(o.optBoolean("btn") ? "（按钮）" : (via.isEmpty() ? "（卡片）" : "（" + via + "）"))
+                    .append('\n');
             sleep(2_000L);
             String nowUrl = page.url();
-            if (nowUrl != null && isGoosePage(nowUrl)) {
-                // 点了没跳：可能是这个任务本来就不需要跳，或者卡片没点中。
-                // 连续两次这样就不再耗时间，直接把剩下的留给下一轮。
-                miss++;
-                detail.append("浏览任务: 点了没跳转（连续 ").append(miss).append(" 次）\n");
-                if (miss >= 2) {
-                    detail.append("浏览任务: 连续两次没跳，停止本轮任务\n");
-                    break;
+            boolean jumped = nowUrl != null && !isGoosePage(nowUrl);
+            if (jumped) {
+                detail.append("浏览任务: 已跳到 ").append(briefUrl(nowUrl)).append("，等回跳\n");
+                long end = System.currentTimeMillis() + 8_000L;
+                while (System.currentTimeMillis() < end && !isGoosePage(page.url())) {
+                    sleep(600L);
                 }
-                sleep(800L);
-                if (!page.navigate(entry, 25_000L)) {
-                    detail.append("浏览任务: 拉回活动页失败，停止\n");
-                    break;
-                }
-                waitLogged(page, 15_000L);
-                continue;
+            } else {
+                // 同页内跳走又回来时，这里看到的仍是鹅蛋地址 —— 不代表没点中。
+                // 判断标准只有一个：任务数有没有下降，后面统一看。
+                detail.append("浏览任务: 没看到跳转（可能同页内往返）\n");
             }
-            miss = 0;
-            detail.append("浏览任务: 已跳到 ").append(briefUrl(nowUrl)).append("，等回跳\n");
-            long end = System.currentTimeMillis() + 8_000L;
-            while (System.currentTimeMillis() < end && !isGoosePage(page.url())) {
-                sleep(600L);
-            }
-            if (!isGoosePage(page.url())) {
+            if (page.url() == null || !isGoosePage(page.url())) {
                 detail.append("浏览任务: 没自己回来，拉回活动页\n");
                 if (!page.navigate(entry, 25_000L)) {
                     detail.append("浏览任务: 拉回失败，停止\n");
@@ -1064,10 +1074,17 @@ final class GooseTask {
             int now = taskTodo(page);
             if (now >= 0 && now < left) {
                 done++;
+                miss = 0;
                 detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
                 left = now;
             } else if (now >= 0) {
-                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上）\n");
+                miss++;
+                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上，连续 ")
+                        .append(miss).append(" 次）\n");
+                if (miss >= 2) {
+                    detail.append("浏览任务: 连续两次没记上，停止本轮任务\n");
+                    break;
+                }
             }
             if (left == 0) {
                 detail.append("浏览任务: 全部做完\n");

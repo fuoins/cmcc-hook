@@ -300,9 +300,70 @@ final class AdGuard {
         int bw = band.getWidth() > 0 ? band.getWidth() : band.getMeasuredWidth();
         int bh = band.getHeight() > 0 ? band.getHeight() : band.getMeasuredHeight();
         String name = band.getClass().getName();
-        ViewGroup host = band.getParent() instanceof ViewGroup
-                ? (ViewGroup) band.getParent() : null;
+        // 先点「跳过」，让 App 自己走完开屏广告的关闭流程（它会 finish StartPageActivity）。
+        // 只 removeView 的话，广告的 onClose 回调永远不来，StartPageActivity 就一直挂着，
+        // 屏幕上只剩一张去掉广告后的空白页 —— 这正是「有时候卡在开屏广告页」的原因。
+        boolean tapped = tapSkip(skip);
+        if (tapped) {
+            HookLog.log("AD", "已点「跳过」 · 开屏广告",
+                    "类型: 视图层浮层\n"
+                            + "容器类名: " + name + "\n"
+                            + "尺寸: " + bw + " x " + bh + "\n"
+                            + "做法: 点右上角「N 跳过」，关广告由 App 自己完成（和手点一致）。\n"
+                            + "兜底: 1.4 秒后广告层还在就直接移除；3.6 秒后仍停在开屏页就 finish 掉。\n"
+                            + "开关: 「功能」页「自动关闭广告」");
+        } else {
+            removeBand(band);
+            HookLog.log("AD", "已关闭开屏广告 · " + simple(name),
+                    "类型: 视图层浮层\n"
+                            + "容器类名: " + name + "\n"
+                            + "尺寸: " + bw + " x " + bh + "\n"
+                            + "做法: 「跳过」点不动，按它定位到整块广告层直接移除（不动主界面），"
+                            + "随后盯 3.6 秒，开屏页没退出就 finish。\n"
+                            + "开关: 「功能」页「自动关闭广告」");
+        }
+        watchSplash(activity, band);
+    }
+
+    /** 点「跳过」。有些自定义 View 不认 performClick，再补一套触摸事件。 */
+    private static boolean tapSkip(View v) {
+        if (v == null) {
+            return false;
+        }
+        View t = v;
+        for (int i = 0; i < 4 && t != null; i++) {
+            try {
+                if (t.isClickable()) {
+                    if (t.performClick()) {
+                        return true;
+                    }
+                    float cx = t.getWidth() / 2f;
+                    float cy = t.getHeight() / 2f;
+                    long now = android.os.SystemClock.uptimeMillis();
+                    android.view.MotionEvent down = android.view.MotionEvent.obtain(
+                            now, now, android.view.MotionEvent.ACTION_DOWN, cx, cy, 0);
+                    android.view.MotionEvent up = android.view.MotionEvent.obtain(
+                            now, now + 40L, android.view.MotionEvent.ACTION_UP, cx, cy, 0);
+                    boolean ok = t.dispatchTouchEvent(down);
+                    ok = t.dispatchTouchEvent(up) || ok;
+                    down.recycle();
+                    up.recycle();
+                    if (ok) {
+                        return true;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            t = t.getParent() instanceof View ? (View) t.getParent() : null;
+        }
+        return false;
+    }
+
+    /** 摘掉广告层。 */
+    private static void removeBand(View band) {
         try {
+            ViewGroup host = band.getParent() instanceof ViewGroup
+                    ? (ViewGroup) band.getParent() : null;
             if (host != null) {
                 host.removeView(band);
             } else {
@@ -315,12 +376,54 @@ final class AdGuard {
             } catch (Throwable ignored) {
             }
         }
-        HookLog.log("AD", "已关闭开屏广告 · " + simple(name),
-                "类型: 视图层浮层\n"
-                        + "容器类名: " + name + "\n"
-                        + "尺寸: " + bw + " x " + bh + "\n"
-                        + "做法: 按右上角「N 跳过」按钮定位到整块广告层，直接移除（不动主界面）。\n"
-                        + "开关: 「功能」页「自动关闭广告」");
+    }
+
+    /**
+     * 关掉之后盯两秒半：广告层还在就摘，开屏页还不退就 finish。
+     *
+     * <p>12:53 日志里模块 0.94 秒就摘掉了广告层，但 App 仍停在
+     * {@code StartPageActivity}（开屏页要等广告 onClose 才自己结束）。用户看到的就是
+     * 「卡在开屏广告页」。这里补上收尾：只 finish 开屏页，不碰主界面。
+     */
+    private static void watchSplash(final Activity activity, final View band) {
+        try {
+            android.os.Handler h = new android.os.Handler(android.os.Looper.getMainLooper());
+            h.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (band != null && band.isAttachedToWindow()
+                                && band.getVisibility() == View.VISIBLE) {
+                            removeBand(band);
+                            HookLog.logcat("ad band still there at 1.4s, removed");
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }, 1_400L);
+            h.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        if (activity == null || activity.isFinishing()) {
+                            return;
+                        }
+                        String n = activity.getClass().getName();
+                        if (n.contains("StartPageActivity")) {
+                            HookLog.log("AD", "开屏页没退出 · 主动 finish",
+                                    "Activity: " + n + "\n"
+                                            + "现象: 广告层已经清掉，App 仍停在开屏页 —— "
+                                            + "说明广告的关闭回调没来，开屏页自己不会结束。\n"
+                                            + "做法: finish 这个开屏页，露出主界面；不碰任何业务页面。");
+                            activity.finish();
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }, 3_600L);
+        } catch (Throwable e) {
+            HookLog.logcat("watch splash failed: " + e);
+        }
     }
 
     /** 找「N 跳过」这个倒计时按钮。 */
