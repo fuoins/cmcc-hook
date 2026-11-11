@@ -84,7 +84,7 @@ final class GooseTask {
             "https://rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0AnebE";
 
     /** 一轮最多点几个浏览任务。每点一个要等跳转 + 回跳 + 页面重载，约 20 秒。 */
-    private static final int TASK_TRIES = 6;
+    private static final int TASK_TRIES = 8;
 
     private static final String PREFS = "cmcc_hook_goose";
     private static final String KEY_ENTRY = "entry_url";
@@ -200,7 +200,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.02 已装载 · 短链换票 + 点任务图片按钮（带 toDoTask 兜底）",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.03 已装载 · 短链换票 + 逐任务点(按提交回执验收)",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -721,6 +721,9 @@ final class GooseTask {
      * 不再一判 notready 就整轮放弃，而是最多再来一次。
      */
     private static TaskRunner.Result runVue(WebPage page, StringBuilder detail) {
+        // 本轮「提交回执」计数清零。计数器存在页面 localStorage 里，页面重载不丢，
+        // 所以只能在这里重置 —— 放在脚本里每次注入都重置的话，回跳重载后计数又会归零。
+        page.eval("try{localStorage.setItem('__cmccGS',JSON.stringify({t:Date.now(),n:0}))}catch(e){}", 3_000L);
         TaskRunner.Result first = runVueOnce(page, detail);
         if (first == null || !"notready".equals(lastStage)) {
             return first;
@@ -871,9 +874,18 @@ final class GooseTask {
             // 却被判成 ✓。现在把真实提交数摆到判定第一优先级。
             appendReceipt(detail, out);
             int submitN = out.optInt("submitN", 0);
+            // 浏览任务是在 runVueOnce 之后由 runTaskLoop 逐个点的，它们发出的 doTask
+            // 记在页面 localStorage 里（跨重载），这里取两者较大的那个作为本轮总数。
+            int persistedN = submitCount(page);
+            if (persistedN > submitN) {
+                submitN = persistedN;
+            }
             int netN = out.optInt("netN", 0);
             boolean dataReady = out.optBoolean("dataReady", false);
             String submitPaths = joinPaths(out.optJSONArray("submitPaths"));
+            if (submitPaths.isEmpty() && submitN > 0) {
+                submitPaths = "doTask";
+            }
             String queryPaths = joinPaths(out.optJSONArray("queryPaths"));
 
             if (submitN == 0 && !changed && taskDoneReal == 0) {
@@ -925,8 +937,18 @@ final class GooseTask {
             (function(){
               try{
                 var FORCE=__FORCE__;
+                var SKIP=__SKIP__;
+                // 「已完成」的判据只有 isComplete==='2'（11-11 13:32 日志实证：
+                // 6 个任务里 3 个是 '2'，页面显示「待做 3 个」）。
+                // 旧实现认 '1'/'true'，把已完成的也当成未完成，永远取同一个任务。
                 function undone(list){var r=[];for(var i=0;i<list.length;i++){var t=list[i];if(!t)continue;
-                  var s=String(t.isComplete);if(s==='1'||s==='true')continue;r.push(t)}return r}
+                  var s=String(t.isComplete);if(s==='2'||s==='true')continue;r.push(t)}return r}
+                function nameOf(x){return String((x&&(x.jobTitle||x.taskKey))||'')}
+                function skipped(x){
+                  var s=nameOf(x);
+                  for(var i=0;i<SKIP.length;i++){ if(SKIP[i]===s) return true }
+                  return false;
+                }
                 var el=document.querySelector('#app')||document.querySelector('#root');
                 var v=el&&el.__vue__;
                 if(!v&&el&&el.__vue_app__&&el.__vue_app__._instance)v=el.__vue_app__._instance;
@@ -937,7 +959,11 @@ final class GooseTask {
                 var list=c.taskListArr||[];
                 var todo=undone(list);
                 if(!todo.length)return JSON.stringify({none:1});
-                var t=todo[0];
+                // 本轮已经点过的任务直接跳过：13:32 那次 doTask 明明回了 200，
+                // 因为剩余数没降（计数判据写错），脚本又把同一个任务点了第二遍。
+                var t=null;
+                for(var q=0;q<todo.length;q++){ if(!skipped(todo[q])){ t=todo[q]; break } }
+                if(!t)return JSON.stringify({none:1});
                 var title=String(t.jobTitle||t.taskKey||'');
                 var idx=list.indexOf(t); if(idx<0)idx=0;
                 function norm(s){return String(s||'').replace(/[「」『』【】"\\s]/g,'')}
@@ -1046,6 +1072,74 @@ final class GooseTask {
             })()
             """;
 
+
+    /**
+     * 只做一件事：把「本轮发出去的提交类回执」累加到页面 localStorage。
+     *
+     * <p>点完任务页面常常整页重载（跳落地页再被拉回活动页），页面里注入的钩子
+     * 和 NET 数组一起消失；13:32 那次 {@code doTask} 明明回了 200，复核却写成
+     * 「提交类 0 条」，就是被重载清掉的。localStorage 同源持久，重载不丢。
+     *
+     * <p>与 VUE_SCRIPT 里的 {@code hookGooseNet} 共用 {@code window.__cmccGSNet}
+     * 标记，谁先装谁生效，不会重复计数。
+     */
+    private static final String NET_HOOK_SCRIPT = """
+            (function(){
+              try{
+                if(window.__cmccGSNet) return 'already';
+                window.__cmccGSNet=1;
+                function bump(){
+                  try{
+                    var o={t:0,n:0};
+                    try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0} }catch(x){}
+                    o.n=(Number(o.n)||0)+1;
+                    localStorage.setItem('__cmccGS',JSON.stringify(o));
+                  }catch(x){}
+                }
+                function isSub(u,s,b){
+                  var str=String(u||''), i=str.indexOf('/raiseGoose/');
+                  if(i<0) return false;
+                  var t=str.slice(i+12).split('?')[0].split('#')[0].split('&')[0].split('/')[0];
+                  if(t!=='doTask'&&t!=='signIn'&&t!=='feedGoose'&&t!=='harvestEgg'
+                     &&t!=='claimTravelReward'&&t!=='claimMailboxPrize'&&t!=='claimPrize'
+                     &&t!=='boxClaim') return false;
+                  var st=Number(s)||0;
+                  if(st<200||st>=400) return false;
+                  var body=String(b||'');
+                  if(/"success"\\s*:\\s*false/i.test(body)) return false;
+                  if(/"code"\\s*:\\s*"(?!200)/i.test(body)) return false;
+                  return true;
+                }
+                var op=XMLHttpRequest.prototype.open, se=XMLHttpRequest.prototype.send;
+                XMLHttpRequest.prototype.open=function(m,u){ this.__qu=String(u||''); return op.apply(this,arguments) };
+                XMLHttpRequest.prototype.send=function(b){
+                  var x=this;
+                  try{ x.addEventListener('load',function(){
+                    try{ if(isSub(x.__qu,x.status,x.responseText)) bump() }catch(e){}
+                  }) }catch(e){}
+                  return se.apply(this,arguments);
+                };
+                var of=window.fetch;
+                if(typeof of==='function'){
+                  window.fetch=function(input,init){
+                    var u=(typeof input==='string')?input:((input&&input.url)||'');
+                    var r=of.apply(this,arguments);
+                    try{
+                      if(String(u).indexOf('/raiseGoose/')>=0 && r && typeof r.then==='function'){
+                        r.then(function(rr){
+                          try{ var cp=rr.clone(); cp.text().then(function(t){
+                            try{ if(isSub(u,rr.status,t)) bump() }catch(e){}
+                          }) }catch(e){}
+                        });
+                      }
+                    }catch(e){}
+                    return r;
+                  };
+                }
+                return 'ok';
+              }catch(e){ return 'err' }
+            })()
+            """;
     /** 数一下还剩几个未完成的任务。-1 = 读不到。 */
     private static final String TASK_COUNT_SCRIPT = """
             (function(){
@@ -1059,7 +1153,7 @@ final class GooseTask {
                 if(!c)return '-1';
                 var list=c.taskListArr||[],n=0;
                 for(var i=0;i<list.length;i++){var s=String(list[i]&&list[i].isComplete);
-                  if(s!=='1'&&s!=='true')n++}
+                  if(s!=='2'&&s!=='true')n++}
                 return String(n);
               }catch(e){return '-1'}
             })()
@@ -1076,13 +1170,20 @@ final class GooseTask {
      */
     private static int runTaskLoop(WebPage page, StringBuilder detail, String entry, int todo0) {
         detail.append("浏览任务: 待做 ").append(todo0).append(" 个，逐个点（点完让它自己跳，不停留）\n");
-        int left = todo0;
+        List<String> tried = new ArrayList<>();
         int done = 0;
-        int miss = 0;
+        int failStreak = 0;
+        int left = todo0;
         for (int i = 0; i < TASK_TRIES; i++) {
-            // miss>0 = 上一次点了但剩余数没降：这一轮不再猜落点，直接走组件入口
-            // （toDoTask 内部发 doTask + toJump 打开落地页，和手点同一条链路）。
-            String raw = page.eval(TASK_ONE_SCRIPT.replace("__FORCE__", miss > 0 ? "1" : "0"), 10_000L);
+            // 上一次点击可能把页面整页重载了（跳落地页再被拉回），注入的钩子跟着丢，
+            // 这里补装一次；已装过就直接返回，不会重复计数。
+            page.eval(NET_HOOK_SCRIPT, 5_000L);
+            int before = submitCount(page);
+            // 点过的任务会进 tried，脚本按名字跳过，不再原地重复点同一个。
+            // failStreak>0 表示前面没拿到提交回执，这一轮直接走组件入口兜底。
+            String raw = page.eval(TASK_ONE_SCRIPT
+                    .replace("__FORCE__", failStreak > 0 ? "1" : "0")
+                    .replace("__SKIP__", skipJson(tried)), 10_000L);
             if (raw == null || raw.isEmpty()) {
                 detail.append("浏览任务: 点击脚本没回报，停止\n");
                 break;
@@ -1095,7 +1196,7 @@ final class GooseTask {
                 break;
             }
             if (o.has("none")) {
-                detail.append("浏览任务: 页面已无待做\n");
+                detail.append("浏览任务: 没有新的待做了\n");
                 break;
             }
             if (o.has("err")) {
@@ -1109,22 +1210,20 @@ final class GooseTask {
                     : "box".equals(kind) ? "按钮容器"
                     : "toDoTask".equals(kind) ? "组件入口"
                     : "卡片";
+            if (!name.isEmpty()) {
+                tried.add(name);
+            }
             detail.append("浏览任务 ").append(i + 1).append(": 点「").append(name).append("」（").append(kd).append("）")
                     .append(o.has("x") ? " @" + o.optInt("x") + "," + o.optInt("y") : "")
                     .append('\n');
             sleep(2_000L);
             String nowUrl = page.url();
-            boolean jumped = nowUrl != null && !isGoosePage(nowUrl);
-            if (jumped) {
+            if (nowUrl != null && !isGoosePage(nowUrl)) {
                 detail.append("浏览任务: 已跳到 ").append(briefUrl(nowUrl)).append("，等回跳\n");
-                long end = System.currentTimeMillis() + 8_000L;
+                long end = System.currentTimeMillis() + 6_000L;
                 while (System.currentTimeMillis() < end && !isGoosePage(page.url())) {
                     sleep(600L);
                 }
-            } else {
-                // 同页内跳走又回来时，这里看到的仍是鹅蛋地址 —— 不代表没点中。
-                // 判断标准只有一个：任务数有没有下降，后面统一看。
-                detail.append("浏览任务: 没看到跳转（可能同页内往返）\n");
             }
             if (page.url() == null || !isGoosePage(page.url())) {
                 detail.append("浏览任务: 没自己回来，拉回活动页\n");
@@ -1132,21 +1231,37 @@ final class GooseTask {
                     detail.append("浏览任务: 拉回失败，停止\n");
                     break;
                 }
+                sleep(1_500L);
             }
-            sleep(1_200L);
-            waitLogged(page, 15_000L);
+            waitLogged(page, 12_000L);
+            // 完成判据以「本轮 doTask 回执有没有增加」为准。剩余数只作参考：
+            // 13:32 那次 doTask 明明回了 200，但剩余数读的是另一套字段，
+            // 恒为 6 不下降，于是脚本判「没记上」并停下，后面两个任务全没做。
+            int after = submitCount(page);
+            boolean submitted = before >= 0 && after > before;
             int now = taskTodo(page);
-            if (now >= 0 && now < left) {
+            if (submitted) {
                 done++;
-                miss = 0;
+                failStreak = 0;
+                detail.append("浏览任务: 「").append(name).append("」已拿到 doTask 回执（提交 ")
+                        .append(before).append(" → ").append(after).append("）\n");
+                if (now >= 0) {
+                    left = now;
+                }
+            } else if (now >= 0 && now < left) {
+                done++;
+                failStreak = 0;
                 detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
                 left = now;
-            } else if (now >= 0) {
-                miss++;
-                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上，连续 ")
-                        .append(miss).append(" 次）\n");
-                if (miss >= 2) {
-                    detail.append("浏览任务: 连续两次没记上，停止本轮任务\n");
+            } else {
+                failStreak++;
+                detail.append("浏览任务: 「").append(name).append("」没拿到提交回执");
+                if (now >= 0) {
+                    detail.append("，剩余仍 ").append(now);
+                }
+                detail.append('\n');
+                if (failStreak >= 3) {
+                    detail.append("浏览任务: 连续 3 个任务都没回执，停止本轮\n");
                     break;
                 }
             }
@@ -1157,6 +1272,32 @@ final class GooseTask {
         }
         detail.append("浏览任务: 本轮记上 ").append(done).append(" 个\n");
         return done;
+    }
+
+    /** 本轮已经发成功的提交类回执条数。-1 = 读不到。 */
+    private static int submitCount(WebPage page) {
+        String v = page.eval("(function(){try{var o=JSON.parse(localStorage.getItem('__cmccGS')||'{}');"
+                + "return String(Number(o.n)||0)}catch(e){return '-1'}})()", 4_000L);
+        if (v == null) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
+    /** 已点过的任务名拼成 JS 数组字面量，供脚本跳过。 */
+    private static String skipJson(List<String> keys) {
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < keys.size(); i++) {
+            if (i > 0) {
+                sb.append(',');
+            }
+            sb.append(JSONObject.quote(keys.get(i)));
+        }
+        return sb.append(']').toString();
     }
 
     private static int taskTodo(WebPage page) {
@@ -1232,15 +1373,35 @@ final class GooseTask {
                 if(/"code"\\s*:\\s*"(?!200)/i.test(b)) return false;
                 return true;
               }
+              // 提交回执要跨页面重载累加：点完任务页面常整页重载（回跳或被拉回），
+              // 页面里的 NET 数组跟着清空，13:32 那次 doTask 明明 200，复核却写成
+              // 「提交类 0 条」。localStorage 是同一 origin 持久存储，重载不丢。
+              function bumpSubmit(){
+                try{
+                  var o={t:0,n:0};
+                  try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0} }catch(x){}
+                  o.n=(Number(o.n)||0)+1;
+                  localStorage.setItem('__cmccGS',JSON.stringify(o));
+                }catch(x){}
+              }
               function hookGooseNet(){
+                // 幂等：runTaskLoop 在页面重载后会重新注入 NET_HOOK_SCRIPT，
+                // 两边共用同一个标记，避免同一个 doTask 被计两次。
+                if(window.__cmccGSNet) return;
+                window.__cmccGSNet=1;
                 try{
                   var op=XMLHttpRequest.prototype.open, se=XMLHttpRequest.prototype.send;
                   XMLHttpRequest.prototype.open=function(m,u){ this.__qu=String(u||''); return op.apply(this,arguments) };
                   XMLHttpRequest.prototype.send=function(b){
                     var x=this;
                     try{ x.addEventListener('load',function(){
-                      try{ if(String(x.__qu).indexOf('/raiseGoose/')>=0)
-                        NET.push({u:String(x.__qu).slice(0,220),s:x.status,b:String(x.responseText||'').slice(0,600)}) }catch(e){}
+                      try{
+                        if(String(x.__qu).indexOf('/raiseGoose/')>=0){
+                          var e={u:String(x.__qu).slice(0,220),s:x.status,b:String(x.responseText||'').slice(0,600)};
+                          NET.push(e);
+                          if(isSubmit(e)) bumpSubmit();
+                        }
+                      }catch(e){}
                     }) }catch(e){}
                     return se.apply(this,arguments);
                   };
@@ -1255,7 +1416,9 @@ final class GooseTask {
                         if(String(u).indexOf('/raiseGoose/')>=0 && r && typeof r.then==='function'){
                           r.then(function(rr){
                             try{ var cp=rr.clone(); cp.text().then(function(t){
-                              NET.push({u:String(u).slice(0,220),s:rr.status,b:String(t).slice(0,600)});
+                              var e={u:String(u).slice(0,220),s:rr.status,b:String(t).slice(0,600)};
+                              NET.push(e);
+                              if(isSubmit(e)) bumpSubmit();
                             }) }catch(e){}
                           });
                         }
@@ -1274,6 +1437,10 @@ final class GooseTask {
                 }
                 var n=0;
                 for(var j=0;j<NET.length;j++){ if(isSubmit(NET[j])) n++ }
+                // 重载过的页面 NET 是空的，但本轮提交计数还在 localStorage 里。
+                var kept=0;
+                try{ var po=JSON.parse(localStorage.getItem('__cmccGS')||'{}'); kept=Number(po.n)||0 }catch(x){}
+                if(kept>n) n=kept;
                 return {netN:NET.length,submitN:n,submitPaths:s,queryPaths:q};
               }
               // v3.96：数值判据。「已有鹅蛋：--个」里的 '--' 不是数据，
