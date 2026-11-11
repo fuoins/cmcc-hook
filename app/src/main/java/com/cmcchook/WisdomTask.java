@@ -329,13 +329,22 @@ final class WisdomTask {
         // 并 reload 一次，一次性注入的脚本上下文会被冲掉，旧 await 死等 120 秒
         // 零回报 → FAIL。改用 awaitSign（心跳 + 幂等重注入）。
         page.eval("(function(){try{delete window.__cmcc_sign}catch(e){}"
-                + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0}catch(e){}})()", 3_000L);
+                + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0;"
+                + "window.__cmcc_sign_lg=[];window.__cmcc_sign_stage=''}catch(e){}})()", 3_000L);
         page.eval(SIGN_JS, 8_000L);
         JSONObject out = awaitSign(page, detail);
         if (out == null) {
-            return TaskRunner.Result.fail("签到抽奖 · 页面脚本超时",
-                    detail.append("脚本 150 秒没有终态回报（含重注入）\n").toString(),
-                    "页面能打开但脚本没回报。把完整日志发我。");
+            // 超时也要说清楚卡在哪一段，否则只剩一句「没回报」，下一轮还得靠猜。
+            String st = signStage == null || signStage.isEmpty() ? "未知" : signStage;
+            String lg = page.eval("(function(){try{var g=window.__cmcc_sign_lg||[];"
+                    + "return g.slice(-30).join(' / ')}catch(e){return ''}})()", 6_000L);
+            detail.append("脚本 240 秒没有终态回报（含重注入），最后阶段: ").append(st).append('\n');
+            if (lg != null && !lg.isEmpty()) {
+                detail.append("脚本进度: ").append(brief(lg)).append('\n');
+            }
+            return TaskRunner.Result.fail("签到抽奖 · 页面脚本超时（阶段 " + st + "）",
+                    detail.toString(),
+                    "页面能打开但脚本没跑完。把这份日志发我，里面的「签到抽奖 · 进度」能看到停在哪一步。");
         }
         return judge("签到抽奖", out, detail);
     }
@@ -360,27 +369,56 @@ final class WisdomTask {
         return null;
     }
 
+    /** awaitSign 期间脚本报上来的阶段（sso/wait-login/ready/sign/task/draw/finish），超时用来定位。 */
+    private static volatile String signStage = "";
+
     /**
      * v4.10.0：签抽页专用等待。脚本每秒写一次 {@code window.__cmcc_sign_hb} 心跳，
      * 终态才写 {@code window.__cmcc_sign}。页面重载 / 路由重写把注入脚本冲掉后，
      * 心跳会停更 —— 这时重新注入 SIGN_JS（最多 3 次），而不是干等 120 秒报错。
      * 重注入是幂等的：已签到会被 signedNow() 跳过签到段，抽奖靠 NET 回执继续抽到 0，
      * 任务按钮靠 SEEN 不会重复点，不会重复消耗机会。
+     *
+     * <p>v4.10.0-r4：脚本把每步行进写进 {@code window.__cmcc_sign_lg}，这里边等边转发
+     * 到日志（「签到抽奖 · 进度」），并记下当前阶段。以前整段跑完才写一行回报，
+     * 抽奖一路点到 0 要好几分钟，日志里一片空白，看着就像「没做」。
      */
     private static JSONObject awaitSign(WebPage page, StringBuilder detail) {
-        long deadline = System.currentTimeMillis() + 150_000L;
+        // 签到 6 轮 + 任务 12 轮 + 抽奖最多 40 次（每次 2 秒）≈ 3 分钟，150 秒会被截断成「超时」。
+        long deadline = System.currentTimeMillis() + 240_000L;
         long lastHb = System.currentTimeMillis();
         int reinject = 0;
+        int shown = 0;
+        signStage = "";
         while (System.currentTimeMillis() < deadline) {
             String v = page.eval("(function(){try{return JSON.stringify({"
                     + "r:(window.__cmcc_sign?String(window.__cmcc_sign):''),"
-                    + "h:Number(window.__cmcc_sign_hb||0)||0})}catch(e){return ''}})()", 6_000L);
+                    + "h:Number(window.__cmcc_sign_hb||0)||0,"
+                    + "st:String(window.__cmcc_sign_stage||''),"
+                    + "lg:(window.__cmcc_sign_lg||[]).slice(-120)})}catch(e){return ''}})()", 6_000L);
             if (v != null && !v.isEmpty()) {
                 try {
                     JSONObject probe = new JSONObject(v);
                     long hb = probe.optLong("h", 0L);
                     if (hb > lastHb) {
                         lastHb = hb;
+                    }
+                    String st = probe.optString("st", "");
+                    if (!st.isEmpty()) {
+                        signStage = st;
+                    }
+                    org.json.JSONArray lg = probe.optJSONArray("lg");
+                    if (lg != null) {
+                        if (lg.length() < shown) {
+                            shown = 0;   // 页面重载后进度数组是新的
+                        }
+                        for (int i = shown; i < lg.length(); i++) {
+                            String ln = lg.optString(i, "");
+                            if (!ln.isEmpty()) {
+                                HookLog.log("TASK", "签到抽奖 · 进度", ln);
+                            }
+                        }
+                        shown = lg.length();
                     }
                     String r = probe.optString("r", "");
                     if (!r.isEmpty()) {
@@ -398,6 +436,7 @@ final class WisdomTask {
                         .append(" 秒），重注入签到脚本 第 ").append(reinject).append(" 次\n");
                 HookLog.log("TASK", "签到抽奖 · 脚本心跳丢失，重注入", "第 " + reinject + " 次");
                 page.eval(SIGN_JS, 8_000L);
+                shown = 0;
                 lastHb = System.currentTimeMillis();
             }
             sleep(700L);
@@ -1153,7 +1192,19 @@ final class WisdomTask {
               window.__cmcc_sign_hb_t=setInterval(function(){
                 try{ window.__cmcc_sign_hb=Date.now() }catch(e){}
               },1000);
-              function line(s){L.push(String(s))}
+              function line(s){
+                var v=String(s);
+                L.push(v);
+                // v4.10.0-r4：进度同时挂到 window 上，Java 侧边跑边转发进日志。
+                // 之前脚本跑满 150 秒才写一次回报，用户看到的就是「点了没反应」。
+                try{
+                  var g=window.__cmcc_sign_lg;
+                  if(!g||!g.push){g=[];window.__cmcc_sign_lg=g}
+                  if(g.length<200)g.push(v);
+                }catch(e){}
+              }
+              // 当前阶段；超时/失败时 Java 侧把它写进结果，直接看出卡在哪一段。
+              function stage(s){try{window.__cmcc_sign_stage=String(s)}catch(e){}}
               function tx(e){
                 if(!e) return '';
                 // v3.73：离屏 WebView 没做布局时 innerText 一直返回空串。
@@ -1635,7 +1686,9 @@ final class WisdomTask {
               // 脚本一个都没点，直接报「没有可点的按钮」。
               function closeTip(){
                 var all=document.querySelectorAll('button,a,div,span,p,li,uni-view,uni-button,uni-text,uni-image,view,text,image,[role=button],[class*=btn],[class*=sign]');
-                var words=['确定','我知道了','知道了','好的','关闭'];
+                // v4.10.0-r4：新皮肤进场会有一步「新手引导」（localStorage guidePopupStep），
+                // 蒙层上只有「下一步」，旧词表一个都不认，整页点不动。补上引导词。
+                var words=['确定','我知道了','知道了','好的','关闭','下一步','开始体验','立即体验'];
                 var best=null,bestDeep=-1,bestTx='';
                 for(var i=0;i<all.length;i++){
                   var e=all[i];
@@ -1685,6 +1738,7 @@ final class WisdomTask {
                 try{
                   var href=String(location.href||'');
                   if(href.indexOf('wisdom-h5')<0){done('no-page',href);return}
+                  stage('sso');
                   // v3.64：先看上一次真实页面登录留下的 ssoId（localStorage 同域共享）。
                   // 有就直接用 —— 这条路完全不需要 h5token，也不怕 token 一次性。
                   var sso='', ownCache=false;
@@ -1803,6 +1857,7 @@ final class WisdomTask {
                     return;
                   }
                   line('ssoId 已就绪: '+sso.slice(0,8)+'…');
+                  stage('wait-login');
                   // v3.79：给自己 1.5 秒收页面那几条登录回执，再决定要不要动手。
                   await wait(1500);
                   // v3.82：前台真页已登录，页面自己的轮询回执不参与本次判定，
@@ -1836,6 +1891,7 @@ final class WisdomTask {
                   }
                   line('页面就绪: ' + (ready?'按钮已出现':'30 秒内没等到按钮') + ' / ' + btnList().slice(0,140));
                   line('探针: ' + probe());
+                  stage('ready');
                   var body=bodyText();
                   // v3.73：body 空要单独说清楚。11:02 那次脚本读到的正文一直是空串，
                   // 却打印「今天还没签」——看起来像页面正常但没签，实际是页面被拆了。
@@ -1901,6 +1957,7 @@ final class WisdomTask {
 
                   var detail=[];
                   var did=0;
+                  stage('sign');
 
                   // 动手前把残留弹窗再清一遍：签到成功、领奖都会再弹一层。
                   for(var tp=0;tp<2;tp++){
@@ -2020,6 +2077,7 @@ final class WisdomTask {
 
                   // 4) 抽奖：所有任务做完后统一抽，一律抽到「剩余次数 0」。
                   // 三个 tab 的内容同时在 DOM 里（靠 CSS 显隐），先切到「转盘抽奖」。
+                  stage('draw');
                   SEEN={};
                   var dtab=hit(['转盘抽奖'],['每日签到','签到集卡']);
                   if(dtab){ clickEl(dtab); did++; line('切到「转盘抽奖」'); await wait(1200) }
@@ -2061,7 +2119,7 @@ final class WisdomTask {
                       continue;
                     }
                     noBtn=0;
-                    await wait(3000);
+                    await wait(2000);
                     var after=lotteryCount();
                     if(after>before){ drawnThis+=after-before; stall=0 }
                     else{
@@ -2074,6 +2132,7 @@ final class WisdomTask {
                   }
                   line('抽奖阶段结束: 本轮 lottery 回执 '+lotteryCount()+' 条 / 新抽 '+drawnThis+' 次');
 
+                  stage('finish');
                   await wait(1200);
                   var sign=netCount('signIn');
                   var drawn=lotteryCount();

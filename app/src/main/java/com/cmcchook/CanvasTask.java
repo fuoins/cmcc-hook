@@ -450,100 +450,168 @@ final class CanvasTask {
 
     /** 周周的「去逛逛」停留门槛。用户实测 5 秒就够，多留 1 秒防服务端按整秒截断。 */
     private static final long WEEKLY_STAY_MS = 6_000L;
-    /** 一轮最多做几个浏览任务。每个约 12 秒（跳 1.5 + 停 6 + 回 4）。 */
-    private static final int WEEKLY_TASK_TRIES = 8;
+    /** 一轮最多做几个浏览任务。每个约 13 秒（跳 2 + 停 6 + 回 4）。 */
+    private static final int WEEKLY_TASK_TRIES = 12;
 
-    /** 数页面上还剩几个待做任务卡片。认 (0/1) / （0/1）等多种写法；-1 = 读不到。 */
+    /**
+     * 数页面上还剩几张待做任务卡片；-1 = 读不到。
+     *
+     * <p>v4.10.0-r4：按「卡片」数，不再按「文本恰好等于去逛逛的元素」数。
+     * 旧写法把卡片外层和里面的按钮各数一次，一张卡算两个，循环里的
+     * 「剩余数下降」「skip 到顶就停」全跟着错。现在先找「同时含 (0/1)
+     * 和动作词」的容器，再把被别的候选包含的外层丢掉，只剩最内层卡片。
+     */
     private static final String WEEKLY_TODO_COUNT = """
             (function(){
               try{
-                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与'];
-                var all=document.querySelectorAll('div,span,a,button,p,li,uni-view,uni-text,view,text,img,image'),n=0;
-                for(var i=0;i<all.length;i++){
-                  var e=all[i];
-                  var t=(e.innerText||e.textContent||'').replace(/\\s+/g,'');
-                  var isWord=false;
-                  for(var w=0;w<WORDS.length;w++){ if(t===WORDS[w]){isWord=true;break} }
-                  var tag=String(e.tagName||'').toUpperCase();
-                  if(!isWord && tag!=='IMG' && tag!=='IMAGE') continue;
-                  var p=e,hit=false;
-                  for(var k=0;k<6&&p;k++){
-                    var pt=(p.innerText||p.textContent||'').replace(/\\s+/g,'');
-                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;break}
-                    p=p.parentElement;
-                  }
-                  if(hit)n++;
+                function norm(s){return String(s||'').replace(/\\s+/g,'')}
+                function tx(e){if(!e)return '';var s='';try{s=e.innerText||''}catch(x){}
+                  if(!s){try{s=e.textContent||''}catch(x){}}return String(s)}
+                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与','立即参与','去体验','立即领取','去领取'];
+                function isCard(t){
+                  if(t.indexOf('(0/1)')<0&&t.indexOf('（0/1）')<0)return false;
+                  if(t.length>220)return false;
+                  for(var i=0;i<WORDS.length;i++){if(t.indexOf(WORDS[i])>=0)return true}
+                  return false;
                 }
-                return String(n);
+                var all=document.querySelectorAll('div,li,section,article,uni-view,view,p'),c=[],i,j;
+                for(i=0;i<all.length;i++){
+                  var e=all[i],t=norm(tx(e));
+                  if(!isCard(t))continue;
+                  var r={width:0,height:0};try{r=e.getBoundingClientRect()}catch(x){continue}
+                  if(r.width<40||r.height<20)continue;
+                  c.push(e);
+                }
+                var kept=0;
+                for(i=0;i<c.length;i++){
+                  var nested=false;
+                  for(j=0;j<c.length;j++){
+                    if(i===j||c[i]===c[j])continue;
+                    if(c[i].contains(c[j])){nested=true;break}
+                  }
+                  if(!nested)kept++;
+                }
+                return String(kept);
               }catch(e){return '-1'}
             })()
             """;
 
     /**
-     * 点第 __SKIP__ 个待做任务卡片。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
-     * v4.10.0：原来只发 MouseEvent，周周是 uni-app 的 @tap，Vue handler 根本不触发
-     * （14:28 日志实证「( 0/1)」点 8 次一个没记上）。补完整 Touch/Pointer/Mouse
-     * 序列 + elementFromPoint 校正落点；同时支持「去逛逛」是 <img> 的情况。
+     * 点第 __SKIP__ 张待做卡片上的按钮。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
+     *
+     * <p>v4.10.0-r4 修两处：
+     * <ol>
+     *   <li>落点绝不取祖先容器。旧代码写的是 {@code f.contains(btn)} 也算命中，
+     *       而周周页的「去逛逛」外面盖着一层透明层，{@code elementFromPoint} 返回的是
+     *       整页容器 .van-pull-refresh__track —— 事件全打在那个 DIV 上，Vue 的
+     *       {@code @click} 一次都没触发（21:36 日志两条点击的控件就是它）。</li>
+     *   <li>1 秒后如果页面还在 zzcj，按卡片中心补一次；卡片自己的 click 处理器
+     *       也能接住，不再出现「点了 8 次 (0/1) 一动不动」。</li>
+     * </ol>
      */
     private static final String WEEKLY_TASK_ONE = """
             (function(){
               try{
                 var SKIP=__SKIP__;
-                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与'];
-                var all=[].slice.call(document.querySelectorAll('div,span,a,button,p,li,uni-view,uni-text,view,text,img,image'));
+                function norm(s){return String(s||'').replace(/\\s+/g,'')}
+                function tx(e){if(!e)return '';var s='';try{s=e.innerText||''}catch(x){}
+                  if(!s){try{s=e.textContent||''}catch(x){}}return String(s)}
+                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与','立即参与','去体验','立即领取','去领取'];
+                function isCard(t){
+                  if(t.indexOf('(0/1)')<0&&t.indexOf('（0/1）')<0)return false;
+                  if(t.length>220)return false;
+                  for(var i=0;i<WORDS.length;i++){if(t.indexOf(WORDS[i])>=0)return true}
+                  return false;
+                }
+                var all=document.querySelectorAll('div,li,section,article,uni-view,view,p'),c=[],i,j;
+                for(i=0;i<all.length;i++){
+                  var e=all[i],t=norm(tx(e));
+                  if(!isCard(t))continue;
+                  var r={width:0,height:0};try{r=e.getBoundingClientRect()}catch(x){continue}
+                  if(r.width<40||r.height<20)continue;
+                  c.push(e);
+                }
                 var cards=[];
-                for(var i=0;i<all.length;i++){
-                  var e=all[i];
-                  var t=(e.innerText||e.textContent||'').replace(/\\s+/g,'');
-                  var isWord=false;
-                  for(var w=0;w<WORDS.length;w++){ if(t===WORDS[w]){isWord=true;break} }
-                  var tag=String(e.tagName||'').toUpperCase();
-                  if(!isWord && tag!=='IMG' && tag!=='IMAGE') continue;
-                  var p=e,hit=false,card=null;
-                  for(var k=0;k<6&&p;k++){
-                    var pt=(p.innerText||p.textContent||'').replace(/\\s+/g,'');
-                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;card=p;break}
-                    p=p.parentElement;
+                for(i=0;i<c.length;i++){
+                  var nested=false;
+                  for(j=0;j<c.length;j++){
+                    if(i===j||c[i]===c[j])continue;
+                    if(c[i].contains(c[j])){nested=true;break}
                   }
-                  if(!hit)continue;
-                  var r={width:0,height:0}; try{ r=e.getBoundingClientRect() }catch(x){}
-                  if(r.width<6||r.height<6)continue;
-                  cards.push({e:e,card:card});
+                  if(!nested)cards.push(c[i]);
                 }
                 if(!cards.length)return JSON.stringify({none:1});
-                var at=Math.min(SKIP,cards.length-1);
-                var btn=cards[at].e,name='';
-                try{ name=(cards[at].card.innerText||cards[at].card.textContent||'')
-                  .replace(/\\s+/g,'').slice(0,40) }catch(x){}
+                var at=Math.min(SKIP,cards.length-1),card=cards[at];
+                var name=norm(tx(card)).slice(0,40);
+                // 按钮 = 卡片里文本恰好等于动作词的最深元素；没有文本就退到卡片里的图片。
+                var btn=null,bestLen=1e9,bestDeep=-1,img=null;
+                var els=card.querySelectorAll('div,span,a,button,p,li,uni-view,uni-text,view,text,img,image');
+                for(i=0;i<els.length;i++){
+                  var el=els[i],et=norm(tx(el)),tag=String(el.tagName||'').toUpperCase();
+                  var ok=false;
+                  for(j=0;j<WORDS.length;j++){ if(et===WORDS[j]){ok=true;break} }
+                  var rr={width:0,height:0};try{rr=el.getBoundingClientRect()}catch(x){continue}
+                  if(rr.width<8||rr.height<8)continue;
+                  if(ok){
+                    var dp=0,p2=el;while(p2&&p2.parentElement){dp++;p2=p2.parentElement}
+                    if(et.length<bestLen||(et.length===bestLen&&dp>bestDeep)){bestLen=et.length;bestDeep=dp;btn=el}
+                  }else if((tag==='IMG'||tag==='IMAGE')&&!img){img=el}
+                }
+                if(!btn)btn=img||card;
                 var r=btn.getBoundingClientRect();
                 var x=r.left+r.width/2,y=r.top+r.height/2;
+                // 只认三种落点：按钮自己、按钮的子节点、同一张卡片里盖在按钮上的兄弟层。
+                // 祖先容器一律不认 —— 打在祖先上等于没点。
                 var tgt=btn;
                 try{
-                  var f=document.elementFromPoint(x,y);
-                  if(f&&(f===btn||btn.contains(f)||f.contains(btn)))tgt=f;
+                  if(y>8&&y<window.innerHeight-8&&x>4&&x<window.innerWidth-4){
+                    var f=document.elementFromPoint(x,y);
+                    if(f){
+                      if(f===btn||btn.contains(f))tgt=f;
+                      else if(card.contains(f)&&!f.contains(btn))tgt=f;
+                    }
+                  }
                 }catch(x){}
-                function tev(type,end){
+                function fire(el){
                   try{
-                    var tch=new Touch({identifier:1,target:tgt,clientX:x,clientY:y,
+                    var tch=new Touch({identifier:1,target:el,clientX:x,clientY:y,
                       pageX:x+window.scrollX,pageY:y+window.scrollY,screenX:x,screenY:y,
                       radiusX:1,radiusY:1,rotationAngle:0,force:1});
-                    tgt.dispatchEvent(new TouchEvent(type,{bubbles:true,cancelable:true,view:window,
-                      touches:end?[]:[tch],targetTouches:end?[]:[tch],changedTouches:[tch]}));
-                  }catch(x){}
+                    el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,view:window,
+                      touches:[tch],targetTouches:[tch],changedTouches:[tch]}));
+                    el.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,view:window,
+                      touches:[],targetTouches:[],changedTouches:[tch]}));
+                  }catch(e){}
+                  var ps=['pointerdown','mousedown','pointerup','mouseup'];
+                  for(var m=0;m<ps.length;m++){
+                    try{
+                      var ev=ps[m].indexOf('pointer')===0
+                        ? new PointerEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y})
+                        : new MouseEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y});
+                      el.dispatchEvent(ev);
+                    }catch(e){}
+                  }
+                  try{if(typeof el.click==='function')el.click()}catch(e){}
                 }
-                tev('touchstart',false);
-                var ps=['pointerdown','mousedown','pointerup','mouseup'];
-                for(var m=0;m<ps.length;m++){
-                  try{
-                    var ev=ps[m].indexOf('pointer')===0
-                      ? new PointerEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y})
-                      : new MouseEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y});
-                    tgt.dispatchEvent(ev);
-                  }catch(x){}
-                }
-                tev('touchend',true);
-                try{if(typeof tgt.click==='function')tgt.click()}catch(e){}
-                return JSON.stringify({name:name,url:String(location.href),idx:at,total:cards.length});
+                fire(tgt);
+                // 兜底：1 秒后还在活动页，说明第一下落点没命中，按卡片中心补一次。
+                try{
+                  setTimeout(function(){
+                    try{
+                      if(String(location.href).indexOf('zzcj')<0)return;
+                      var cr=card.getBoundingClientRect();
+                      var cx=cr.left+cr.width/2,cy=cr.top+cr.height/2;
+                      if(cy<10||cy>window.innerHeight-10)return;
+                      var f2=document.elementFromPoint(cx,cy);
+                      if(!f2||!card.contains(f2)||f2.contains(btn))return;
+                      var sx=x,sy=y; x=cx; y=cy; fire(f2); x=sx; y=sy;
+                    }catch(e){}
+                  },900);
+                }catch(e){}
+                var cls='';
+                try{cls=String(tgt.className||'').slice(0,36)}catch(e){}
+                return JSON.stringify({name:name,idx:at,total:cards.length,
+                  tag:String(tgt.tagName||''),cls:cls});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
             })()
             """;
@@ -612,8 +680,12 @@ final class CanvasTask {
             detail.append("浏览任务 ").append(i + 1).append(": 点第 ")
                     .append(o.optInt("idx", 0) + 1).append("/")
                     .append(o.optInt("total", 0)).append(" 张「")
-                    .append(name.isEmpty() ? "去逛逛" : name).append("」\n");
-            sleep(1_500L);
+                    .append(name.isEmpty() ? "去逛逛" : name).append("」")
+                    .append(" 落点 ").append(o.optString("tag", "?"))
+                    .append(o.optString("cls", "").isEmpty() ? "" : "." + o.optString("cls"))
+                    .append('\n');
+            // 脚本里 0.9 秒还有一次「卡片中心」补点，这里多留 0.5 秒再判断跳没跳。
+            sleep(2_000L);
             String landed = page.url();
             boolean jumped = landed == null || !landed.contains("zzcj");
             if (jumped) {
