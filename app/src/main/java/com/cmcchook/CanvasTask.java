@@ -1190,7 +1190,29 @@ final class CanvasTask {
                     var already=/已打卡|今日已签|今天已签|明天再来|抽奖次数已用完|机会已用完|已连续/.test(t0);
                     if(NEED_SIGN && !already){
                       var mark0=NET.length;
-                      var got=hitAny(['立即打卡','今日打卡','打卡','签到'],1);
+                      // v4.2.1：7 日打卡页的按钮文案各版不一样（「立即打卡」「打卡」
+                      // 之外还有「立即领取」「抽奖」这类入口），11-11 09:54 的首屏里
+                      // 一个「打卡」字样都没有，旧词表直接空手而归。补齐常见入口文案。
+                      var got=hitAny(['立即打卡','今日打卡','去打卡','打卡','签到',
+                                      '立即领取','领取红包','立即抽奖','抽奖'],1);
+                      if(!got){
+                        // 一个都没点到：把可点元素原样打进日志，下一版按真实结构补目标，
+                        // 不再靠猜（这条只在失败时出现，不影响正常流程）。
+                        var cand=[];
+                        try{
+                          var all2=document.querySelectorAll(
+                            'button,a,[onclick],[class*=btn],[class*=sign],[class*=clock],[class*=draw]');
+                          for(var k2=0;k2<all2.length && cand.length<30;k2++){
+                            var e2=all2[k2];
+                            if(!vok(e2)) continue;
+                            var t2=(e2.innerText||'').replace(/\\s+/g,' ').trim();
+                            if(!t2) continue;
+                            cand.push(e2.tagName.toLowerCase()
+                              +'.'+String(e2.className||'').slice(0,20)+'='+cut(t2,16));
+                          }
+                        }catch(e2){}
+                        line('  可点元素: '+cut(cand.join(' | '),900));
+                      }
                       if(got){
                         dom.try++; dom.hits.push(got);
                         line('  非Vue页点击: '+got);

@@ -62,6 +62,18 @@ final class WebSession {
                 HookLog.logcat("session real ok: " + key + " · " + real.href());
                 return true;
             }
+            if (realOnly(key)) {
+                // v4.2.1：鹅蛋/球赛只在真页里跑。离屏页那条路要在离屏 WebView 里
+                // 重走门户 SSO 拿 pc/pk，11-11 09:53 实测两次都没拿到，白花 20 秒
+                // 最后还是「跳过（还没有登录参数）」。真页本来就是 App 自己的容器，
+                // 页面自己会跳 SSO，交给任务里的 ensureLogin 等就行。
+                HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
+                        "目标: " + url + "\n"
+                                + "这个活动以前靠离屏页走门户 SSO 拿 pc/pk，实测拿不到；"
+                                + "现在统一在 App 真页里执行，登录交给页面自己完成。\n"
+                                + "本次先跳过，不记失败。");
+                return false;
+            }
             HookLog.logcat("real page rejected, fallback offscreen: " + key);
         }
         end();
@@ -69,6 +81,16 @@ final class WebSession {
         WebPage page = WebPage.open(url, timeoutMs, hostsFor(key));
         suppressAuto = false;
         return settle(key, page, start);
+    }
+
+    /**
+     * 这些活动只认 App 真页，真页判不过就直接跳过，不再退离屏。
+     *
+     * <p>鹅蛋和球赛都要 lyh 门户 SSO 下发的 {@code pc/pk}，离屏 WebView 里重走一遍
+     * SSO 两轮都没拿到（11-11 09:53 日志）。真页是 App 自己的容器，页面自己会跳 SSO。
+     */
+    private static boolean realOnly(String key) {
+        return "goose".equals(key) || "soccer".equals(key);
     }
 
     /**
@@ -114,6 +136,13 @@ final class WebSession {
             if (ok) {
                 HookLog.logcat("session real fast ok: " + key + " · " + live.href());
                 return true;
+            }
+            if (realOnly(key)) {
+                HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
+                        "目标: " + url + "\n"
+                                + "这个活动只在 App 真页里执行（离屏拿不到 pc/pk，实测两轮都失败）。\n"
+                                + "本次先跳过，不记失败。");
+                return false;
             }
             HookLog.logcat("real fast page rejected, fallback offscreen: " + key);
         }

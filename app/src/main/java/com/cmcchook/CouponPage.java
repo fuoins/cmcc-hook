@@ -81,6 +81,12 @@ final class CouponPage {
         if (v == null || System.currentTimeMillis() - at > TTL_MS) {
             return null;
         }
+        // v4.2.1：和 RealPage 一样，被关掉的页面不能当现场用 —— 它的 JS 已经不执行，
+        // 拿它做 href/collect 只会静默返回空，表现为「切到券页不跳转、也扫不到券」。
+        if (!RealPage.alive(v)) {
+            view = null;
+            return null;
+        }
         // v3.43：不再反射调 getUrl（子线程会抛 WebView 线程异常）。
         // 只按 TTL 软判断，真正的地址校验交给 openHost 里的 location.href。
         return v;

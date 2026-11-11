@@ -196,13 +196,14 @@ final class GooseTask {
             // 用户不回到 App、不进活动页就跑不了。现在页面现场起不来就直接说清楚，
             // 不再动用户的界面。
             HookLog.logcat("goose: no page session");
-            HookLog.log("GOOSE", "收鹅蛋 · 离屏页没起来",
+            HookLog.log("GOOSE", "收鹅蛋 · 活动页没起来",
                     "出口地址: " + brief(entryUrl()) + "\n"
-                            + "这次是离屏 WebView 加载失败，不是活动本身的问题。");
+                            + "这次是 App 真页没加载成功，不是活动本身的问题。");
             return TaskRunner.Result.fail("活动页没起来",
-                    "离屏 WebView 没能加载收鹅蛋页面。\n"
+                    "App 真页没能加载收鹅蛋页面。\n"
                             + "出口地址: " + brief(entryUrl()) + "\n",
-                    "把日志发我。这条说明离屏页面没加载成功，不是活动本身的问题。");
+                    "把日志发我。这条说明真页没加载成功，不是活动本身的问题。"
+                            + "先手动点一次「收鹅蛋换好礼」，模块会把带 pc/pk 的入口记下来。");
         }
         if (!ensureLogin(page, detail)) {
             String entry = entryUrl();
@@ -229,7 +230,7 @@ final class GooseTask {
                 // 首轮没拿到的多半是 SSO 还没走完/被外部跳转顶走，再执行一次即可。
                 return TaskRunner.Result.skip("收鹅蛋：还没有登录参数（pc/pk）",
                         detail.toString(),
-                        "离屏页会自己走一遍登录拿 pc/pk，再点一次「执行任务」重试；"
+                        "真页会自己走一遍门户登录拿 pc/pk，再点一次「执行任务」重试；"
                                 + "若连续几次都不行，在 App 里手动点一次「收鹅蛋换好礼」，"
                                 + "模块会把带 pc/pk 的入口记下来，之后就能自动跑。");
             }

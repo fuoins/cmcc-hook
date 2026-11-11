@@ -163,6 +163,17 @@ final class RealPage {
                 if (URLS[i] == null) {
                     continue;
                 }
+                // v4.2.1：登记表以前只按时间淘汰，不看页面死活。上一轮刷新自己关掉的
+                // 页面（Activity 已 finish）还留在表里，下一轮 find 命中它 —— loadUrl 能
+                // 改地址（日志里「已打开 marginQuery」），但 JS 根本不执行，evaluateJavascript
+                // 永不回调，每轮 3 秒超时，白等 18 秒后才掉到离屏。11-11 09:53 的
+                // 「真页轮询 5 轮 · 末轮 无返回」就是这么来的。
+                if (!alive(v)) {
+                    VIEWS[i] = null;
+                    URLS[i] = null;
+                    AT[i] = 0L;
+                    continue;
+                }
                 // 大小写不敏感：调用方传 "signlottery"，站点地址写的是 "signInLottery"。
                 if (!URLS[i].toLowerCase(java.util.Locale.US).contains(key.toLowerCase(java.util.Locale.US))
                         && !samePath(URLS[i], key)) {
@@ -175,6 +186,68 @@ final class RealPage {
             }
         }
         return best;
+    }
+
+    /**
+     * 这一页还挂在活着的 Activity 上吗。
+     *
+     * <p>WebView 的宿主 Activity 一旦 {@code finish()}，这个 WebView 就成了「僵尸」：
+     * {@code loadUrl}/{@code getUrl} 照样能用（所以日志里地址永远是对的），但 JS 引擎
+     * 已经不再调度，{@code evaluateJavascript} 的回调永远不来 —— 表现就是每次刷新都
+     * 「真页在、但读不到数据」。只认结构信号，不做 JS 探测，find 里可以随便调。
+     */
+    static boolean alive(Object view) {
+        if (view == null) {
+            return false;
+        }
+        Activity act = activityOf(view);
+        if (act == null || act.isFinishing()) {
+            return false;
+        }
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.JELLY_BEAN_MR1
+                && act.isDestroyed()) {
+            return false;
+        }
+        return true;
+    }
+
+    /** 把某个 WebView 从登记表里摘掉（关页/探活失败时调用，别留僵尸）。 */
+    static void forget(Object view) {
+        if (view == null) {
+            return;
+        }
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                if (VIEWS[i] == view) {
+                    VIEWS[i] = null;
+                    URLS[i] = null;
+                    AT[i] = 0L;
+                }
+            }
+        }
+    }
+
+    /**
+     * 结构上活着，但 JS 还响应吗。
+     *
+     * <p>兜住「Activity 还在、WebView 已 detach」这类结构信号看不出来的情况。
+     * 只给 {@link #open} 的复用分支用 —— 那里已经有 20 多秒预算，多花 0.9 秒换
+     * 「不会拿着死页面白等 18 秒」很值。
+     */
+    private static boolean responsive(Object view) {
+        if (!alive(view)) {
+            return false;
+        }
+        WebPage page = WebPage.attachReal(view, null);
+        if (page == null) {
+            return false;
+        }
+        try {
+            String r = page.eval("(function(){try{return 'ok'}catch(e){return ''}})()", 900L);
+            return r != null && !r.isEmpty() && !"null".equals(r);
+        } catch (Throwable e) {
+            return false;
+        }
     }
 
     static String describe() {
@@ -473,6 +546,9 @@ final class RealPage {
             sessionView = null;
             sessionUrl = "";
         }
+        // v4.2.1：关页的同时从登记表摘掉。以前只删 OWNED 不删 VIEWS，下一个刷新
+        // 还会 find 到这个已经 finish 的页面，loadUrl 能改地址、JS 不执行。
+        forget(view);
         synchronized (OWNED) {
             for (int i = 0; i < OWNED.size(); i++) {
                 if (OWNED.get(i) == view) {
@@ -705,6 +781,16 @@ final class RealPage {
         String match = key == null || key.isEmpty() ? pathKey(url) : key;
 
         Object view = find(match, TTL_MS);
+        // v4.2.1：登记表里命中不等于能用。这里再做一次 JS 探活 —— 结构信号看不出的
+        // 「WebView 已 detach」也能拦住，免得拿着死页面把 20 秒预算耗光。
+        if (view != null && !responsive(view)) {
+            HookLog.log("PAGE", "登记的真页已失联 · 丢掉重开",
+                    "目标: " + shortUrl(url) + "\n"
+                            + "现象: 登记表里有这一页，但 JS 已经不响应了（通常是上一轮自己关掉的页面）。\n"
+                            + "做法: 摘掉这条登记，重新用 App 容器打开一页。");
+            forget(view);
+            view = null;
+        }
         boolean reused = view != null;
 
         if (view == null) {

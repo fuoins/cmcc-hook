@@ -73,7 +73,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "grab6-20261111";
+    static final String BUILD = "real8-20261111";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -96,6 +96,13 @@ final class FlowTask {
     private static volatile Object realView;
     private static volatile String realUrl;
     private static volatile long realAt;
+    /**
+     * 上一条真页轮询是不是「一次都没回调」。
+     *
+     * <p>v4.2.1：区分两种空手而归 —— 「页面活着但 Vuex 还没就绪」（state=loading，值得等/重载）
+     * 和「页面已经不响应」（零回调，多半是 WebView 被关掉或 detach，再等也没用，必须重开）。
+     */
+    private static volatile boolean realUnresponsive;
 
     /**
      * 离屏任务进行中的截止时间。期间 {@link #noteReal} 一律丢弃 —— 那时候页面回调里
@@ -107,8 +114,14 @@ final class FlowTask {
     private static final long TREE_DEADLINE_MS = 18_000L;
     private static final long TREE_POLL_MS = 1_000L;
 
-    /** 页面加载 + 缓存就绪的最长等待。缓存通常秒读，留足余量给页面自己刷新。 */
-    private static final long DEADLINE_MS = 30_000L;
+    /**
+     * 首页缓存兜底的等待上限。
+     *
+     * <p>v4.2.1：原来是 30 秒轮询 + 12 秒建页，11-11 09:53 那次实测整段花了 <b>91 秒</b>
+     * （离屏 WebView 建页时卡住），用户看着就是「刷新卡死」。现在整段封顶 15 秒，
+     * 到点没读到就如实报错，别让人干等。
+     */
+    private static final long DEADLINE_MS = 15_000L;
     private static final long POLL_GAP_MS = 1_200L;
 
     /**
@@ -384,9 +397,26 @@ final class FlowTask {
             if (live != null && countItems(live) > 0) {
                 return live;
             }
+            // v4.2.1：页面一次回调都没有，说明这个 WebView 已经不响应了（上一轮关掉的
+            // 页面还留在登记表里，loadUrl 能改地址、JS 不执行）。关掉重开一页，别把
+            // 20 秒预算和后面 91 秒的首页缓存都浪费在这条死路上。
+            if (realUnresponsive) {
+                HookLog.progress("flow", "· 真页没响应，关掉重开一页…");
+                diary.append("真页零回调 → 判定页面已失联，关掉重开一页\n");
+                closeOpened(diary);
+                if (openRealPage(diary)) {
+                    live = readLive(diary);
+                    if (live != null && countItems(live) > 0) {
+                        return live;
+                    }
+                }
+            }
         }
-        HookLog.progress("flow", "· 真页没读到，改用离线页兜底…");
-        return readOffscreen(diary);
+        // v4.2.1：离屏那条路从 11-10 起实测零请求（两次都是停在 loading），纯浪费
+        // 33 秒，按用户要求取消，直接交给首页缓存兜底。
+        HookLog.progress("flow", "· 真页没读到，改读首页缓存…");
+        diary.append("真页这条路没拿到全量树（离屏读取已取消：实测拿不到数据）\n");
+        return null;
     }
 
     /** 用 App 自己的 H5 容器打开余量页，并登记给 readLive。跑完由 closeOpened 关掉。 */
@@ -478,6 +508,7 @@ final class FlowTask {
     private static JSONObject readLive(StringBuilder diary) {
         Object view = null;
         String url = null;
+        realUnresponsive = false;
         try {
             Object found = RealPage.find("marginQuery", REAL_TTL_MS);
             if (found != null) {
@@ -511,8 +542,19 @@ final class FlowTask {
             }
             // 20 秒上限：单次 eval 自己就吃 3 秒，预算不够会出现「轮询 2 轮就判死」。
             JSONObject o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "真页");
+            realUnresponsive = o == null;
             if (o != null && countItems(o) > 0) {
                 diary.append("真页直读成功，未新建任何 WebView\n");
+            }
+            if (o == null) {
+                // 一次回调都没有 = 这个 WebView 已经不执行 JS 了，留着它下一轮还会命中。
+                diary.append("真页: 零回调 · 从登记表摘掉\n");
+                RealPage.forget(view);
+                if (realView == view) {
+                    realView = null;
+                    realUrl = null;
+                    realAt = 0L;
+                }
             }
             return o;
         } catch (Throwable t) {
@@ -597,6 +639,7 @@ final class FlowTask {
         long end = System.currentTimeMillis() + deadlineMs;
         JSONObject last = null;
         int rounds = 0;
+        int silent = 0;
         String lastState = "";
         long lastReportAt = -2_000L;
         while (System.currentTimeMillis() < end) {
@@ -609,6 +652,7 @@ final class FlowTask {
                         .append(e).append('\n');
             }
             if (raw != null && raw.startsWith("{")) {
+                silent = 0;
                 try {
                     JSONObject o = new JSONObject(raw);
                     last = o;
@@ -622,6 +666,15 @@ final class FlowTask {
                         break;
                     }
                 } catch (Throwable ignored) {
+                }
+            } else {
+                // v4.2.1：连续 3 轮一次都不回 = 页面已经不执行 JS 了。以前会把这 18 秒
+                // 预算全烧光，再花 33 秒试离屏、91 秒试首页缓存 —— 全是白等。
+                silent++;
+                if (silent >= 3) {
+                    diary.append(who).append(": 连续 ").append(silent)
+                            .append(" 轮零回调 · 提前收工（页面已不响应）\n");
+                    break;
                 }
             }
             // v4.2.0：等的时候把真实进度写到屏幕上，用户不必猜「是不是卡死了」。
@@ -692,7 +745,10 @@ final class FlowTask {
 
             // 每次查询都重建离屏页，避免复用上一次已切走/已销毁的页面。
             OffscreenWeb.close();
-            wv = OffscreenWeb.open(ENTRY_URL, 12_000L);
+            long openStart = System.currentTimeMillis();
+            wv = OffscreenWeb.open(ENTRY_URL, 8_000L);
+            // v4.2.1：单独记一笔建页耗时 —— 09:53 那次「91 秒」就是这一步卡住的。
+            diary.append("建页耗时: ").append(System.currentTimeMillis() - openStart).append("ms\n");
             if (wv == null) {
                 diary.append("结果: 无法创建离屏 WebView（App 未运行或 WebView 内核不可用）。\n");
                 send(error("无法创建离屏 WebView（请先打开一次中国移动 App）", diary));
@@ -704,7 +760,8 @@ final class FlowTask {
             String lastRaw = "";
             String lastNote = "";
             int rounds = 0;
-            long deadline = System.currentTimeMillis() + DEADLINE_MS;
+            long deadline = Math.min(System.currentTimeMillis() + DEADLINE_MS,
+                    start + DEADLINE_MS + 6_000L);
             while (System.currentTimeMillis() < deadline) {
                 try {
                     Thread.sleep(POLL_GAP_MS);
@@ -758,7 +815,7 @@ final class FlowTask {
             if (result == null) {
                 result = new JSONObject();
                 result.put("state", "error");
-                result.put("error", "30 秒内没读到首页余量缓存"
+                result.put("error", "15 秒内没读到首页余量缓存"
                         + (lastNote.isEmpty() ? "" : "：" + lastNote));
             }
             result.put("at", System.currentTimeMillis());
