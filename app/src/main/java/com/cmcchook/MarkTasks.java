@@ -164,7 +164,7 @@ final class MarkTasks {
         }
         WebPage.sleep(3_000L);
 
-        int left = todoCount(page);
+        int left = waitTodo(page, 3);
         if (left < 0) {
             d.append("页面上找不到「功能体验区」（可能还在加载），跳过\n");
             return out(detail, d, 0);
@@ -219,7 +219,7 @@ final class MarkTasks {
                 break;
             }
             WebPage.sleep(3_000L);
-            int now = todoCount(page);
+            int now = waitTodo(page, 3);
             if (now >= 0 && now < left) {
                 done++;
                 skip = 0;
@@ -270,6 +270,26 @@ final class MarkTasks {
         } catch (Throwable e) {
             return -1;
         }
+    }
+
+    /**
+     * 带重试地读待做数。
+     *
+     * <p>任务页是 uni-app 单页，navigate 到 hash 路由后要等它把列表画出来；
+     * 首屏慢的时候第一次 eval 只能拿到壳，直接判「找不到功能体验区」就会白跳过。
+     * 这里最多试 {@code tries} 次、每次隔 2.5 秒。
+     */
+    private static int waitTodo(WebPage page, int tries) {
+        for (int i = 0; i < Math.max(1, tries); i++) {
+            int v = todoCount(page);
+            if (v >= 0) {
+                return v;
+            }
+            if (i + 1 < tries) {
+                WebPage.sleep(2_500L);
+            }
+        }
+        return -1;
     }
 
     private static String shortUrl(String url) {
@@ -333,7 +353,7 @@ final class MarkTasks {
               return null;
             }
             function isPay(card){
-              return /充值|给自己充|充10元/.test(T(card));
+              return /给自己充|充10元/.test(T(card));
             }
             function cardOf(btn){
               var p=btn;
