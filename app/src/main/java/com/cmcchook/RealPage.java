@@ -107,6 +107,13 @@ final class RealPage {
         if (url == null) {
             return "";
         }
+        // 鹅蛋的卡片短链：打开的是 rr.ln139.cn 的 ssoJump，1 秒后 302 到
+        // lyh.lncmcc.com/lyhVue/index.html#/bgIndex?actNo=goose2025&pc=…
+        // 跨域跳转后地址与入口完全不同，按入口算 key 会一直等不到页面。
+        // 这里直接按落地页算，await 才能命中。
+        if (url.contains("ssoJump.html") && url.contains("dwzCode=0AnebE")) {
+            return "https://lyh.lncmcc.com/lyhVue/index.html";
+        }
         String base = url;
         String hash = "";
         int h = base.indexOf('#');

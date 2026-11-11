@@ -173,21 +173,12 @@ final class GooseTask {
      * taskIndex 等十个接口发齐。差别只在 pc/pk，所以这里必须走短链换票。
      */
     static String entryUrl() {
-        Context ctx = HookLog.context();
-        if (ctx == null) {
-            return SHORT_LINK;
-        }
-        try {
-            SharedPreferences p = AccountScope.prefs(ctx, PREFS);
-            String url = p.getString(KEY_ENTRY, "");
-            long at = p.getLong(KEY_ENTRY_AT, 0L);
-            if (url.isEmpty() || System.currentTimeMillis() - at > ENTRY_TTL) {
-                return SHORT_LINK;
-            }
-            return url;
-        } catch (Throwable e) {
-            return SHORT_LINK;
-        }
+        // 不再优先用缓存：11-11 12:02 手动进页面拿到的 pc/pk 地址，12:27 再用时
+        // 页面已经把用户识别成游客（nav3004/0/…、rrlogin/0/…，Cookie 里
+        // cmccssotoken 为空），raiseGoose/index 连发 12 次全是密文。
+        // pc/pk 是短时效的一次性票据，缓存复用只会把每一轮都浪费在失效地址上。
+        // 现在统一走卡片短链，让门户每次重新签发。
+        return SHORT_LINK;
     }
 
     private static void forgetEntry() {
@@ -209,7 +200,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v3.99 已装载 · 短链换票 + 点卡片做任务",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.00 已装载 · 每次都走短链换票 + 点卡片做任务",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "

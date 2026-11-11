@@ -309,9 +309,8 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnProbeStart).setOnClickListener(v -> startProbe());
         findViewById(R.id.btnProbeExport).setOnClickListener(v -> exportProbe());
 
-        // v4.2.0：删掉首页「快捷操作」（打开移动 / 复制福利链接 / 查看日志）与「抓取步骤」，
-        // 捐赠从「关于」里独立成一栏，id 仍是 btnDonate。
-        findViewById(R.id.btnDonate).setOnClickListener(
+        // v4.2.1：捐赠从首页「关于」区挪到标题栏右上角，所有页面都能点到。
+        findViewById(R.id.btnDonateTop).setOnClickListener(
                 v -> openExternalLink(getString(R.string.about_donate_url)));
         findViewById(R.id.btnGroup).setOnClickListener(
                 v -> openExternalLink(getString(R.string.about_group_url)));
