@@ -73,7 +73,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "v4.10.0-20261111";
+    static final String BUILD = "v4.10.0-r2-20261111";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -307,24 +307,18 @@ final class FlowTask {
         diary.append("build: ").append(BUILD).append('\n');
         diary.append("数据源: 余量查询页 Vuex 全量树（App 官方真页）\n");
         diary.append("入口: ").append(MARGIN_URL).append('\n');
-        diary.append("方式: 和「跑任务」完全同一条路 —— App 不在前台会先自动拉起，"
-                + "用 App 自己的 H5 容器打开余量页，等页面自己把数据请求并解密完，"
-                + "只读 Vuex 里的 planRemianFlowListRes 全量树；"
+        diary.append("方式: v4.10.0-r2 刷新 = 直接新开一屏余量页 —— 不检查/拉起前台、"
+                + "不读也不复用任何已打开页面的页内数据，只用 H5 容器开一屏，"
+                + "等它自己把数据请求并解密完，再读这一屏 Vuex 里的 "
+                + "planRemianFlowListRes 全量树；"
                 + "不发请求、不解密、不拼签名、不自动登录。跑完关掉自己开的页。\n");
 
         JSONObject tree;
-        // v4.2.0：先确认 App 在前台（不在就拉起来），并把每一步写到模块界面。
-        // 用户原话：「刷新你要看移动还在不在前台 没在就拉前台」。
-        if (RealPage.foreground()) {
-            HookLog.progress("flow", "✓ App 已在前台");
-            diary.append("前台: App 已在前台\n");
-        } else {
-            HookLog.progress("flow", "· App 在后台，正在拉到前台…");
-            diary.append("前台: App 在后台 → 自动拉起\n");
-            boolean ok = RealPage.ensureForeground();
-            HookLog.progress("flow", ok ? "✓ 已把 App 拉到前台" : "· App 拉不起来，继续试");
-            diary.append("前台: 拉起").append(ok ? "成功" : "失败").append('\n');
-        }
+        // v4.10.0-r2：删掉「先确认/拉起前台」整段。模块侧已确认「移动开着」才发广播，
+        // 目标进程收到广播就说明它活着；刷新直接用 H5 容器新开一屏，不拉主界面、
+        // 不经过开屏页（用户实证：从模块跳转过去的页面可以正常操作）。
+        HookLog.progress("flow", "· 新开一屏读余量（不拉起主界面）");
+        diary.append("前台: 不检查、不拉起；直接用 H5 容器新开一屏\n");
         RealPage.beginSession();
         try {
             tree = readTree(diary);
@@ -366,84 +360,65 @@ final class FlowTask {
     }
 
     /**
-     * 读全量树，三级顺序（和任务内一致）：
-     * <ol>
-     *   <li>已开着的余量真页，直接读它的 Vuex（最快，零成本）；</li>
-     *   <li>没有就主动用 App 容器打开余量页，再读；</li>
-     *   <li>页面在但树没出来（复用旧页时 Vuex 常已 reset）→ 重载一次再读；</li>
-     * </ol>
-     * 三级都空才退回离屏，离屏再空才用首页 localStorage 的 3 条汇总兜底。
+     * v4.10.0-r2：刷新 = 新开一屏余量页，只读这一屏自己加载出来的数据。
+     *
+     * <p>用户实证「别检查页内数据，有时候检查不到」：旧实现第一级先去读已打开
+     * 页面的 Vuex（{@link #readLive}），而那些页常常 Vuex 已 reset、Activity 已
+     * finish 或 WebView 已 detach，读它纯属碰运气，还白白吃掉十几秒预算。
+     * 现在整条第一级删掉 —— 直接用 {@link RealPage#openFresh} 新开一屏，
+     * 等它自己把数据请求并解密完再读；读不到只重载「这一屏」一次，
+     * 不翻登记表、不复用任何旧页。两次都空才交给首页 localStorage 兜底。
      */
     private static JSONObject readTree(StringBuilder diary) {
-        HookLog.progress("flow", "· 找已打开的余量页…");
-        JSONObject live = readLive(diary);
-        if (live != null && countItems(live) > 0) {
-            return live;
+        HookLog.progress("flow", "· 新开一屏余量页…");
+        WebPage page = openRealPage(diary);
+        if (page == null) {
+            diary.append("新开一屏失败（容器没起来）\n");
+            return null;
         }
-        // v4.0.9：余量页没开着就主动用 App 容器拉起来 —— 所有功能都走真页，
-        // 真页起不来才退回离屏（离屏那条路 18:12 日志里是零请求，只做兜底）。
-        HookLog.progress("flow", "· 打开 App 官方余量页…");
-        if (openRealPage(diary)) {
-            HookLog.progress("flow", "· 等页面请求并解密…");
-            live = readLive(diary);
-            if (live != null && countItems(live) > 0) {
-                return live;
-            }
-            // 11-10 23:32 日志：真页开着、轮询 2 轮就空手而归（单次 eval 超时吃掉
-            // 全部预算）。光等不够，再给它一次干净的加载。
-            HookLog.progress("flow", "· 页面在但没数据，重载一次…");
-            reloadOpened(diary);
-            live = readLive(diary);
-            if (live != null && countItems(live) > 0) {
-                return live;
-            }
-            // v4.2.1：页面一次回调都没有，说明这个 WebView 已经不响应了（上一轮关掉的
-            // 页面还留在登记表里，loadUrl 能改地址、JS 不执行）。关掉重开一页，别把
-            // 20 秒预算和后面 91 秒的首页缓存都浪费在这条死路上。
-            if (realUnresponsive) {
-                HookLog.progress("flow", "· 真页没响应，关掉重开一页…");
-                diary.append("真页零回调 → 判定页面已失联，关掉重开一页\n");
-                closeOpened(diary);
-                if (openRealPage(diary)) {
-                    live = readLive(diary);
-                    if (live != null && countItems(live) > 0) {
-                        return live;
-                    }
-                }
-            }
+        HookLog.progress("flow", "· 等新屏请求并解密…");
+        JSONObject o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "新屏");
+        if (o != null && countItems(o) > 0) {
+            diary.append("新屏直读成功，未读任何旧页\n");
+            return o;
         }
-        // v4.2.1：离屏那条路从 11-10 起实测零请求（两次都是停在 loading），纯浪费
-        // 33 秒，按用户要求取消，直接交给首页缓存兜底。
-        HookLog.progress("flow", "· 真页没读到，改读首页缓存…");
-        diary.append("真页这条路没拿到全量树（离屏读取已取消：实测拿不到数据）\n");
+        // 新屏在、树没出来（页面还在请求）→ 只重载这一屏一次，绝不回头翻旧页。
+        HookLog.progress("flow", "· 新屏没数据，重载一次…");
+        reloadOpened(diary);
+        o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "新屏重载");
+        if (o != null && countItems(o) > 0) {
+            return o;
+        }
+        HookLog.progress("flow", "· 新屏没读到，改读首页缓存…");
+        diary.append("新屏这条路没拿到全量树（不再复用/检查任何已开页面）\n");
         return null;
     }
 
-    /** 用 App 自己的 H5 容器打开余量页，并登记给 readLive。跑完由 closeOpened 关掉。 */
-    private static boolean openRealPage(StringBuilder diary) {
+    /**
+     * v4.10.0-r2：用 {@link RealPage#openFresh} 强制新开一屏余量页，
+     * 返回的 WebPage 直接交给 pollTree 读；raw 记进 openedView 供 closeOpened 收页。
+     */
+    private static WebPage openRealPage(StringBuilder diary) {
         try {
-            String url = realUrl;
-            if (url == null || url.indexOf("marginQuery") < 0
-                    || System.currentTimeMillis() - realAt > REAL_TTL_MS) {
-                url = MARGIN_URL;
-            }
-            diary.append("真页: 主动打开 ").append(shortUrl(url)).append('\n');
-            WebPage page = RealPage.open(url, "marginQuery", 28_000L);
+            // 新开一屏一律用标准地址，不再拿 realUrl（旧页地址）来复用。
+            String url = MARGIN_URL;
+            diary.append("真页: 新开一屏 ").append(shortUrl(url)).append('\n');
+            WebPage page = RealPage.openFresh(url, "marginQuery", 28_000L);
             if (page == null) {
-                diary.append("真页: 拉不起来（App 未运行或容器无响应），转离屏\n");
-                return false;
+                diary.append("真页: 新开一屏失败（容器无响应）\n");
+                return null;
             }
             String href = page.href();
-            diary.append("真页: 已打开 ").append(shortUrl(href))
+            diary.append("真页: 已开 ").append(shortUrl(href))
                     .append(" · ").append(page.kernel()).append('\n');
             Object raw = page.raw();
             openedView = raw;
             openedUrl = href == null || href.isEmpty() ? url : href;
             noteReal(openedUrl, raw);
-            return true;
+            return page;
         } catch (Throwable t) {
             diary.append("真页打开异常: ").append(t).append('\n');
-            return false;
+            return null;
         }
     }
 
@@ -743,10 +718,11 @@ final class FlowTask {
                     + "localStorage 的明文余量缓存；不解密接口、不拼签名、不发业务请求、"
                     + "不需要手动进余量查询/流量页。\n");
 
-            // v4.3.0：这一级也改真页。离屏 WebView 落不进 App 的同源存储上下文，
-            // 之前 91 秒的建页耗时就是它；真页本来就是首页那一份 localStorage。
+            // v4.10.0-r2：首页兜底也新开一屏，和主链路一致 —— 不复用旧页、
+            // 不拉起主界面。离屏 WebView 落不进 App 的同源存储上下文，用真页才读得到
+            // 那一份 localStorage。
             long openStart = System.currentTimeMillis();
-            WebPage homePage = RealPage.open(ENTRY_URL, "home.html", 12_000L);
+            WebPage homePage = RealPage.openFresh(ENTRY_URL, "home.html", 12_000L);
             wv = homePage == null ? null : homePage.raw();
             diary.append("建页耗时: ").append(System.currentTimeMillis() - openStart).append("ms\n");
             if (wv == null) {

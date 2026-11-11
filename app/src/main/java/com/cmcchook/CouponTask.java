@@ -313,13 +313,13 @@ final class CouponTask {
      * 券列表接口、body 长什么样」写进日志 —— 万一仍 0 张，下一份日志能一次定位。
      */
     private static Host openHostForScan() {
-        // v4.0.9：扫描现场 = App 官方「我的卡券」真页。
-        // 离屏页那条路保留成兜底：真页起不来（App 拉不起来 / 容器没响应）时仍可用。
+        // v4.10.0-r2：扫描和流量刷新一样 —— 强制新开一屏卡券页，不复用旧真页、
+        // 不拉起主界面。新页仍会等券列表渲染完再读，不会读到空壳。
         String entry = CouponScene.entryUrl();
         if (entry == null || !entry.contains("mycoupons")) {
             entry = URL;
         }
-        WebPage real = RealPage.open(entry, "mycoupons", 28_000L);
+        WebPage real = RealPage.openFresh(entry, "mycoupons", 28_000L);
         if (real != null) {
             HookLog.log("COUPON", "卡券扫描 · 官方真页",
                     "入口: " + entry

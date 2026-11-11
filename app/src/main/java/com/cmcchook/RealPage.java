@@ -1000,6 +1000,150 @@ final class RealPage {
         return page;
     }
 
+    /**
+     * v4.10.0-r2：刷新专用 —— 强制新开「一屏」真页，绝不复用旧页、不拉起主界面。
+     *
+     * <p>和 {@link #open} 的区别，逐一对应这轮确认的三条要求：
+     * <ul>
+     *   <li><b>别检查页内数据</b>：不查 {@link #VIEWS} 登记表、不看 {@code sessionView}，
+     *       只认本次 {@code openH5} 之后「重新登记过」的那个 WebView。旧页哪怕还开着、
+     *       还停在同一个地址，也不读它的 Vuex / DOM —— 旧页常常已 reset 或失联，
+     *       正是用户说的「有时候检查不到」。</li>
+     *   <li><b>不打开软件 / 不抢前台</b>：不做 {@code ensureForeground()}。模块侧已用
+     *       90 秒心跳确认目标进程在线才发广播，进程活着就够；{@link Html5#open} 直接用
+     *       App 的 H5 容器新开一个 {@code CommonHtml5Activity}，绕开「主界面 + 开屏页」
+     *       那条链路（用户实证：从模块跳转过去的页面可以正常操作）。</li>
+     *   <li><b>新页仍等它自己加载</b>：命中新页后照常 {@code awaitDoc}，等页面把数据
+     *       请求并解密完再交给调用方读，不会读到空壳。</li>
+     * </ul>
+     * 新开的页会 {@link #markOwned}，调用方收尾按既有 {@code closeOpened} 关掉，
+     * 不会在 App 里攒一摞 Activity。
+     */
+    static WebPage openFresh(String url, String key, long timeoutMs) {
+        if (url == null || url.isEmpty()) {
+            return null;
+        }
+        url = preferBetter(url);
+        long deadline = System.currentTimeMillis() + Math.max(8_000L, timeoutMs);
+        String match = key == null || key.isEmpty() ? pathKey(url) : key;
+
+        // 以「发出打开动作的时刻」为界：只认这之后重新登记过的页面。
+        // note() 在每次 loadUrl 时刷新 AT，所以新开的页（无论容器是新建 Activity
+        // 还是复用同一 WebView 重新 loadUrl）都会被认到；没动过的旧页 AT 仍是旧值，
+        // 不会被误当成新页。比「比对旧 view 集合」更稳，也兼容容器复用 WebView。
+        long sinceAt = System.currentTimeMillis();
+        if (!openH5(url)) {
+            HookLog.log("PAGE", "刷新新开一屏失败 · 容器没起来", "目标: " + shortUrl(url));
+            return null;
+        }
+        Object view = awaitFresh(match, deadline, sinceAt);
+        if (view == null) {
+            HookLog.log("PAGE", "刷新新开一屏超时 · 没等到新页面",
+                    "目标: " + shortUrl(url) + "\n已登记的真页:\n" + describe());
+            return null;
+        }
+        markOwned(view);
+        WebPage page = WebPage.attachReal(view, url);
+        if (page == null) {
+            return null;
+        }
+        page.awaitDoc(Math.min(12_000L, Math.max(4_000L, deadline - System.currentTimeMillis())));
+
+        // 下载引导页顶走：和 open() 一样重开一次，仍然只认更新的那一页。
+        String landed = page.href();
+        if (WebViewHooks.isDetourUrl(landed) && !WebViewHooks.isDetourUrl(url)) {
+            HookLog.log("PAGE", "刷新新开一屏被下载引导页顶走 · 重开一次",
+                    "打开: " + shortUrl(url) + "\n实际: " + shortUrl(landed));
+            try {
+                if (isOwned(view)) {
+                    closePage(view);
+                }
+            } catch (Throwable ignored) {
+            }
+            sessionView = null;
+            sessionUrl = null;
+            page = null;
+            long againAt = System.currentTimeMillis();
+            if (openH5(url)) {
+                long again = System.currentTimeMillis() + 15_000L;
+                Object v2 = awaitFresh(match, again, againAt);
+                if (v2 != null) {
+                    markOwned(v2);
+                    view = v2;
+                    page = WebPage.attachReal(view, url);
+                    if (page != null) {
+                        page.awaitDoc(Math.min(12_000L,
+                                Math.max(4_000L, again - System.currentTimeMillis())));
+                    }
+                }
+            }
+            if (page == null) {
+                HookLog.log("PAGE", "刷新重开一屏失败 · 容器没起来", "目标: " + shortUrl(url));
+                return null;
+            }
+            String againHref = page.href();
+            if (WebViewHooks.isDetourUrl(againHref) && !WebViewHooks.isDetourUrl(url)) {
+                HookLog.log("PAGE", "刷新重开后仍是下载引导页 · 放弃这一页",
+                        "目标: " + shortUrl(url) + "\n实际: " + shortUrl(againHref));
+                try {
+                    closePage(view);
+                } catch (Throwable ignored) {
+                }
+                return null;
+            }
+        }
+
+        sessionView = view;
+        sessionUrl = url;
+        HookLog.log("PAGE", "刷新 · 新开一屏 " + shortUrl(url),
+                "页面: " + shortUrl(page.href()) + "\n内核: " + page.kernel()
+                        + "\n方式: 不复用旧页、不拉起主界面，只等这一新屏自己加载完再读。");
+        return page;
+    }
+
+    /** 只等「打开动作之后重新登记过」的真页，旧页一律不认。 */
+    private static Object awaitFresh(String key, long deadline, long sinceAt) {
+        while (System.currentTimeMillis() < deadline) {
+            Object v = findFresh(key, sinceAt);
+            if (v != null) {
+                return v;
+            }
+            sleep(300L);
+        }
+        return findFresh(key, sinceAt);
+    }
+
+    private static Object findFresh(String key, long sinceAt) {
+        long now = System.currentTimeMillis();
+        Object best = null;
+        long bestAt = 0L;
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                Object v = VIEWS[i];
+                if (v == null || URLS[i] == null) {
+                    continue;
+                }
+                // 500ms 容差：给容器启动 / 调度留一点余量。登记时间早于打开动作的
+                // 就是没动过的旧页，跳过 —— 这正是「不检查页内数据」的落点。
+                if (AT[i] < sinceAt - 500L || now - AT[i] > TTL_MS) {
+                    continue;
+                }
+                if (!alive(v)) {
+                    continue;
+                }
+                if (!URLS[i].toLowerCase(java.util.Locale.US).contains(key.toLowerCase(java.util.Locale.US))
+                        && !samePath(URLS[i], key) && !sameBase(URLS[i], key)) {
+                    continue;
+                }
+                if (AT[i] > bestAt) {
+                    bestAt = AT[i];
+                    best = v;
+                }
+            }
+        }
+        return best;
+    }
+
     /** 用 App 自己的 H5 容器打开地址。 */
     private static boolean openH5(String url) {
         try {

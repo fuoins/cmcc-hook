@@ -85,10 +85,11 @@ public final class MainActivity extends AppCompatActivity {
             }
             resendLeft--;
             if ("flow".equals(resendScope) && flowLoading) {
-                sendTaskBroadcast(TaskRunner.CMD_FLOW);
+                // v4.10.0-r2：补发也不许把移动拉到前台，刷新统一「新开一屏」。
+                sendTaskBroadcast(TaskRunner.CMD_FLOW, false);
                 handler.postDelayed(this, 4_000L);
             } else if ("coupon".equals(resendScope)) {
-                sendTaskBroadcast(CouponTask.CMD_SCAN);
+                sendTaskBroadcast(CouponTask.CMD_SCAN, false);
                 handler.postDelayed(this, 4_000L);
             }
         }
@@ -137,6 +138,8 @@ public final class MainActivity extends AppCompatActivity {
      * 再退离屏兜底，50 秒会误报超时 —— 放宽到 120 秒，结果回来会提前收工。
      */
     private static final long FLOW_TIMEOUT_MS = 120_000L;
+    /** v4.10.0-r2：移动没启动时流量/券统一弹这一句，不再替用户拉起 App。 */
+    private static final String NEED_APP_HINT = "请先打开中国移动，建议用小窗运行";
     private TextView pageTitle;
     /** v4.0.9：顶部蓝色品牌区。增强页不需要它，隐藏后内容顶到状态栏下，省一屏空间。 */
     private View appHeader;
@@ -1509,6 +1512,11 @@ public final class MainActivity extends AppCompatActivity {
         if (couponRunning) {
             return;
         }
+        // v4.10.0-r2：移动没开着就别拉起、别发命令，只提示。
+        if (!targetAlive()) {
+            Toast.makeText(this, NEED_APP_HINT, Toast.LENGTH_LONG).show();
+            return;
+        }
         // v3.52：记下起点，扫描结果广播回来时算「扫描耗时」并 Toast 提示。
         CouponStore.markScanStart(this);
         sendCouponCmd(CouponTask.CMD_SCAN, getString(R.string.coupon_scanning));
@@ -1602,24 +1610,20 @@ public final class MainActivity extends AppCompatActivity {
                 getString(R.string.coupon_running, 1, count, "准备中"));
     }
 
+    /**
+     * v4.10.0-r2：券的指令（一键扫描 / 批量使用）都不再替用户拉起中国移动。
+     * 没开着 → 只弹一句提示；开着 → 发命令，目标进程自己新开一屏真页，不抢前台。
+     */
     private void sendCouponCmd(String cmd, String hint) {
-        boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
-        if (alive && sendTaskBroadcast(cmd)) {
+        if (!targetAlive()) {
+            Toast.makeText(this, NEED_APP_HINT, Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (sendTaskBroadcast(cmd, false)) {
             Toast.makeText(this, hint, Toast.LENGTH_SHORT).show();
             return;
         }
-        Intent intent = getPackageManager().getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
-        if (intent == null) {
-            Toast.makeText(this, R.string.status_no_target, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        try {
-            startActivity(intent);
-            Toast.makeText(this, "中国移动没在运行，已拉起，稍后再点一次", Toast.LENGTH_LONG).show();
-        } catch (Throwable e) {
-            Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_SHORT).show();
-        }
+        Toast.makeText(this, R.string.status_no_target, Toast.LENGTH_SHORT).show();
     }
 
     /** 目标进程回传的券进度/结果，LogReceiver 在模块进程主线程转过来。 */
@@ -1725,25 +1729,29 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 点「一键查询」：发 flow 命令让目标进程离屏读首页余量缓存，结果由 FlowWatcher 回来。 */
+    /**
+     * 点「一键查询」：发 flow 命令让目标进程新开一屏余量页读 Vuex，结果由 FlowWatcher 回来。
+     *
+     * <p>v4.10.0-r2：移动没开着就只提示、不拉起、不发命令；开着也不把 App 抢到前台，
+     * 由目标进程用 H5 容器自己新开一屏（绕开开屏广告那一层全屏窗口）。
+     */
     private void flowRefresh() {
         if (flowLoading) {
             Toast.makeText(this, "正在读取，稍候…", Toast.LENGTH_SHORT).show();
             return;
         }
-        // v4.2.0：去掉「90 秒内有心跳才允许刷新」这道闸 —— 用户反馈切过去有时根本不拉，
-        // 就是 App 刚被系统冻结、心跳过期被静默跳过。现在照发，目标进程收到就会自己
-        // 把 App 拉到前台；连发 3 次仍无进度，才提示先打开一次 App。
+        if (!targetAlive()) {
+            Toast.makeText(this, NEED_APP_HINT, Toast.LENGTH_LONG).show();
+            return;
+        }
         flowAutoAt = System.currentTimeMillis();
         flowLoading = true;
-        // v4.0.9：余量也在 App 官方余量页里读，先把 App 切到前台。
-        bringTargetToFront();
         if (flowNotify != null) {
             flowNotify.setText(R.string.flow_refreshing);
         }
         handler.removeCallbacks(flowTimeout);
         handler.postDelayed(flowTimeout, FLOW_TIMEOUT_MS);
-        if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+        if (!sendTaskBroadcast(TaskRunner.CMD_FLOW, false)) {
             handler.removeCallbacks(flowTimeout);
             flowLoading = false;
             if (flowNotify != null) {
@@ -1755,24 +1763,28 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * v4.0.2 进「增强·流量」页自动一键查询（静默）：这是「一键查询、离屏、不用手动
-     * 点进流量页」的关键。满足下列任一条件就跳过，避免每次切页都重开离屏 WebView：
+     * v4.0.2 进「增强·流量」页自动一键查询（静默）。满足下列任一条件就跳过：
      * <ul>
-     *   <li>正在查询中 / 目标进程没在线（广播没人收，白跑一趟）；</li>
+     *   <li>正在查询中 / 目标进程没在线（v4.10.0-r2 起用 {@link #targetAlive()} 判断，
+     *       移动没开着就静默跳过，不弹 Toast、不拉起 App）；</li>
      *   <li>距上次自动查询不到 {@link #FLOW_AUTO_GAP_MS}（节流防抖）；</li>
      *   <li>本地缓存是 {@code ready}、有数据、且在 {@link #FLOW_FRESH_MS} 内（直接用缓存）。</li>
      * </ul>
-     * 静默模式不弹 Toast、不改状态行为「请先打开 App」—— 用户没主动触发时不打扰。
+     * 刷新一律走「目标进程新开一屏余量页」，不复用、不检查已开页面的页内数据。
      */
     private void maybeAutoFlow() {
         if (flowLoading || !flowTab || pageFlow == null || tab != TAB_COUPON) {
+            return;
+        }
+        // v4.10.0-r2：用户没主动触发，移动没开着就静默跳过，别弹 Toast 打扰。
+        if (!targetAlive()) {
             return;
         }
         long now = System.currentTimeMillis();
         if (now - flowAutoAt < FLOW_AUTO_GAP_MS) {
             return;
         }
-        // 已有新鲜、成功的缓存就直接展示，不重复离屏读。
+        // 已有新鲜、成功的缓存就直接展示，不重复读。
         try {
             String cached = FlowStore.json(this);
             if (!cached.isEmpty()) {
@@ -1788,13 +1800,12 @@ public final class MainActivity extends AppCompatActivity {
         }
         flowAutoAt = now;
         flowLoading = true;
-        bringTargetToFront();
         if (flowNotify != null) {
             flowNotify.setText(R.string.flow_refreshing);
         }
         handler.removeCallbacks(flowTimeout);
         handler.postDelayed(flowTimeout, FLOW_TIMEOUT_MS);
-        if (sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+        if (sendTaskBroadcast(TaskRunner.CMD_FLOW, false)) {
             scheduleResend("flow", 1);
         } else {
             handler.removeCallbacks(flowTimeout);
@@ -1808,9 +1819,15 @@ public final class MainActivity extends AppCompatActivity {
      *
      * <p>和 {@link #maybeAutoFlow()} 一个思路：正在跑 / 目标不在线 / 60 秒内刷过 /
      * 本地清单还新鲜 —— 任一命中就跳过，别每切一次页就重读一遍。
+     * v4.10.0-r2：目标不在线改由 {@link #targetAlive()} 判断，静默跳过、不拉起 App；
+     * 刷新一律新开一屏卡券页，不复用、不检查已开页面的页内数据。
      */
     private void maybeAutoCoupon() {
         if (couponRunning || flowTab || tab != TAB_COUPON) {
+            return;
+        }
+        // v4.10.0-r2：用户没主动触发，移动没开着就静默跳过，别弹 Toast 打扰。
+        if (!targetAlive()) {
             return;
         }
         long now = System.currentTimeMillis();
@@ -1827,7 +1844,7 @@ public final class MainActivity extends AppCompatActivity {
             couponAt.setText(R.string.coupon_scanning);
         }
         // 静默：不发 Toast；广播没人接就补发一次（App 刚冻结时第一条常丢）。
-        if (sendTaskBroadcast(CouponTask.CMD_SCAN)) {
+        if (sendTaskBroadcast(CouponTask.CMD_SCAN, false)) {
             scheduleResend("coupon", 1);
         }
     }
@@ -2029,11 +2046,30 @@ public final class MainActivity extends AppCompatActivity {
         launchTarget(cmd, label);
     }
 
+    /** 目标 App 是否开着（90 秒内有心跳）。流量/券刷新统一用它决定「发不发命令」。 */
+    private boolean targetAlive() {
+        return System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
+    }
+
+    /**
+     * 下指令（其它任务命令：一键全部 / 鹅蛋 / 活动…）。保持原样：先把中国移动切到前台，
+     * 用户看得到执行过程，再发广播。
+     */
     private boolean sendTaskBroadcast(String cmd) {
+        return sendTaskBroadcast(cmd, true);
+    }
+
+    /**
+     * v4.10.0-r2：流量/券刷新传 {@code bringToFront=false} —— 移动已经开着就够了，
+     * 别把它的主界面抢到前台（也不再经过开屏广告那一层）。目标进程收到命令后自己
+     * 用 H5 容器新开一屏真页读数据。
+     */
+    private boolean sendTaskBroadcast(String cmd, boolean bringToFront) {
         try {
-            // v4.0.9：所有执行都改在 App 官方真页里跑，先把中国移动切到前台。
-            // 模块界面此刻在前台，这里 startActivity 不受后台启动限制。
-            bringTargetToFront();
+            if (bringToFront) {
+                // 模块界面此刻在前台，这里 startActivity 不受后台启动限制。
+                bringTargetToFront();
+            }
             Intent intent = new Intent(TaskReceiver.ACTION_RUN);
             intent.setPackage(AppPrefs.TARGET_PACKAGE);
             intent.putExtra("cmd", cmd);
@@ -2045,10 +2081,11 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * v4.0.9：把中国移动切到前台。
+     * v4.0.9：把中国移动切到前台（仅「跑任务」类命令用）。
      *
-     * <p>所有功能都改成在 App 官方真页里执行，页面必须在前面，用户才看得到执行过程，
-     * 容器也才会正常初始化。App 已在前台时这次调用只是把它的任务栈提到最前，无副作用。
+     * <p>v4.10.0-r2：流量/券刷新不再调这里 —— 它们只发广播、由目标进程新开一屏，
+     * 不把主界面抢到前台。这里保留给一键全部 / 鹅蛋等需要用户看到执行过程的命令。
+     * App 已在前台时这次调用只是把它的任务栈提到最前，无副作用。
      */
     private void bringTargetToFront() {
         try {
