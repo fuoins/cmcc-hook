@@ -113,8 +113,8 @@ jobs:
             由 GitHub Actions 自动构建（`assembleRelease`），非本地手工编译产物。
 
             - 签名沿用仓库内固定 keystore，与 v3.98 起各版一致，可直接覆盖安装。
-            - 覆盖安装后请重启手机；LSPosed 作用域**至少勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。v4.0.1 起验证码在中国移动 App 主进程里读，不需要额外勾「电话服务」。
-            - 小米 / HyperOS 读不到验证码时：关闭系统「验证码安全保护」、给中国移动放行「通知类短信」；仍不行再补勾「电话服务 `com.android.phone`」（系统应用，先打开「显示系统应用」）并重启手机作为兜底。旧的 `com.xiaomi.phone` 包不存在，v4.0.4 已移除。
+            - 覆盖安装后请重启手机；LSPosed 作用域**至少勾选「中国移动」**（`com.greenpoint.android.mc10086.activity`）。
+            - 小米 / HyperOS 读不到验证码：v4.10.0 已按 XposedSmsCode 官方作用域补回 `com.xiaomi.phone`。请在 LSPosed → 本模块 → 作用域里，除「中国移动」外勾选「电话服务」`com.android.phone` 与小米的 `com.xiaomi.phone`（均为系统应用，先在 LSPosed 打开「显示系统应用」），建议连 `com.android.providers.telephony`、`com.android.mms` 一起勾，然后**重启手机**。同时仍需在系统设置里关闭「验证码安全保护」、给中国移动放行「通知类短信」。v4.0.4 曾把 `com.xiaomi.phone` 误判为不存在的包删掉，本版已纠正。
             - 完整安装与排障步骤见 [README「安装与启用」](https://github.com/fuoins/cmcc-hook#安装与启用)。
           files: out/*.apk
           generate_release_notes: true
