@@ -307,7 +307,10 @@ public final class MainActivity extends AppCompatActivity {
         grabStatus = findViewById(R.id.grabStatus);
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
-        findViewById(R.id.btnWelfareRefresh).setOnClickListener(v -> refreshWelfare());
+        // v4.10.0-r2：福利页顶部改成「立即全部跑一次」；原来的「刷新（重读清单）」
+        // 按用户要求删掉，CMD_WELFARE 命令本身保留，供探路 / 采集自己用。
+        findViewById(R.id.btnWelfareRunAll).setOnClickListener(
+                v -> runTask(TaskRunner.CMD_ALL, "过任务"));
         probeSummary = findViewById(R.id.probeSummary);
         findViewById(R.id.btnProbeStart).setOnClickListener(v -> startProbe());
         findViewById(R.id.btnProbeExport).setOnClickListener(v -> exportProbe());
@@ -398,8 +401,7 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchAdBlock, AppPrefs.KEY_AD_BLOCK);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
         bindSwitch(R.id.switchKeepAlive, AppPrefs.KEY_KEEPALIVE);
-        findViewById(R.id.btnRunAll).setOnClickListener(
-                v -> runTask(TaskRunner.CMD_ALL, "过任务"));
+        // v4.10.0-r2：「立即全部跑一次」已挪到福利中心顶部，功能页不再有这个按钮。
 
         // 每次进界面都按当前开关重排一次，版本升级 / 清数据后也能自动恢复。
         TaskAlarm.sync(this);
@@ -818,7 +820,16 @@ public final class MainActivity extends AppCompatActivity {
             });
         }
 
-        row.setOnClickListener(v -> showWelfareActions(item));
+        // v4.10.0-r2：点活动行只做一件事 —— 执行这个活动的任务（用户要求
+        // 「每个活动点击只保留执行任务」）。没有引擎的活动没有任务可跑，
+        // 才退回原来的菜单（打开页面 / 采集 / 导出）。
+        row.setOnClickListener(v -> {
+            if (WelfareCatalog.runnable(item)) {
+                runOneAct(item);
+                return;
+            }
+            showWelfareActions(item);
+        });
         return row;
     }
 
@@ -1171,26 +1182,11 @@ public final class MainActivity extends AppCompatActivity {
         Toast.makeText(this, "已进入抢券页，正在等待开抢", Toast.LENGTH_SHORT).show();
     }
 
-    private void refreshWelfare() {
-        AppPrefs.triggerTask(this, TaskRunner.CMD_WELFARE);
-        boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
-        if (alive && sendTaskBroadcast(TaskRunner.CMD_WELFARE)) {
-            Toast.makeText(this, R.string.welfare_refresh_sent, Toast.LENGTH_LONG).show();
-            return;
-        }
-        Intent intent = getPackageManager().getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
-        if (intent == null) {
-            Toast.makeText(this, R.string.status_no_target, Toast.LENGTH_LONG).show();
-            return;
-        }
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
-        try {
-            startActivity(intent);
-            Toast.makeText(this, R.string.welfare_refresh_need_app, Toast.LENGTH_LONG).show();
-        } catch (Throwable e) {
-            Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_LONG).show();
-        }
-    }
+    /**
+     * v4.10.0-r2：福利页的「刷新（重读本机清单）」入口已按用户要求删除。
+     * 需要重新盘点时走下面的「扫描福利专区」（{@link #startProbe()}），
+     * 那条链路会真正进活动页采集，比只读本机清单有用。
+     */
 
     /**
      * 探路：跟刷新清单走同一条通道，但目标进程会用离屏 WebView 真的把页面走一遍。

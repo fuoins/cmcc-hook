@@ -171,23 +171,8 @@
                     android:checked="true" />
             </LinearLayout>
 
-            <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnRunAll"
-                android:layout_width="match_parent"
-                android:layout_height="44dp"
-                android:layout_marginStart="16dp"
-                android:layout_marginTop="4dp"
-                android:layout_marginEnd="16dp"
-                android:layout_marginBottom="14dp"
-                android:insetTop="0dp"
-                android:insetBottom="0dp"
-                android:text="@string/btn_all"
-                android:textAllCaps="false"
-                android:textColor="@color/on_primary"
-                android:textSize="14sp"
-                app:backgroundTint="@color/primary"
-                app:cornerRadius="999dp"
-                app:elevation="0dp" />
+            <!-- v4.10.0-r2：「立即全部跑一次」已挪到福利中心顶部，
+                 这里不再重复放一个同样的按钮。 -->
         </LinearLayout>
 
 

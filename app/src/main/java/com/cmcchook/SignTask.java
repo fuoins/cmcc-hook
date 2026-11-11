@@ -100,7 +100,7 @@ final class SignTask {
             "{\"log\":\"▶ 连续月签\"},",
             "{\"call\":{\"fn\":\"sign:monthPrizes\",\"args\":[\"{status.data.userinfo.phone}\",\"{referer}\"],\"out\":\"mp\"}},",
             "{\"log\":\"月签: {mp}\"},",
-            "{\"log\":\"▶ 任务编排 · 接口直发\"},",
+            "{\"log\":\"▶ 任务编排 · 补领与统计\"},",
             "{\"call\":{\"fn\":\"sign:markTasks\",\"args\":[\"{referer}\"],\"out\":\"mt\"}},",
             "{\"result\":{\"kind\":\"ok\",\"text\":\"签到任务完成\"}}",
             "]}"
@@ -130,7 +130,27 @@ final class SignTask {
         detail.append("会话地址: ").append(referer).append('\n');
         detail.append("Cookie: ").append(CookieStore.summary()).append('\n');
         CookieStore.flushToWebView();
-        return ScriptEngine.run(SCRIPT, "签到有礼", referer, detail);
+        TaskRunner.Result base = ScriptEngine.run(SCRIPT, "签到有礼", referer, detail);
+
+        // v4.10.0-r2：签到、补领都走完之后，在同一个签到真页里把「功能体验区」
+        // 的浏览任务逐个点掉 —— 点「去完成」→ 跳落地页 → 停留 5 秒 → 回来复查。
+        // 不做接口直发、不开离屏：用户实证这些任务服务端按真实落地页停留记账。
+        int liveDone = MarkTasks.runLiveTasks(WebSession.current(), referer, detail);
+        if (liveDone <= 0) {
+            return base;
+        }
+        String summary = base.summary + " · 功能体验区 " + liveDone + " 个";
+        String body = detail.toString();
+        if (base.ok && !base.idle) {
+            return TaskRunner.Result.ok(summary, body, summary);
+        }
+        if (base.ok) {
+            return TaskRunner.Result.idle(summary, body, summary);
+        }
+        if (base.skip) {
+            return TaskRunner.Result.skip(summary, body, base.userText);
+        }
+        return TaskRunner.Result.fail(summary, body, base.userText);
     }
 
     // ------------------------------------------------------------ 12 点秒杀

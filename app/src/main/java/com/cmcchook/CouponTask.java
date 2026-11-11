@@ -315,6 +315,13 @@ final class CouponTask {
     private static Host openHostForScan() {
         // v4.10.0-r2：扫描和流量刷新一样 —— 强制新开一屏卡券页，不复用旧真页、
         // 不拉起主界面。新页仍会等券列表渲染完再读，不会读到空壳。
+        //
+        // v4.10.0-r3：先关掉上一轮自己开的卡券页。21:01 反馈「第一次能扫、后续
+        // 刷新不行且没有新页」—— App 的 H5 容器看到同一个 mycoupons 地址会直接
+        // 复用已有页面、不再 loadUrl，note() 不刷新登记时间，openFresh 的
+        // 「只认打开动作之后登记的页」就等不到新页，超时返回 null。
+        // 关掉旧页后容器只能新建，每次刷新都能看到一张全新的卡券中心页。
+        RealPage.closeOwned();
         String entry = CouponScene.entryUrl();
         if (entry == null || !entry.contains("mycoupons")) {
             entry = URL;

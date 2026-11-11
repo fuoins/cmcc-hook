@@ -1027,6 +1027,13 @@ final class RealPage {
         long deadline = System.currentTimeMillis() + Math.max(8_000L, timeoutMs);
         String match = key == null || key.isEmpty() ? pathKey(url) : key;
 
+        // v4.10.0-r3：先把「同一个地址」的旧真页关掉。
+        // 21:01 反馈「优惠券第一次能扫、后续刷新不行，也没有新卡券中心页」：
+        // App 的 H5 容器看到同一个 mycoupons 地址会直接复用已有页面、不再 loadUrl，
+        // note() 不刷新登记时间，下面「只认打开动作之后登记的页」就永远等不到新页，
+        // 超时返回 null —— 既不扫描，也不出现新屏。关掉旧页后容器只能新建。
+        closeOwnedKey(match);
+
         // 以「发出打开动作的时刻」为界：只认这之后重新登记过的页面。
         // note() 在每次 loadUrl 时刷新 AT，所以新开的页（无论容器是新建 Activity
         // 还是复用同一 WebView 重新 loadUrl）都会被认到；没动过的旧页 AT 仍是旧值，
@@ -1099,6 +1106,50 @@ final class RealPage {
                 "页面: " + shortUrl(page.href()) + "\n内核: " + page.kernel()
                         + "\n方式: 不复用旧页、不拉起主界面，只等这一新屏自己加载完再读。");
         return page;
+    }
+
+    /**
+     * 关掉「同一个地址」的自己开过的真页。
+     *
+     * <p>只在 {@link #openFresh} 里调用：不关别人的页、不动模块界面，
+     * 目的是让 App 的 H5 容器没有可复用的旧页，只能真的新建一个。
+     */
+    private static void closeOwnedKey(String key) {
+        if (key == null || key.isEmpty()) {
+            return;
+        }
+        String want = key.toLowerCase(java.util.Locale.US);
+        java.util.List<Object> hit = new java.util.ArrayList<>();
+        synchronized (VIEWS) {
+            for (int i = 0; i < SLOTS; i++) {
+                Object v = VIEWS[i];
+                if (v == null || URLS[i] == null || !isOwned(v)) {
+                    continue;
+                }
+                String u = URLS[i].toLowerCase(java.util.Locale.US);
+                if (!u.contains(want) && !samePath(URLS[i], key) && !sameBase(URLS[i], key)) {
+                    continue;
+                }
+                if (!hit.contains(v)) {
+                    hit.add(v);
+                }
+            }
+        }
+        for (int i = 0; i < hit.size(); i++) {
+            Object v = hit.get(i);
+            try {
+                closePage(v);
+            } catch (Throwable ignored) {
+            }
+            forget(v);
+        }
+        if (!hit.isEmpty()) {
+            if (sessionView != null && hit.contains(sessionView)) {
+                sessionView = null;
+                sessionUrl = "";
+            }
+            HookLog.logcat("closed " + hit.size() + " stale page(s) for " + key);
+        }
     }
 
     /** 只等「打开动作之后重新登记过」的真页，旧页一律不认。 */

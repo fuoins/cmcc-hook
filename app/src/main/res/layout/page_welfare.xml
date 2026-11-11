@@ -22,7 +22,7 @@
             android:text="@string/welfare_title" />
 
         <!-- v4.2.0：删掉与下面列表重复的「全部活动 / 共 N 项」大卡，
-             只留一行摘要 + 刷新按钮，把空间让给活动列表和抢券板块。 -->
+             只留一行摘要 + 一键全跑，把空间让给活动列表和抢券板块。 -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
@@ -53,13 +53,15 @@
                     android:text="@string/welfare_never" />
             </LinearLayout>
 
+            <!-- v4.10.0-r2：这里原来放「刷新」（重读本机清单）。按用户要求删掉，
+                 换成「立即全部跑一次」—— 一键全跑从「功能」页挪到福利页顶部。 -->
             <com.google.android.material.button.MaterialButton
-                android:id="@+id/btnWelfareRefresh"
+                android:id="@+id/btnWelfareRunAll"
                 android:layout_width="wrap_content"
                 android:layout_height="38dp"
                 android:insetTop="0dp"
                 android:insetBottom="0dp"
-                android:text="@string/welfare_refresh"
+                android:text="@string/btn_all"
                 android:textAllCaps="false"
                 android:textColor="@color/on_primary"
                 android:textSize="13sp"
