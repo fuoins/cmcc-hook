@@ -59,6 +59,12 @@ final class CanvasTask {
                     "离屏 WebView 没能加载活动页。重开一次中国移动 App 再试。");
         }
 
+        if (kind == KIND_WEEKLY) {
+            // 周周有好礼的「去逛逛」是实打实的浏览任务：页面点一下会跳到专题页，
+            // 5 秒门槛，服务端按落地页停留计时。11-11 日志实证点「逛19.9元特价专区」
+            // 后 residueLotteryCount 从 2 变 3，所以先做任务再去抽。
+            runWeeklyTasks(page, url, detail);
+        }
         String script = script(kind);
         page.eval(script, 8_000L);
         String raw = null;
@@ -438,6 +444,160 @@ final class CanvasTask {
             Thread.sleep(ms);
         } catch (InterruptedException ignored) {
         }
+    }
+
+    // ------------------------------------------------------- 周周浏览任务
+
+    /** 周周的「去逛逛」停留门槛。用户实测 5 秒就够，多留 1 秒防服务端按整秒截断。 */
+    private static final long WEEKLY_STAY_MS = 6_000L;
+    /** 一轮最多做几个浏览任务。每个约 12 秒（跳 1.5 + 停 6 + 回 4）。 */
+    private static final int WEEKLY_TASK_TRIES = 8;
+
+    /** 数页面上还剩几个「去逛逛」卡片（卡片里带 (0/1)）。-1 = 读不到。 */
+    private static final String WEEKLY_TODO_COUNT = """
+            (function(){
+              try{
+                var all=document.querySelectorAll('div,span,a,button,p'),n=0;
+                for(var i=0;i<all.length;i++){
+                  var t=(all[i].innerText||'').replace(/\\s+/g,'');
+                  if(t!=='去逛逛')continue;
+                  var p=all[i],hit=false;
+                  for(var k=0;k<5&&p;k++){
+                    var pt=(p.innerText||'').replace(/\\s+/g,'');
+                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;break}
+                    p=p.parentElement;
+                  }
+                  if(hit)n++;
+                }
+                return String(n);
+              }catch(e){return '-1'}
+            })()
+            """;
+
+    /**
+     * 点第一个「去逛逛」。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
+     * 卡片标题从按钮向上爬到带 (0/1) 的那层拿。
+     */
+    private static final String WEEKLY_TASK_ONE = """
+            (function(){
+              try{
+                var all=[].slice.call(document.querySelectorAll('div,span,a,button,p')),btn=null;
+                for(var i=0;i<all.length;i++){
+                  var t=(all[i].innerText||'').replace(/\\s+/g,'');
+                  if(t!=='去逛逛')continue;
+                  var p=all[i],hit=false;
+                  for(var k=0;k<5&&p;k++){
+                    var pt=(p.innerText||'').replace(/\\s+/g,'');
+                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;break}
+                    p=p.parentElement;
+                  }
+                  if(hit){btn=all[i];break}
+                }
+                if(!btn)return JSON.stringify({none:1});
+                var card=btn,name='';
+                for(var j=0;j<5&&card;j++){
+                  var ct=(card.innerText||'').replace(/\\s+/g,'');
+                  if(ct.indexOf('(0/')>=0||ct.indexOf('（0/')>=0){name=ct.slice(0,40);break}
+                  card=card.parentElement;
+                }
+                var r=btn.getBoundingClientRect();
+                var x=r.left+r.width/2,y=r.top+r.height/2;
+                try{
+                  var names=['touchstart','touchend','mousedown','mouseup','click'];
+                  for(var m=0;m<names.length;m++){
+                    var ev=document.createEvent('MouseEvents');
+                    ev.initMouseEvent(names[m],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
+                    btn.dispatchEvent(ev);
+                  }
+                }catch(e){}
+                try{if(typeof btn.click==='function')btn.click()}catch(e){}
+                return JSON.stringify({name:name,url:String(location.href)});
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    private static int weeklyTodo(WebPage page) {
+        String v = page.eval(WEEKLY_TODO_COUNT, 6_000L);
+        if (v == null) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
+    /**
+     * 逐个点「去逛逛」：点 → 页面自己跳 → 停留 6 秒（门槛 5 秒）→ 回活动页 → 复查剩余数。
+     *
+     * <p>之前模块只统计待做任务、从不点击，所以「做了几个任务也抽了但没做完」。
+     * 这里也不调组件方法：页面组件叫不出名字，点卡片走的是页面自己的 @click，
+     * 跳转与上报都由它完成。
+     */
+    private static void runWeeklyTasks(WebPage page, String entry, StringBuilder detail) {
+        sleep(1_500L);
+        int left = weeklyTodo(page);
+        if (left == 0) {
+            detail.append("浏览任务: 没有待做（都已完成）\n");
+            return;
+        }
+        if (left < 0) {
+            detail.append("浏览任务: 页面上读不到「去逛逛」卡片，跳过\n");
+            return;
+        }
+        detail.append("浏览任务: 待做 ").append(left)
+                .append(" 个，点「去逛逛」后停留 ").append(WEEKLY_STAY_MS / 1000).append(" 秒\n");
+        int done = 0;
+        for (int i = 0; i < WEEKLY_TASK_TRIES && left > 0; i++) {
+            String raw = page.eval(WEEKLY_TASK_ONE, 10_000L);
+            if (raw == null || raw.isEmpty()) {
+                detail.append("浏览任务: 点击脚本没回报，停止\n");
+                break;
+            }
+            JSONObject o;
+            try {
+                o = new JSONObject(raw);
+            } catch (Throwable e) {
+                detail.append("浏览任务: 回报解析失败 ").append(brief(raw)).append('\n');
+                break;
+            }
+            if (o.has("none")) {
+                detail.append("浏览任务: 页面已无「去逛逛」\n");
+                break;
+            }
+            if (o.has("err")) {
+                detail.append("浏览任务: ").append(o.optString("err")).append('\n');
+                break;
+            }
+            String name = o.optString("name", "");
+            detail.append("浏览任务 ").append(i + 1).append(": 点「")
+                    .append(name.isEmpty() ? "去逛逛" : name).append("」\n");
+            sleep(1_500L);
+            String landed = page.url();
+            boolean jumped = landed == null || !landed.contains("zzcj");
+            if (jumped) {
+                detail.append("浏览任务: 已跳到 ").append(brief(landed)).append("，停留 ")
+                        .append(WEEKLY_STAY_MS / 1000).append(" 秒\n");
+            } else {
+                detail.append("浏览任务: 页面内没跳走，仍然计 6 秒\n");
+            }
+            sleep(WEEKLY_STAY_MS);
+            if (!page.navigate(entry, 25_000L)) {
+                detail.append("浏览任务: 拉回活动页失败，停止\n");
+                break;
+            }
+            sleep(3_500L);
+            int now = weeklyTodo(page);
+            if (now >= 0 && now < left) {
+                done++;
+                detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
+                left = now;
+            } else if (now >= 0) {
+                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上）\n");
+            }
+        }
+        detail.append("浏览任务: 本轮记上 ").append(done).append(" 个，剩余 ").append(left).append(" 个\n");
     }
 
     /**

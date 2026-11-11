@@ -68,8 +68,23 @@ final class GooseTask {
     private static final long SCRIPT_TIMEOUT_MS = 40_000L;
     /** 发起 loadUrl 之后留一点时间给容器切页。 */
     private static final long LOAD_WAIT_MS = 2_500L;
-    /** 缓存的入口地址能用多久。pc/pk 由服务端签发，放太久会被判失效。 */
-    private static final long ENTRY_TTL = 24 * 3600_000L;
+    /**
+     * 缓存的入口地址能用多久。pc/pk 由服务端按登录态签发，11-11 实测当天上午的
+     * 地址下午就已失效（页面停在「已有鹅蛋：--个」），24 小时的 TTL 太乐观，改成 3 小时。
+     */
+    private static final long ENTRY_TTL = 3 * 3600_000L;
+
+    /**
+     * 卡片短链：福利专区 →「收鹅蛋换好礼」跳出来的真实链路。
+     * 11-10 22:28、11-11 08:24 / 10:37 / 11:51 / 12:02 五次抓包里都是这一条，
+     * 真页打开后自己会跳 {@code lyhVue/index.html#/bgIndex?actNo=goose2025&pc=…&pk=…}，
+     * 落地即活动页。pc/pk 必须由它现场换，模块拼不出来。
+     */
+    private static final String SHORT_LINK =
+            "https://rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0AnebE";
+
+    /** 一轮最多点几个浏览任务。每点一个要等跳转 + 回跳 + 页面重载，约 20 秒。 */
+    private static final int TASK_TRIES = 6;
 
     private static final String PREFS = "cmcc_hook_goose";
     private static final String KEY_ENTRY = "entry_url";
@@ -148,21 +163,30 @@ final class GooseTask {
         }
     }
 
+    /**
+     * 优先用缓存里带 pc/pk 的真实地址；缓存空了或过期就走卡片短链现场换票。
+     *
+     * <p>11-11 11:49 日志：模块直接用裸地址 {@code #/bgIndex?actNo=goose2025} 打开，
+     * 页面只发了 enctyption/u、nav3004、rrlogin 三个请求就停住，首屏一直是
+     * 「已有鹅蛋：--个 加载中...」；两分钟后用户手动从福利卡片进同一次活动，
+     * 地址带 {@code pc=eJmGqg…&pk=0E9DB5…}，页面立刻把 getNoticeList / index /
+     * taskIndex 等十个接口发齐。差别只在 pc/pk，所以这里必须走短链换票。
+     */
     static String entryUrl() {
         Context ctx = HookLog.context();
         if (ctx == null) {
-            return TaskApi.ACT_GOOSE;
+            return SHORT_LINK;
         }
         try {
             SharedPreferences p = AccountScope.prefs(ctx, PREFS);
             String url = p.getString(KEY_ENTRY, "");
             long at = p.getLong(KEY_ENTRY_AT, 0L);
             if (url.isEmpty() || System.currentTimeMillis() - at > ENTRY_TTL) {
-                return TaskApi.ACT_GOOSE;
+                return SHORT_LINK;
             }
             return url;
         } catch (Throwable e) {
-            return TaskApi.ACT_GOOSE;
+            return SHORT_LINK;
         }
     }
 
@@ -185,7 +209,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v3.98 已装载 · 出游归来领取 + 投喂/收蛋收敛循环",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v3.99 已装载 · 短链换票 + 点卡片做任务",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -500,7 +524,25 @@ final class GooseTask {
                 }
             }
         } else {
-            detail.append("登录: 还没有带 pc/pk 的入口缓存\n");
+            detail.append("登录: 没有可用的带 pc/pk 缓存，直接走短链换票\n");
+        }
+
+        // 第二级：卡片短链现场换票。pc/pk 是门户后端按登录态签发的密文，模块拼不出来，
+        // 只能让 ssoJump 走一遍 uniTokenValidate 再跳到 lyhVue。落地地址就是带票的活动页。
+        String cur = page.url();
+        if (cur == null || !cur.contains("dwzCode=0AnebE")) {
+            detail.append("登录: 用卡片短链换票（dwzCode=0AnebE）\n");
+            if (page.navigate(SHORT_LINK, 25_000L) && waitLogged(page, 20_000L)) {
+                String landed = page.url();
+                if (landed != null && landed.contains("pc=")) {
+                    rememberEntry(landed);
+                    detail.append("登录: 短链换票成功，已记住带 pc/pk 的地址\n");
+                } else {
+                    detail.append("登录: 短链换票成功\n");
+                }
+                return true;
+            }
+            detail.append("登录: 短链换票后仍未登录\n");
         }
 
         // 最后一招：页面自己存的 accesstoken。用户之前在 App 里打开过活动，
@@ -606,8 +648,11 @@ final class GooseTask {
                 + "try{var tk=localStorage.getItem('accesstoken')||localStorage.getItem('acToken');"
                 + "if(tk&&tk.length>8)return '1'}catch(e){}"
                 + "var t=document.body?document.body.innerText:'';"
-                + "if(t&&/攒饲料|我的鹅蛋|投喂|已赠送/.test(t)"
-                + "&&!/用户未登录|请先登录|登录失效/.test(t))return '1';"
+                + "if(/用户未登录|请先登录|登录失效/.test(t))return '0';"
+                // 11-11 11:49 实测：页面骨架渲染完后文案是「已有鹅蛋：--个 加载中...」，
+                // 旧判据拿「攒饲料 / 投喂 / 已赠送」当已登录，骨架也全中，于是 ensureLogin
+                // 直接放行、动作链空跑。现在只认「已有鹅蛋：数字」这种真数据。
+                + "if(/已有鹅蛋[:：]?\\s*\\d+/.test(t))return '1';"
                 + "return '0'"
                 + "}catch(e){return '0'}})()", 5_000L);
         return "1".equals(value);
@@ -783,7 +828,11 @@ final class GooseTask {
             }
             int total = out.optInt("taskTotal", 0);
             int todo = out.optInt("taskTodo", 0);
-            int done = out.optInt("taskDone", 0);
+            // 浏览任务不能在 VUE_SCRIPT 里连着点：一点就跳走，脚本上下文随即销毁。
+            // 这里交给 runTaskLoop 一个个来 —— 点一个、等页面自己跳出去又回来、
+            // 再复查剩余数。11-11 12:02 手动日志就是这条路径，全程不做人为停留。
+            int taskDoneReal = todo > 0 ? runTaskLoop(page, detail, page.url(), todo) : 0;
+            int done = out.optInt("taskDone", 0) + taskDoneReal;
             int travelItems = out.optInt("travelItems", 0);
             int travelTap = out.optInt("travelTap", 0);
             int travelBoxes = out.optInt("travelBoxes", 0);
@@ -836,7 +885,7 @@ final class GooseTask {
             String submitPaths = joinPaths(out.optJSONArray("submitPaths"));
             String queryPaths = joinPaths(out.optJSONArray("queryPaths"));
 
-            if (submitN == 0 && !changed) {
+            if (submitN == 0 && !changed && taskDoneReal == 0) {
                 // 零提交 + 数据没变 = 一个任务都没做。绝不能记完成。
                 String why = !dataReady ? "页面业务数据未就绪"
                         : (netN == 0 ? "本轮没抓到任何鹅蛋接口" : "只发了查询接口，没有提交");
@@ -870,6 +919,183 @@ final class GooseTask {
         } catch (Throwable e) {
             detail.append("组件结果解析失败: ").append(e).append('\n').append(raw).append('\n');
             return null;
+        }
+    }
+
+    /**
+     * 点一个未完成的浏览任务，点完立刻返回（不等跳转）。
+     *
+     * <p>为什么不调 {@code c.toDoTask(t, j)}：11-11 12:02 手动日志里，点任务卡片后
+     * 页面自己发 doTask、自己跳落地页、自己回跳，服务端才认。模块直接调 toDoTask
+     * 会拿到「登记成功」的假回执，但人没去，进度永远是 0/1。
+     * 点卡片走的是页面自己的 @click，doTask 与 toJump 都由它完成，参数不会错位。
+     */
+    private static final String TASK_ONE_SCRIPT = """
+            (function(){
+              try{
+                function undone(list){var r=[];for(var i=0;i<list.length;i++){var t=list[i];if(!t)continue;
+                  var s=String(t.isComplete);if(s==='1'||s==='true')continue;r.push(t)}return r}
+                var el=document.querySelector('#app')||document.querySelector('#root');
+                var v=el&&el.__vue__;
+                if(!v&&el&&el.__vue_app__&&el.__vue_app__._instance)v=el.__vue_app__._instance;
+                function find(o,d){if(!o||d>12)return null;if(o.taskListArr)return o;
+                  var cs=o.$children||[];for(var i=0;i<cs.length;i++){var x=find(cs[i],d+1);if(x)return x}return null}
+                var c=v&&find(v,0);
+                if(!c)return JSON.stringify({err:'组件没找到'});
+                var todo=undone(c.taskListArr||[]);
+                if(!todo.length)return JSON.stringify({none:1});
+                var t=todo[0];
+                var title=String(t.jobTitle||t.taskKey||'').replace(/[「」『』]/g,'');
+                var key=title.slice(0,6);
+                var nodes=document.querySelectorAll('.doTaskDiv *,div,span,a,button,p');
+                var best=null,bestLen=99999;
+                for(var i=0;i<nodes.length;i++){
+                  var e=nodes[i],tx=(e.innerText||'').replace(/\\s+/g,'');
+                  if(!tx||tx.length>160)continue;
+                  if(tx.indexOf(key)<0)continue;
+                  if(tx.length<bestLen){best=e;bestLen=tx.length}
+                }
+                if(!best)return JSON.stringify({err:'任务卡片没找到',name:title});
+                var btn=null,inner=best.querySelectorAll('button,a,span,div,p');
+                for(var j=0;j<inner.length;j++){
+                  var s=(inner[j].innerText||'').replace(/\\s+/g,'');
+                  if(s==='去完成'||s==='去逛逛'||s==='去参与'||s==='立即完成'
+                     ||s==='去看看'||s==='去领取'||s==='去做任务'){btn=inner[j];break}
+                }
+                var target=btn||best,r=target.getBoundingClientRect();
+                if(!r||r.width<2||r.height<2){target=best;r=best.getBoundingClientRect()}
+                var x=r.left+r.width/2,y=r.top+r.height/2;
+                try{
+                  var names=['touchstart','touchend','mousedown','mouseup','click'];
+                  for(var k=0;k<names.length;k++){
+                    var ev=document.createEvent('MouseEvents');
+                    ev.initMouseEvent(names[k],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
+                    target.dispatchEvent(ev);
+                  }
+                }catch(e){}
+                try{if(typeof target.click==='function')target.click()}catch(e){}
+                return JSON.stringify({name:title,btn:!!btn,url:String(location.href)});
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    /** 数一下还剩几个未完成的任务。-1 = 读不到。 */
+    private static final String TASK_COUNT_SCRIPT = """
+            (function(){
+              try{
+                var el=document.querySelector('#app')||document.querySelector('#root');
+                var v=el&&el.__vue__;
+                if(!v&&el&&el.__vue_app__&&el.__vue_app__._instance)v=el.__vue_app__._instance;
+                function find(o,d){if(!o||d>12)return null;if(o.taskListArr)return o;
+                  var cs=o.$children||[];for(var i=0;i<cs.length;i++){var x=find(cs[i],d+1);if(x)return x}return null}
+                var c=v&&find(v,0);
+                if(!c)return '-1';
+                var list=c.taskListArr||[],n=0;
+                for(var i=0;i<list.length;i++){var s=String(list[i]&&list[i].isComplete);
+                  if(s!=='1'&&s!=='true')n++}
+                return String(n);
+              }catch(e){return '-1'}
+            })()
+            """;
+
+    /**
+     * 逐个点浏览任务。
+     *
+     * <p>节奏完全照手动：点一个 → 页面自己发 doTask 并跳落地页 → 等它回跳 →
+     * 复查剩余任务数。不做停留计时 —— 11-11 12:02 手动日志里落地页只待了
+     * 4.3 秒，那就是页面往返本身的耗时，用户没有刻意等。
+     *
+     * @return 本轮真正记上的任务数（以剩余数下降为准，不看接口回执）
+     */
+    private static int runTaskLoop(WebPage page, StringBuilder detail, String entry, int todo0) {
+        detail.append("浏览任务: 待做 ").append(todo0).append(" 个，逐个点（点完让它自己跳，不停留）\n");
+        int left = todo0;
+        int done = 0;
+        int miss = 0;
+        for (int i = 0; i < TASK_TRIES; i++) {
+            String raw = page.eval(TASK_ONE_SCRIPT, 10_000L);
+            if (raw == null || raw.isEmpty()) {
+                detail.append("浏览任务: 点击脚本没回报，停止\n");
+                break;
+            }
+            JSONObject o;
+            try {
+                o = new JSONObject(raw);
+            } catch (Throwable e) {
+                detail.append("浏览任务: 回报解析失败 ").append(brief(raw)).append('\n');
+                break;
+            }
+            if (o.has("none")) {
+                detail.append("浏览任务: 页面已无待做\n");
+                break;
+            }
+            if (o.has("err")) {
+                detail.append("浏览任务: ").append(o.optString("err")).append('\n');
+                break;
+            }
+            String name = o.optString("name", "");
+            detail.append("浏览任务 ").append(i + 1).append(": 点「").append(name).append("」")
+                    .append(o.optBoolean("btn") ? "（按钮）" : "（卡片）").append('\n');
+            sleep(2_000L);
+            String nowUrl = page.url();
+            if (nowUrl != null && isGoosePage(nowUrl)) {
+                // 点了没跳：可能是这个任务本来就不需要跳，或者卡片没点中。
+                // 连续两次这样就不再耗时间，直接把剩下的留给下一轮。
+                miss++;
+                detail.append("浏览任务: 点了没跳转（连续 ").append(miss).append(" 次）\n");
+                if (miss >= 2) {
+                    detail.append("浏览任务: 连续两次没跳，停止本轮任务\n");
+                    break;
+                }
+                sleep(800L);
+                if (!page.navigate(entry, 25_000L)) {
+                    detail.append("浏览任务: 拉回活动页失败，停止\n");
+                    break;
+                }
+                waitLogged(page, 15_000L);
+                continue;
+            }
+            miss = 0;
+            detail.append("浏览任务: 已跳到 ").append(briefUrl(nowUrl)).append("，等回跳\n");
+            long end = System.currentTimeMillis() + 8_000L;
+            while (System.currentTimeMillis() < end && !isGoosePage(page.url())) {
+                sleep(600L);
+            }
+            if (!isGoosePage(page.url())) {
+                detail.append("浏览任务: 没自己回来，拉回活动页\n");
+                if (!page.navigate(entry, 25_000L)) {
+                    detail.append("浏览任务: 拉回失败，停止\n");
+                    break;
+                }
+            }
+            sleep(1_200L);
+            waitLogged(page, 15_000L);
+            int now = taskTodo(page);
+            if (now >= 0 && now < left) {
+                done++;
+                detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
+                left = now;
+            } else if (now >= 0) {
+                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上）\n");
+            }
+            if (left == 0) {
+                detail.append("浏览任务: 全部做完\n");
+                break;
+            }
+        }
+        detail.append("浏览任务: 本轮记上 ").append(done).append(" 个\n");
+        return done;
+    }
+
+    private static int taskTodo(WebPage page) {
+        String v = page.eval(TASK_COUNT_SCRIPT, 6_000L);
+        if (v == null) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (Throwable e) {
+            return -1;
         }
     }
 
@@ -1156,10 +1382,13 @@ final class GooseTask {
                   }
                 }catch(e){ out.actions.push('刷新/出游领取异常:'+e.message) }
 
-                // ---- 2. 日常任务：浏览亲友圈、逛专区这些 ----
-                //      toDoTask 内部先调接口登记，再 toJump 打开广告页。
-                //      把 toJump 临时摘掉，只留登记那一步：服务端该记的记了，
-                //      页面也不会被导航走，后面的投喂收蛋还能接着做。
+                // ---- 2. 日常任务：这里只统计，点击交给 Java 侧逐个做 ----
+                //      11-11 12:02 手动日志实证：点任务 → doTask 200 → 页面自己跳到
+                //      落地页（shopDetail / ssoJump.html?dwzCode=…）→ 约 4 秒后回到
+                //      活动页 → taskIndex 重新拉。完成这件事靠的是「真的跳出去又回来」。
+                //      旧代码把 toJump 摘成空函数、只调 toDoTask 登记，等于登记完没去，
+                //      服务端永远判 0/1 不动 —— 这就是「跑完了但一个都没记上」的根因。
+                //      跳转会销毁当前脚本上下文，所以不能在这一次注入里连着点。
                 var taskName=pick(c,['taskIndexFun','taskFun']);
                 if(taskName){
                   try{
@@ -1168,26 +1397,14 @@ final class GooseTask {
                     out.taskTotal=list.length;
                     var todo=leftOf(list);
                     out.taskTodo=todo.length;
-                    if(todo.length>0 && typeof c.toDoTask==='function'){
-                      var oldJump=c.toJump;
-                      c.toJump=function(){};
-                      for(var j=0;j<todo.length && j<12;j++){
-                        var t=todo[j];
-                        try{
-                          await c.toDoTask(t,j);
-                          await wait(1700);
-                          out.taskDone++;
-                          out.actions.push('任务「'+String(t.jobTitle||t.taskKey||j).slice(0,14)+'」+'
-                                           +String(t.jobReward||t.reward||''));
-                        }catch(ee){ out.actions.push('任务异常:'+ee.message) }
-                      }
-                      c.toJump=oldJump;
-                      await wait(1000);
+                    var names=[];
+                    for(var j=0;j<todo.length && j<10;j++){
+                      names.push(String(todo[j].jobTitle||todo[j].taskKey||j).slice(0,18));
                     }
-                    // 再拉一次：toDoTask 登记成功后服务端即把饲料发下来，
-                    // 这一步把最新数据回灌到组件字段里，不需要再点任何「领取」按钮。
-                    await c[taskName](); await wait(1600);
-                  }catch(e){ out.actions.push('任务阶段异常:'+e.message) }
+                    out.taskNames=names.join(' / ');
+                    out.actions.push('待做任务 '+todo.length+' 个'
+                                     +(out.taskNames?' ['+out.taskNames+']':''));
+                  }catch(e){ out.actions.push('任务统计异常:'+e.message) }
                 }
 
                 // ---- 3. 打卡领饲料 ----
