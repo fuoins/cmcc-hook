@@ -19,7 +19,6 @@
   <b><a href="#quickstart">🚀 快速开始</a></b> &nbsp;·&nbsp;
   <b><a href="#features">🧩 功能</a></b> &nbsp;·&nbsp;
   <b><a href="#download">📥 下载</a></b> &nbsp;·&nbsp;
-  <b><a href="#faq">❓ 常见问题</a></b> &nbsp;·&nbsp;
   <b><a href="#disclaimer">⚠️ 免责声明</a></b>
 </div>
 
@@ -42,8 +41,7 @@
 | [🎯 一眼看懂](#at-a-glance) · 想做的事去哪点 | [📱 界面一览](#screens) · 五个页面 |
 | [🧩 功能](#features) · 福利 / 流量 / 优惠券 / 小功能 | [📋 内置活动](#activities) · 活动清单与状态 |
 | [✅ 结果怎么看](#rules) · 什么才算「完成」 | [⚙️ 安装与启用](#install) · 详细步骤与包名提醒 |
-| [🔐 使用原则与隐私](#privacy) · 边界与日志风险 | [📥 下载与版本](#download) · APK 与历史版本 |
-| [❓ 常见问题](#faq) · 排查与答疑 | [💬 社区与支持](#community) · 反馈入口 |
+| [🔐 使用原则与隐私](#privacy) · 边界与日志风险 | [📥 下载与版本](#download) · APK 与全部版本 |
 | [⚠️ 免责声明](#disclaimer) · 使用前必读 | [🏠 仓库首页](https://github.com/fuoins/cmcc-hook) · 返回项目主页 |
 
 ---
@@ -179,7 +177,7 @@
 
 ## ⚙️ 安装与启用
 
-1. 安装最新 APK（见 [下载与版本](#download)）。
+1. 安装 [全部版本](https://github.com/fuoins/cmcc-hook/releases) 中的 APK。
 2. 打开 LSPosed 管理器 → 模块 → 启用「移动签到助手」。
 3. 在作用域里勾选「中国移动」，这一项就够了，不需要额外勾选「电话服务」。
 4. 强制停止中国移动 App，或直接重启手机，让模块重新注入。
@@ -212,70 +210,12 @@
 
 | 内容 | 地址 |
 | :--- | :--- |
-| 最新 APK（当前 **v4.0.7**） | [Releases · Latest](https://github.com/fuoins/cmcc-hook/releases/latest) |
-| 全部历史版本 | [Releases](https://github.com/fuoins/cmcc-hook/releases) |
-| 中国移动 App 11.9.1 安装包 | [随 v3.98 发布](https://github.com/fuoins/cmcc-hook/releases/download/v3.98/com.greenpoint.android.mc10086.activity_11.9.1_119101.apk) |
+| 全部版本 | [Releases](https://github.com/fuoins/cmcc-hook/releases) |
+| 中国移动 11.9.1 | [下载安装包](https://github.com/fuoins/cmcc-hook/releases/download/v3.98/com.greenpoint.android.mc10086.activity_11.9.1_119101.apk) |
 
-当前版本信息：`versionName 4.0.7` / `versionCode 140` / 包名 `com.cmcchook` / 编译 `Java 17`。升级前请先看 [安装与启用](#install) 里的包名提醒。
+> 这里只提供「中国移动 11.9.1」这一个客户端安装包；模块 APK 请在 Releases 中按需选择。
 
-<a id="faq"></a>
-
-## ❓ 常见问题
-
-<details>
-<summary><b>模块首页一直不显示「运行中」？</b></summary>
-
-按顺序检查：LSPosed 里模块已启用 → 作用域**只勾「中国移动」** → 强停中国移动 App 或重启手机 → 打开一次中国移动 App 让模块注入 → 回模块首页看「最近心跳」。另外在日志头确认版本号是刚装的那一个。
-</details>
-
-<details>
-<summary><b>新版本装不上，提示应用未安装 / 签名冲突？</b></summary>
-
-当前包名是 `com.cmcchook`，早期版本是另一个包名，属于不同应用，无法覆盖安装。先卸载旧版，再装新版，并在 LSPosed 里重新启用模块、重新勾选作用域。
-</details>
-
-<details>
-<summary><b>任务显示「未确认」，是不是白跑了一次？</b></summary>
-
-不是。「未确认」表示没有发出任何提交、页面数据也没有变化，当天的活动机会还在，可以重跑。查询、刷新、列表加载都不算完成任务；只有服务端真实回执或业务数据变化才会记完成。
-</details>
-
-<details>
-<summary><b>抢券会不会被「一键全做」带跑偏？</b></summary>
-
-不会。周三 88 元话费券和 12 点话费券在「福利」页有独立板块，不参与「一键全做」；提前进去会在页面上等到开抢，过点进去就直接试。
-</details>
-
-<details>
-<summary><b>测速消耗的是手机流量吗？会扣费吗？</b></summary>
-
-消耗测速会真实产生流量，连 WiFi 时消耗的是 WiFi。累计字节不等于运营商计费值，仅供参考；领取入口列出的活动有地域和资格限制，需自行确认。
-</details>
-
-<details>
-<summary><b>小米 / HyperOS 自动填不了短信验证码？</b></summary>
-
-券页有「小米自检」入口，会把需要开启的系统设置一条条列出来；也可以不授权短信权限，改为手动输入验证码。
-</details>
-
-<details>
-<summary><b>日志会自动上传吗？能随便发给别人吗？</b></summary>
-
-不会自动上传，日志只写在 App 私有目录，导出完全由你手动完成。但导出内容含 Cookie、Token、Authorization 和手机号，**等同于账号凭证**，只发给可信的人，不要传公开网盘或群聊。
-</details>
-
-<a id="community"></a>
-
-## 💬 社区与支持
-
-| 入口 | 地址 |
-| :--- | :--- |
-| Telegram 交流群 | [t.me/yidongqdzs](https://t.me/yidongqdzs) |
-| QQ 交流群 | 690877742 · [点击加群](https://qm.qq.com/q/690877742) |
-| 捐赠支持 | [捐赠页面](https://zy520.de5.net/juanzeng/) |
-| 问题反馈 | [提交 Issue](https://github.com/fuoins/cmcc-hook/issues) |
-
-App 内「关于」页与标题栏右上角也能直接打开捐赠、群组与项目地址。如果这个项目帮到了你，欢迎点个 ⭐ Star。
+包名 `com.cmcchook`，升级前请先看 [安装与启用](#install) 里的包名提醒。
 
 <a id="disclaimer"></a>
 
