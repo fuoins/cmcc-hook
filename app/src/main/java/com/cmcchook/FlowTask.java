@@ -73,7 +73,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "real9-20261111";
+    static final String BUILD = "real10-20261111";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -743,18 +743,18 @@ final class FlowTask {
                     + "localStorage 的明文余量缓存；不解密接口、不拼签名、不发业务请求、"
                     + "不需要手动进余量查询/流量页。\n");
 
-            // 每次查询都重建离屏页，避免复用上一次已切走/已销毁的页面。
-            OffscreenWeb.close();
+            // v4.3.0：这一级也改真页。离屏 WebView 落不进 App 的同源存储上下文，
+            // 之前 91 秒的建页耗时就是它；真页本来就是首页那一份 localStorage。
             long openStart = System.currentTimeMillis();
-            wv = OffscreenWeb.open(ENTRY_URL, 8_000L);
-            // v4.2.1：单独记一笔建页耗时 —— 09:53 那次「91 秒」就是这一步卡住的。
+            WebPage homePage = RealPage.open(ENTRY_URL, "home.html", 12_000L);
+            wv = homePage == null ? null : homePage.raw();
             diary.append("建页耗时: ").append(System.currentTimeMillis() - openStart).append("ms\n");
             if (wv == null) {
-                diary.append("结果: 无法创建离屏 WebView（App 未运行或 WebView 内核不可用）。\n");
-                send(error("无法创建离屏 WebView（请先打开一次中国移动 App）", diary));
+                diary.append("结果: App 真页没打开（容器不可用）。\n");
+                send(error("无法打开 App 首页真页（请先打开一次中国移动 App）", diary));
                 return;
             }
-            diary.append("离屏页已创建: ").append(wv.getClass().getName()).append('\n');
+            diary.append("真页已就绪: ").append(wv.getClass().getName()).append('\n');
 
             JSONObject result = null;
             String lastRaw = "";
@@ -768,9 +768,9 @@ final class FlowTask {
                 } catch (InterruptedException e) {
                     break;
                 }
-                Object cur = OffscreenWeb.current();
+                Object cur = wv;
                 if (cur == null) {
-                    lastNote = "离屏页已失效";
+                    lastNote = "真页已失效";
                     break;
                 }
                 rounds++;
@@ -854,11 +854,9 @@ final class FlowTask {
             send(error("读取异常：" + t, diary));
         } finally {
             try {
-                OffscreenWeb.detach(wv);
-            } catch (Throwable ignored) {
-            }
-            try {
-                OffscreenWeb.close();
+                if (wv != null && RealPage.isOwned(wv)) {
+                    RealPage.closePage(wv);
+                }
             } catch (Throwable ignored) {
             }
         }

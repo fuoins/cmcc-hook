@@ -20,14 +20,23 @@ final class WelfareToken {
                     + "?pageid=f38143861a4a4a9fac920fdeecd119bb&channelId=P00000054178&yx=1597107001";
 
     /**
-     * 签到抽奖的 SSO 短链。
+     * 签到抽奖的 SSO 入口。
      *
-     * <p>11-11 10:40 日志实证：用户手动在福利专区点「签到抽奖」，App 走的就是这条 —
-     * {@code rr.ln139.cn/rr/dwz/0EL7vw → ssoJump.html → wisdom-h5/index.html#/signInLottery?h5token=…}。
-     * 福利专区是 uni-app 壳，卡片文本不在 {@code document.body.innerText} 里（只剩页脚备案号），
-     * 模块永远点不到，所以补这条「直接打开短链、让 App 自己走 SSO」的兜底。
+     * <p>11-11 11:31 抓包实证：用户手动在福利专区点「签到抽奖」，App 走的是
+     * <b>ssoJump.html?dwzCode=0EL7vw</b> 这一层，不是 {@code /rr/dwz/0EL7vw}：
+     *
+     * <pre>
+     * 福利专区卡片
+     *  → rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0EL7vw      ← 关键：必须先走 ssoJump
+     *  → rr.ln139.cn/rr/dwz/0EL7vw?channelId=&amp;yx=&amp;_sid_=…
+     *  → rr.ln139.cn/rr/lm/tWlmChinaNetAuth/jumpOtherChinaNetUrl.wap?…dwzCode=0EKihC
+     *  → wisdom-h5/index.html#/signInLottery?h5token=YZsidssolg…
+     * </pre>
+     *
+     * <p>旧值直接开 {@code /rr/dwz/0EL7vw}，少了 ssoJump 这一层，落地永远没有
+     * {@code h5token}；而 ssoJump 必须在 App 真页里开（要带 App 的 SSO 会话与来源）。
      */
-    static final String SHORT_LINK = "https://rr.ln139.cn/rr/dwz/0EL7vw";
+    static final String SHORT_LINK = "https://rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0EL7vw";
 
     /** 签到抽奖裸入口：短链也不通时最后试一次，页面自己可能补 SSO。 */
     static final String SIGN_ENTRY =
@@ -49,12 +58,17 @@ final class WelfareToken {
             log.append("票据: 复用 ").append(head(tk)).append("（30 分钟内学到）\n");
             return tk;
         }
-        log.append("票据: 没有可用的 h5token（旧票 30 分钟就作废），自动去福利专区领一张\n");
-        String minted = mint(log);
+        log.append("票据: 没有可用的 h5token（旧票 30 分钟就作废），自动去领一张\n");
+        // v4.3.0：先走 ssoJump 短链 —— 11-11 11:31 抓包确认这条路 2 秒就能出票，
+        // 而福利专区是 uni-app 壳，卡片文本读不到，点 20 秒也是空手。
+        String minted = viaShortLink(log);
+        if (minted.isEmpty()) {
+            minted = mint(log);
+        }
         if (!minted.isEmpty()) {
             log.append("票据: 领到新票 ").append(head(minted)).append('\n');
         } else {
-            log.append("票据: 福利专区没领到票\n");
+            log.append("票据: 短链和福利专区都没领到票\n");
         }
         return minted;
     }
@@ -132,7 +146,7 @@ final class WelfareToken {
         log.append("  改走 SSO 短链: ").append(SHORT_LINK).append('\n');
         WebPage page = null;
         try {
-            page = RealPage.open(SHORT_LINK, "rr/dwz", 25_000L);
+            page = RealPage.open(SHORT_LINK, "rr/lnwd/ssoJump", 25_000L);
             if (page == null) {
                 log.append("  短链没打开（App 容器没起来）\n");
                 return viaBareEntry(log);

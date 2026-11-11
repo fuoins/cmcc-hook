@@ -330,17 +330,23 @@ final class ScriptEngine {
             detail.append("browse: 没有落地页地址\n");
             return;
         }
-        OffscreenWeb.close();
-        Object wv = OffscreenWeb.open(url, 6_000L);
-        if (wv == null) {
-            detail.append("browse: 离屏 WebView 不可用，跳过 ").append(ProbeSession.shortOf(url))
+        // v4.3.0：浏览任务也走 App 真页 —— 离屏页没有登录态/容器初始化，
+        // 服务端不计入任务进度，看了也白看。
+        WebPage page = RealPage.open(url, RealPage.pathKey(url), 15_000L);
+        if (page == null) {
+            detail.append("browse: App 真页没打开，跳过 ").append(ProbeSession.shortOf(url))
                     .append('\n');
             return;
         }
-        detail.append("browse: 离屏停留 ").append(stay / 1000).append(" 秒 ")
+        detail.append("browse: 真页停留 ").append(stay / 1000).append(" 秒 ")
                 .append(ProbeSession.shortOf(url)).append('\n');
         WebPage.sleep(stay);
-        OffscreenWeb.close();
+        try {
+            if (RealPage.isOwned(page.raw())) {
+                RealPage.closePage(page.raw());
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     // ------------------------------------------------------------ 回调表

@@ -53,8 +53,8 @@ final class WebSession {
             return current.ok();
         }
         long start = System.currentTimeMillis();
-        // v4.0.9：先走 App 官方真页 —— 页面、会话、容器初始化全都是 App 自己的，
-        // 模块只换了个「在哪执行」。真页拿不到才退回离屏，保证不比以前差。
+        // v4.3.0：全部走 App 官方真页。离屏页缺容器初始化、缺 localStorage SSO、
+        // 缺真实布局，实测成功率远低于真页 —— 真页拿不到就直接失败，不再降级。
         WebPage real = tryReal(key, url, timeoutMs);
         if (real != null) {
             boolean ok = settle(key, real, start);
@@ -62,25 +62,19 @@ final class WebSession {
                 HookLog.logcat("session real ok: " + key + " · " + real.href());
                 return true;
             }
-            if (realOnly(key)) {
-                // v4.2.1：鹅蛋/球赛只在真页里跑。离屏页那条路要在离屏 WebView 里
-                // 重走门户 SSO 拿 pc/pk，11-11 09:53 实测两次都没拿到，白花 20 秒
-                // 最后还是「跳过（还没有登录参数）」。真页本来就是 App 自己的容器，
-                // 页面自己会跳 SSO，交给任务里的 ensureLogin 等就行。
-                HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
-                        "目标: " + url + "\n"
-                                + "这个活动以前靠离屏页走门户 SSO 拿 pc/pk，实测拿不到；"
-                                + "现在统一在 App 真页里执行，登录交给页面自己完成。\n"
-                                + "本次先跳过，不记失败。");
-                return false;
-            }
-            HookLog.logcat("real page rejected, fallback offscreen: " + key);
+            HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
+                    "目标: " + url + "\n"
+                            + "现在所有活动都只在 App 真页里执行；离屏页缺容器初始化与 SSO 会话，"
+                            + "拿它兜底只会白花时间。\n本次先跳过，不记失败。");
+            end();
+            return false;
         }
+        HookLog.log("TASK", "真页没打开 · " + key + " · 不再退离屏",
+                "目标: " + url + "\n"
+                        + "App 容器这一轮没起来（或被下载引导页顶走），没有离屏兜底。\n"
+                        + "本次先跳过，不记失败。");
         end();
-        suppressAuto = true;
-        WebPage page = WebPage.open(url, timeoutMs, hostsFor(key));
-        suppressAuto = false;
-        return settle(key, page, start);
+        return false;
     }
 
     /**
@@ -137,60 +131,16 @@ final class WebSession {
                 HookLog.logcat("session real fast ok: " + key + " · " + live.href());
                 return true;
             }
-            if (realOnly(key)) {
-                HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
-                        "目标: " + url + "\n"
-                                + "这个活动只在 App 真页里执行（离屏拿不到 pc/pk，实测两轮都失败）。\n"
-                                + "本次先跳过，不记失败。");
-                return false;
-            }
-            HookLog.logcat("real fast page rejected, fallback offscreen: " + key);
+            HookLog.log("TASK", "真页没判过 · " + key + " · 不再退离屏",
+                    "目标: " + url + "\n"
+                            + "现在所有活动都只在 App 真页里执行；离屏页缺容器初始化，"
+                            + "拿它兜底只会白花时间。\n本次先跳过，不记失败。");
+            return false;
         }
-        suppressAuto = true;
-        long start = System.currentTimeMillis();
-        WebPage page = null;
-        try {
-            // 服务端不下发 Cookie：页面 JS 靠 localStorage.QWHDSSOJWT 判断已登录。
-            // 换票拿到的 jwt 必须在文档加载一开始就灌进去，否则页面又跳
-            // qwhdsso/login，现场就废了。
-            String jwt = SsoLogin.ssoJwt();
-            String early = jwt.isEmpty() ? null :
-                    "(function(){try{localStorage.setItem('QWHDSSOJWT',"
-                            + org.json.JSONObject.quote(jwt) + ")}catch(e){}})()";
-            WebPage cur = current();
-            if (cur != null && sameHost(cur.url(), url)) {
-                // 同域复用：同一个页面换地址（Referer 跟着变），不重建。
-                if (key.equals(currentKey) && cur.ok()) {
-                    injectJwt(cur, early);
-                    suppressAuto = false;
-                    return true;
-                }
-                if (cur.navigateFast(url, timeoutMs)) {
-                    page = cur;
-                    currentKey = key;
-                    HookLog.logcat("session fast reuse: " + key + " -> " + brief(url));
-                }
-            }
-            if (page == null) {
-                end();
-                page = WebPage.openFast(url, timeoutMs, hostsFor(key), early);
-            } else {
-                injectJwt(page, early);
-            }
-        } finally {
-            suppressAuto = false;
-        }
-        boolean ok = settle(key, page, start);
-        // 页面已 complete、document/localStorage 确定可用，再补一次注入，
-        // 兜住 onPageStarted 阶段 localStorage 尚未 commit 的情况。
-        if (ok) {
-            String jwt = SsoLogin.ssoJwt();
-            if (!jwt.isEmpty()) {
-                injectJwt(current(), "(function(){try{localStorage.setItem('QWHDSSOJWT',"
-                        + org.json.JSONObject.quote(jwt) + ")}catch(e){}})()");
-            }
-        }
-        return ok;
+        HookLog.log("TASK", "真页没打开 · " + key + " · 不再退离屏",
+                "目标: " + url + "\n"
+                        + "App 容器这一轮没起来，没有离屏兜底。\n本次先跳过，不记失败。");
+        return false;
     }
 
     /** 页面已经开着时补一次 localStorage 注入（换票可能在开页之后才完成）。 */

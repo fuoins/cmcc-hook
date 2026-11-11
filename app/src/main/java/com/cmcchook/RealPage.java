@@ -46,6 +46,20 @@ final class RealPage {
     private static volatile String sessionUrl = "";
     private static volatile int sessionDepth;
 
+    /**
+     * 「正在打开」窗口的截止时间。
+     *
+     * <p>11-11 11:22 日志：{@code sessionView} 是 {@code open()} 成功之后才赋值的，
+     * 而页面在被顶走的那一刻还没走到赋值 —— {@link #isTaskPage} 判 false，
+     * 于是 {@code WebViewHooks} 里「拦下载引导页」那道闸直接放行，鹅蛋页被
+     * {@code transferDownload.html} 顶掉，后面又因为重开等待用错 deadline 整个判死。
+     * 打开动作一发出就先占住这个窗口，页面哪怕还在路上也算任务页。
+     */
+    private static volatile long pendingUntil;
+
+    /** 打开动作发出后，这段时间内出现的真页都算「任务页」。 */
+    static final long PENDING_MS = 20_000L;
+
     private RealPage() {
     }
 
@@ -142,6 +156,39 @@ final class RealPage {
     }
 
     /**
+     * 只比 host + path，忽略 hash / 查询串。
+     *
+     * <p>hash 路由站点（wisdom-h5、lyhVue）的登记地址常常只到 {@code index.html}，
+     * 真正的路由在 {@code #/signInLottery} 里；按 {@link #pathKey} 比会永远不相等，
+     * 于是「容器明明起来了却找不到」。
+     */
+    private static boolean sameBase(String registered, String key) {
+        if (registered == null || key == null || key.isEmpty()) {
+            return false;
+        }
+        String a = baseOf(registered).toLowerCase(java.util.Locale.US);
+        String b = baseOf(key).toLowerCase(java.util.Locale.US);
+        return !a.isEmpty() && a.equals(b);
+    }
+
+    /** 去掉查询串和 hash，只留 scheme://host/path。 */
+    private static String baseOf(String url) {
+        if (url == null) {
+            return "";
+        }
+        String s = url;
+        int h = s.indexOf('#');
+        if (h >= 0) {
+            s = s.substring(0, h);
+        }
+        int q = s.indexOf('?');
+        if (q >= 0) {
+            s = s.substring(0, q);
+        }
+        return s.trim();
+    }
+
+    /**
      * 找还活着的真页。
      *
      * @param key     路径特征（如 {@code marginQuery}、{@code mycoupons} 或完整无参地址）
@@ -176,7 +223,8 @@ final class RealPage {
                 }
                 // 大小写不敏感：调用方传 "signlottery"，站点地址写的是 "signInLottery"。
                 if (!URLS[i].toLowerCase(java.util.Locale.US).contains(key.toLowerCase(java.util.Locale.US))
-                        && !samePath(URLS[i], key)) {
+                        && !samePath(URLS[i], key)
+                        && !sameBase(URLS[i], key)) {
                     continue;
                 }
                 if (AT[i] > bestAt) {
@@ -645,6 +693,11 @@ final class RealPage {
      * 原页面 JS 上下文当场销毁，脚本再也读不到数据，任务就卡在那儿。
      */
     static boolean isTaskPage(Object view) {
+        // v4.3.0：打开动作刚发出、会话还没建立时，也要算任务页 —— 否则页面里
+        // 的「下载 App」广告位会在这一两秒的空窗里把整页顶走（11-11 11:22 鹅蛋）。
+        if (System.currentTimeMillis() <= pendingUntil) {
+            return true;
+        }
         if (sessionDepth <= 0 || sessionView == null) {
             return false;
         }
@@ -872,13 +925,18 @@ final class RealPage {
             sessionView = null;
             sessionUrl = null;
             if (ensureForeground() && openH5(url)) {
-                view = await(match, deadline);
+                // v4.3.0：重开用自己的预算。以前复用第一次 open 的 deadline，
+                // 被顶走那一刻预算往往只剩几秒，新容器明明 200ms 就起来了，
+                // 这里却已经过期 —— 11-11 11:22 日志「重开失败 · 容器没起来」
+                // 白等 18 秒，鹅蛋因此掉进离屏。
+                long again_budget = System.currentTimeMillis() + 15_000L;
+                view = await(match, again_budget);
                 if (view != null) {
                     markOwned(view);
                     page = WebPage.attachReal(view, url);
                     if (page != null) {
                         page.awaitDoc(Math.min(12_000L,
-                                Math.max(4_000L, deadline - System.currentTimeMillis())));
+                                Math.max(4_000L, again_budget - System.currentTimeMillis())));
                     }
                 }
             }
@@ -911,6 +969,7 @@ final class RealPage {
         try {
             Activity a = ActivityHooks.current();
             if (a != null && !a.isFinishing() && Html5.openFrom(a, url)) {
+                pendingUntil = System.currentTimeMillis() + PENDING_MS;
                 return true;
             }
         } catch (Throwable e) {
@@ -919,6 +978,7 @@ final class RealPage {
         try {
             Context ctx = HookLog.context();
             if (ctx != null && Html5.open(ctx, url)) {
+                pendingUntil = System.currentTimeMillis() + PENDING_MS;
                 return true;
             }
         } catch (Throwable e) {

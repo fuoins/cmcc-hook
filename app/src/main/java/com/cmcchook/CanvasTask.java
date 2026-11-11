@@ -1439,7 +1439,9 @@ final class CanvasTask {
                           for(var c2=0;c2<comps.length;c2++){
                             if(/task/i.test(cname(comps[c2]))) tn.push(comps[c2]);
                           }
-                          for(var q3=0;q3<tids.length && q3<4;q3++){
+                          // v4.3.0：上限从 4 提到 8。周周有好礼的任务清单常有 5~7 个，
+                          // 只做 4 个就永远拿不满次数（11-11 反馈「做了一半、没抽完」）。
+                          for(var q3=0;q3<tids.length && q3<8;q3++){
                             var tid=tids[q3], hit=false;
                             // 页面自己的浏览任务上报接口。先直发一次：
                             // 服务端只认 taskId 的话，这一发就把任务记上了。
@@ -1482,7 +1484,9 @@ final class CanvasTask {
                       }
                       if(rem>=0){ draw.seen++; draw.left+=rem; draw.rems.push(id+':'+rem) }
                       if(rem<=0) continue;
-                      var times=Math.min(rem,5);
+                      // v4.3.0：上限 5 → 10。做完任务后次数常常一次给到 6~8 次，
+                      // 卡在 5 次就会「有次数没抽完」。
+                      var times=Math.min(rem,10);
                       // 任务上报刚打完，服务端还在限频窗口里，先缓一下再抽。
                       await wait(2600);
                       for(var k=0;k<times;k++){

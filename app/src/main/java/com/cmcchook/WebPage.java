@@ -185,35 +185,9 @@ final class WebPage {
      */
     static WebPage openProbe(String url, long timeoutMs, String[] allowedHosts,
                              String earlyScript, java.util.Map<String, String> extraHeaders) {
-        final Context ctx = HookLog.context();
-        if (ctx == null || url == null || url.isEmpty()) {
-            return null;
-        }
-        final NavState nav = new NavState(url, allowedHosts, earlyScript, true, extraHeaders);
-        final Object[] holder = {null};
-        final CountDownLatch created = new CountDownLatch(1);
-        MAIN.post(new Runnable() {
-            @Override
-            public void run() {
-                try {
-                    holder[0] = build(ctx, url, nav);
-                } catch (Throwable e) {
-                    HookLog.logcat("webpage probe create failed: " + e);
-                } finally {
-                    created.countDown();
-                }
-            }
-        });
-        try {
-            created.await(Math.min(timeoutMs, 8_000L), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignored) {
-        }
-        if (holder[0] == null) {
-            return null;
-        }
-        WebPage page = new WebPage(holder[0], nav);
-        page.awaitDoc(Math.min(timeoutMs, 12_000L));
-        return page;
+        // v4.3.0：探针也走真页。离屏页带不进 App 的来源/UA/Cookie，拿它去对照
+        // 「真页为什么能成」只会得到一份假结论；真页本身就是对照的那一边。
+        return realOpen(url, timeoutMs, earlyScript);
     }
 
     /**
@@ -240,36 +214,36 @@ final class WebPage {
         if (ctx == null || url == null || url.isEmpty()) {
             return null;
         }
-        final String[] hosts = allowedHosts;
-        final NavState nav = new NavState(url, hosts, earlyScript, withImages);
-        final Object[] holder = {null};
-        final CountDownLatch created = new CountDownLatch(1);
-        MAIN.post(new Runnable() {
-            @Override
-            public void run() {
+        // v4.3.0：不再建离屏 WebView。离屏缺 App 容器的初始化（UA/来源/Cookie/私有 JS 桥）、
+        // 缺 localStorage 的 SSO 会话、页面不布局就不发请求 —— 实测成功率远低于真页，
+        // 采集、探测、券兜底、流量兜底全都一样。统一走 App 自己的 H5 容器。
+        WebPage real = realOpen(url, timeoutMs, earlyScript);
+        if (real != null) {
+            return real;
+        }
+        HookLog.logcat("webpage open: real page unavailable, skip offscreen: " + url);
+        return null;
+    }
+
+    /** 真页打开 + 按需注入早脚本（真页没有「文档开始前」的注入点，改成加载后补一次）。 */
+    private static WebPage realOpen(String url, long timeoutMs, String earlyScript) {
+        try {
+            WebPage page = RealPage.open(url, RealPage.pathKey(url),
+                    Math.min(Math.max(12_000L, timeoutMs), 25_000L));
+            if (page == null) {
+                return null;
+            }
+            if (earlyScript != null && !earlyScript.isEmpty()) {
                 try {
-                    holder[0] = build(ctx, url, nav);
-                } catch (Throwable e) {
-                    HookLog.logcat("webpage create failed: " + e);
-                } finally {
-                    created.countDown();
+                    page.eval(earlyScript, 2_000L);
+                } catch (Throwable ignored) {
                 }
             }
-        });
-        try {
-            created.await(Math.min(timeoutMs, 8_000L), TimeUnit.MILLISECONDS);
-        } catch (InterruptedException ignored) {
-        }
-        if (holder[0] == null) {
+            return page;
+        } catch (Throwable e) {
+            HookLog.logcat("webpage real open failed: " + e);
             return null;
         }
-        WebPage page = new WebPage(holder[0], nav);
-        if (fast) {
-            page.awaitDoc(timeoutMs <= 0 ? LOAD_TIMEOUT : timeoutMs);
-        } else {
-            page.awaitSettled(timeoutMs <= 0 ? LOAD_TIMEOUT : timeoutMs);
-        }
-        return page;
     }
 
     /** 必须在主线程调用。 */
@@ -1003,8 +977,16 @@ final class WebPage {
             return;
         }
         if (real) {
-            // 用户正在看的官方页面：绝不销毁，也不切断它和 App 的任何绑定。
-            HookLog.logcat("real page kept alive: " + nav.current);
+            // v4.3.0：真页也分两种 —— 模块自己拉起来的那种（采集、探测、券兜底）
+            // 用完必须收掉，否则一路采集会留下一叠 Activity；用户自己正看的绝不销毁。
+            if (RealPage.isOwned(view)) {
+                try {
+                    RealPage.closePage(view);
+                } catch (Throwable ignored) {
+                }
+            } else {
+                HookLog.logcat("real page kept alive: " + nav.current);
+            }
             return;
         }
         MAIN.post(new Runnable() {

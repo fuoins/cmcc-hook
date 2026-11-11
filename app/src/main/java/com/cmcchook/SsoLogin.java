@@ -714,12 +714,15 @@ final class SsoLogin {
             return false;
         }
         String url = LOGIN_BASE + "/login?dlwmh=true&actUrl=" + enc(actUrl);
-        detail.append("离屏登录: 复用 ").append(bridgeName).append(" 打开登录页\n");
-        Object wv = OffscreenWeb.open(url, api, bridgeName, 10_000L);
-        if (wv == null) {
-            detail.append("离屏登录: WebView 创建失败\n");
+        detail.append("真页登录: 打开 App 容器登录页\n");
+        // v4.3.0：登录换票也走真页。离屏页要手工把 App 的 JS 接口重新注进去，
+        // 少一个字段就换不出 token；真页本来就有 App 的全套桥。
+        WebPage page = RealPage.open(url, "login", 20_000L);
+        if (page == null) {
+            detail.append("真页登录: 容器没起来\n");
             return false;
         }
+        Object wv = page.raw();
         // 页面加载完会自动调 getUserInfo，再走 appTokenLogin，最后跳到带 token
         // 的活动页；给足 15 秒。服务端不下发 Cookie，成功标志是落地 URL 带 token。
         for (int i = 0; i < 15; i++) {
@@ -730,11 +733,11 @@ final class SsoLogin {
                 remember(landed);
                 // 顺手把页面上算出来的 jwt 从 localStorage 读回来（若有）。
                 readJwtFromWebView(wv);
-                detail.append("离屏登录: OK, 落地页带 token=").append(mask(tk)).append('\n');
+                detail.append("真页登录: OK, 落地页带 token=").append(mask(tk)).append('\n');
                 return true;
             }
         }
-        detail.append("离屏登录: 15 秒内没跳转到带 token 的活动页\n");
+        detail.append("真页登录: 15 秒内没跳转到带 token 的活动页\n");
         offscreenFailAt = System.currentTimeMillis();
         return false;
     }
