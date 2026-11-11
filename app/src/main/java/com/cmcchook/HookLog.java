@@ -34,6 +34,8 @@ final class HookLog {
     static final String ACTION_LOG = "com.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.cmcchook.action.HEARTBEAT";
     static final String ACTION_STATE = "com.cmcchook.action.STATE";
+    /** v4.2.0：刷新 / 抢券的实时步骤，界面上滚动显示。 */
+    static final String ACTION_PROGRESS = "com.cmcchook.action.PROGRESS";
     private static final String RECEIVER = "com.cmcchook.LogReceiver";
     private static final String TAG = "CmccHook";
     private static final int MAX_DETAIL_SHORT = 8_192;
@@ -161,6 +163,36 @@ final class HookLog {
 
     static String processName() {
         return processName;
+    }
+
+    /**
+     * 把「现在做到哪一步」实时推到模块界面。
+     *
+     * <p>v4.2.0：用户点「刷新」后要等真页拉起 + 页面自己请求解密，十几秒里界面只有一句
+     * 静态文案，看起来像卡死。这里每一步都发一条，模块界面把状态行换成最新一条，
+     * 用户能看见「正在等页面解密（已等 6s）」而不是干等。
+     *
+     * @param scope {@code flow} / {@code coupon} / {@code grab}，界面按这个决定写到哪一行
+     */
+    static void progress(String scope, String text) {
+        Context ctx = context();
+        if (ctx == null) {
+            logcat("[PROGRESS/" + scope + "] " + text);
+            return;
+        }
+        try {
+            Intent intent = new Intent(ACTION_PROGRESS);
+            intent.setComponent(new ComponentName(MODULE_PACKAGE, RECEIVER));
+            intent.setPackage(MODULE_PACKAGE);
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                    | Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.putExtra("scope", scope == null ? "" : scope);
+            intent.putExtra("text", cut(text, 200));
+            intent.putExtra("ts", System.currentTimeMillis());
+            ctx.sendBroadcast(intent);
+        } catch (Throwable e) {
+            logcat("progress broadcast failed: " + e);
+        }
     }
 
     static void heartbeatIfDue() {

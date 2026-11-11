@@ -66,6 +66,48 @@ public final class MainActivity extends AppCompatActivity {
     private static final int FILTER_ERROR = 7;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+
+    /**
+     * v4.2.0：广播发出去没人接就补发。
+     *
+     * <p>用户反馈「切换到优惠券和流量，有时候没有自动拉取数据」——目标是 App 刚被系统
+     * 冻结/进程刚拉起时，广播打过去没人收，界面就一直停在「正在刷新」。这里 4 秒没收到
+     * 任何进度就补发一次，最多两次；目标进程只要活着，收到第一条就会开始报进度。
+     */
+    private int resendLeft;
+    private String resendScope;
+
+    private final Runnable resendTask = new Runnable() {
+        @Override
+        public void run() {
+            if (resendLeft <= 0 || resendScope == null) {
+                return;
+            }
+            resendLeft--;
+            if ("flow".equals(resendScope) && flowLoading) {
+                sendTaskBroadcast(TaskRunner.CMD_FLOW);
+                handler.postDelayed(this, 4_000L);
+            } else if ("coupon".equals(resendScope)) {
+                sendTaskBroadcast(CouponTask.CMD_SCAN);
+                handler.postDelayed(this, 4_000L);
+            }
+        }
+    };
+
+    private void scheduleResend(String scope, int times) {
+        handler.removeCallbacks(resendTask);
+        resendScope = scope;
+        resendLeft = times;
+        if (times > 0) {
+            handler.postDelayed(resendTask, 4_000L);
+        }
+    }
+
+    private void cancelResend() {
+        handler.removeCallbacks(resendTask);
+        resendLeft = 0;
+        resendScope = null;
+    }
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
 
     private View pageHome;
@@ -82,13 +124,13 @@ public final class MainActivity extends AppCompatActivity {
     private boolean flowTab = true;       // 当前子页：true=流量，false=优惠券
     private boolean flowLoading = false;  // 离屏读取进行中
     private long flowAutoAt = 0L;         // 上次「进页自动查询」时间，做节流防抖
-    private static final long FLOW_AUTO_GAP_MS = 60_000L;   // 60s 内不重复自动查
+    private static final long FLOW_AUTO_GAP_MS = 30_000L;   // 30s 内不重复自动查
     private static final long FLOW_FRESH_MS = 10 * 60_000L; // 缓存 10 分钟内视为新鲜
     /** v4.1.0：券页进页自动刷新的节流与新鲜度（和流量同一套规则）。 */
     private long couponAutoAt = 0L;
     /** 本次刷新是进页自动触发的（静默）：读完不弹「扫描完成」Toast。 */
     private boolean couponQuietScan = false;
-    private static final long COUPON_AUTO_GAP_MS = 60_000L;
+    private static final long COUPON_AUTO_GAP_MS = 30_000L;
     private static final long COUPON_FRESH_MS = 10 * 60_000L;
     /**
      * 流量刷新整体超时。真页要拉起 + 等页面请求解密（最长 20s），读不到还要重载、
@@ -132,6 +174,10 @@ public final class MainActivity extends AppCompatActivity {
     private LinearLayout welfareList;
     private TextView welfareSummary;
     private TextView welfareAt;
+    /** v4.2.0：抢券卡的状态行（倒计时 / 抢到没有）。 */
+    private TextView grabStatus;
+    /** 本机记录的抢券状态，避免重复点同一条把等待取消掉。 */
+    private String grabRunningKind = "";
     private long welfareStamp = -1L;
     private TextView probeSummary;
     private long probeStamp = -1L;
@@ -255,14 +301,16 @@ public final class MainActivity extends AppCompatActivity {
         welfareList = findViewById(R.id.welfareList);
         welfareSummary = findViewById(R.id.welfareSummary);
         welfareAt = findViewById(R.id.welfareAt);
+        grabStatus = findViewById(R.id.grabStatus);
+        findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
+        findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
         findViewById(R.id.btnWelfareRefresh).setOnClickListener(v -> refreshWelfare());
         probeSummary = findViewById(R.id.probeSummary);
         findViewById(R.id.btnProbeStart).setOnClickListener(v -> startProbe());
         findViewById(R.id.btnProbeExport).setOnClickListener(v -> exportProbe());
 
-        findViewById(R.id.btnOpenCmcc).setOnClickListener(v -> openTarget());
-        findViewById(R.id.btnCopyWelfare).setOnClickListener(v -> copyWelfareUrl());
-        findViewById(R.id.btnOpenLogs).setOnClickListener(v -> selectTab(TAB_LOG));
+        // v4.2.0：删掉首页「快捷操作」（打开移动 / 复制福利链接 / 查看日志）与「抓取步骤」，
+        // 捐赠从「关于」里独立成一栏，id 仍是 btnDonate。
         findViewById(R.id.btnDonate).setOnClickListener(
                 v -> openExternalLink(getString(R.string.about_donate_url)));
         findViewById(R.id.btnGroup).setOnClickListener(
@@ -345,6 +393,7 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchH5Noise, AppPrefs.KEY_FILTER_H5_NOISE);
         bindSwitch(R.id.switchVerboseRaw, AppPrefs.KEY_VERBOSE_RAW, true);
         bindSwitch(R.id.switchSecondary, AppPrefs.KEY_HOOK_SECONDARY, false);
+        bindSwitch(R.id.switchAdBlock, AppPrefs.KEY_AD_BLOCK);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
         bindSwitch(R.id.switchKeepAlive, AppPrefs.KEY_KEEPALIVE);
         findViewById(R.id.btnRunAll).setOnClickListener(
@@ -365,6 +414,8 @@ public final class MainActivity extends AppCompatActivity {
         setupLogPage();
         LogReceiver.setCouponWatcher(this::onCouponEvent);
         LogReceiver.setFlowWatcher(this::onFlowEvent);
+        // v4.2.0：刷新 / 抢券的实时步骤，直接写到状态行，用户不用干等。
+        LogReceiver.setProgressWatcher(this::onProgressEvent);
         selectTab(TAB_HOME);
         // 短信权限只申请一次，用户拒绝也不阻塞其它功能。
         ensureSmsPermission(false);
@@ -407,6 +458,7 @@ public final class MainActivity extends AppCompatActivity {
         worker.shutdownNow();
         LogReceiver.setCouponWatcher(null);
         LogReceiver.setFlowWatcher(null);
+        LogReceiver.setProgressWatcher(null);
         handler.removeCallbacks(flowTimeout);
         // v4.0.3：停掉消耗测速的下载线程与计时器，避免退出后后台继续偷跑流量。
         FlowAssist.stopAll();
@@ -692,6 +744,28 @@ public final class MainActivity extends AppCompatActivity {
         return tv;
     }
 
+    /** v4.2.0：删掉一条扫描发现的入口（内置的不允许删）。 */
+    private void confirmDeleteWelfare(final WelfareCatalog.Item item) {
+        if (item == null) {
+            return;
+        }
+        if (!item.live) {
+            Toast.makeText(this, "内置活动不能删除，只能关闭开关", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("删除这一条")
+                .setMessage(item.name + "\n\n只会从清单里去掉，下次扫描扫到同一条也不会再出现。"
+                        + "想恢复就清除应用数据。")
+                .setNegativeButton("取消", null)
+                .setPositiveButton("删除", (d, w) -> {
+                    WelfareCatalog.hide(this, item.frag);
+                    buildWelfare();
+                    Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
+                })
+                .show();
+    }
+
     private View welfareRow(final WelfareCatalog.Item item) {
         View row = getLayoutInflater().inflate(R.layout.item_welfare, welfareList, false);
         TextView name = row.findViewById(R.id.welfareName);
@@ -830,6 +904,12 @@ public final class MainActivity extends AppCompatActivity {
         // 导出固定留一个位置：没有报告时点了会提示「还没采集过」，比按钮忽隐忽现好懂。
         actions.add("导出采集报告");
         handlers.add(() -> exportAct(item));
+        // v4.2.0：扫描发现的条目可以删。内置的不给这个选项 —— 内置是模块自己维护的
+        // 活动表，删了下次升级又会回来，反而让人以为没删掉。
+        if (item.live) {
+            actions.add("删除这一条");
+            handlers.add(() -> confirmDeleteWelfare(item));
+        }
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -1058,6 +1138,37 @@ public final class MainActivity extends AppCompatActivity {
      * 重读清单：只把目标进程里已缓存的采集结果重新读一遍，不重新采集。
      * 要重新采集走「立即采集」。
      */
+    /**
+     * v4.2.0：抢券入口。
+     *
+     * <p>「提前不是模块提前，是用户提前进，会在页面等着」—— 所以这里不做任何时间判断，
+     * 点了就把 App 拉到前台、打开抢券页停住；目标进程的 {@link GrabTask} 自己算还差多久，
+     * 到点再动手。已经过了开抢时间就直接试。
+     */
+    private void grabStart(String kind) {
+        if (kind == null || kind.isEmpty()) {
+            return;
+        }
+        boolean same = kind.equals(grabRunningKind);
+        if (!sendTaskBroadcast(GrabTask.CMD + kind)) {
+            Toast.makeText(this, "指令发送失败，请重试", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (same) {
+            grabRunningKind = "";
+            if (grabStatus != null) {
+                grabStatus.setText(getString(R.string.grab_idle));
+            }
+            Toast.makeText(this, "已取消等待", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        grabRunningKind = kind;
+        if (grabStatus != null) {
+            grabStatus.setText("· 打开抢券页…");
+        }
+        Toast.makeText(this, "已进入抢券页，正在等待开抢", Toast.LENGTH_SHORT).show();
+    }
+
     private void refreshWelfare() {
         AppPrefs.triggerTask(this, TaskRunner.CMD_WELFARE);
         boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
@@ -1639,16 +1750,9 @@ public final class MainActivity extends AppCompatActivity {
             Toast.makeText(this, "正在读取，稍候…", Toast.LENGTH_SHORT).show();
             return;
         }
-        boolean alive = System.currentTimeMillis()
-                - AppPrefs.getLastHeartbeat(this) < 90_000L;
-        if (!alive) {
-            // 目标进程没起来，广播没人收；离屏读页面还要复用 App 现成的登录态 Cookie。
-            if (flowNotify != null) {
-                flowNotify.setText("中国移动 App 没在运行：请先打开一次中国移动 App（让登录态就绪），再点「一键查询」。");
-            }
-            Toast.makeText(this, "请先打开一次中国移动 App 再刷新流量", Toast.LENGTH_LONG).show();
-            return;
-        }
+        // v4.2.0：去掉「90 秒内有心跳才允许刷新」这道闸 —— 用户反馈切过去有时根本不拉，
+        // 就是 App 刚被系统冻结、心跳过期被静默跳过。现在照发，目标进程收到就会自己
+        // 把 App 拉到前台；连发 3 次仍无进度，才提示先打开一次 App。
         flowAutoAt = System.currentTimeMillis();
         flowLoading = true;
         // v4.0.9：余量也在 App 官方余量页里读，先把 App 切到前台。
@@ -1664,7 +1768,9 @@ public final class MainActivity extends AppCompatActivity {
             if (flowNotify != null) {
                 flowNotify.setText("指令发送失败，请重试。");
             }
+            return;
         }
+        scheduleResend("flow", 2);
     }
 
     /**
@@ -1699,18 +1805,17 @@ public final class MainActivity extends AppCompatActivity {
             }
         } catch (Throwable ignored) {
         }
-        boolean alive = now - AppPrefs.getLastHeartbeat(this) < 90_000L;
-        if (!alive) {
-            return; // 目标没在线，静默跳过；用户手动点「一键查询」才有明确提示
-        }
         flowAutoAt = now;
         flowLoading = true;
+        bringTargetToFront();
         if (flowNotify != null) {
             flowNotify.setText(R.string.flow_refreshing);
         }
         handler.removeCallbacks(flowTimeout);
         handler.postDelayed(flowTimeout, FLOW_TIMEOUT_MS);
-        if (!sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+        if (sendTaskBroadcast(TaskRunner.CMD_FLOW)) {
+            scheduleResend("flow", 1);
+        } else {
             handler.removeCallbacks(flowTimeout);
             flowLoading = false;
             // 静默：指令发不出去也不打扰用户，等下次进页重试
@@ -1734,17 +1839,16 @@ public final class MainActivity extends AppCompatActivity {
         if (couponItems.length() > 0 && now - CouponStore.at(this) < COUPON_FRESH_MS) {
             return;
         }
-        if (now - AppPrefs.getLastHeartbeat(this) >= 90_000L) {
-            return; // 目标没在线，广播没人收；用户手动点「刷新」才有明确提示
-        }
         couponAutoAt = now;
         couponQuietScan = true;
         CouponStore.markScanStart(this);
         if (couponAt != null) {
             couponAt.setText(R.string.coupon_scanning);
         }
-        // 静默：不发 Toast、不主动拉起 App，发不出去就等下次进页重试。
-        sendTaskBroadcast(CouponTask.CMD_SCAN);
+        // 静默：不发 Toast；广播没人接就补发一次（App 刚冻结时第一条常丢）。
+        if (sendTaskBroadcast(CouponTask.CMD_SCAN)) {
+            scheduleResend("coupon", 1);
+        }
     }
 
     /** 流量结果广播回来：解锁 + 重画流量页（数据已由 LogReceiver 落盘）。 */
@@ -1752,9 +1856,45 @@ public final class MainActivity extends AppCompatActivity {
         runOnUiThread(() -> {
             if (LogReceiver.ACTION_FLOW_DATA.equals(action)) {
                 handler.removeCallbacks(flowTimeout);
+                cancelResend();
                 flowLoading = false;
                 if (pageFlow != null) {
                     FlowView.render(this, pageFlow);
+                }
+            }
+        });
+    }
+
+    /**
+     * 目标进程报上来的实时步骤（v4.2.0）。
+     *
+     * <p>流量刷新写到「流量」页的状态行，券刷新写到券页的进度行，抢券写到抢券卡。
+     * 收到任意一条就说明目标进程活着并且在干活，把补发任务撤掉。
+     */
+    private void onProgressEvent(String scope, String text) {
+        if (text == null || text.isEmpty()) {
+            return;
+        }
+        runOnUiThread(() -> {
+            cancelResend();
+            if ("flow".equals(scope)) {
+                if (flowNotify != null && flowLoading) {
+                    flowNotify.setText(text);
+                }
+            } else if ("grab".equals(scope)) {
+                if (grabStatus != null) {
+                    grabStatus.setText(text);
+                }
+                if (text.startsWith("✓") || text.contains("已取消") || text.contains("先不等了")) {
+                    grabRunningKind = "";
+                }
+            } else if ("coupon".equals(scope)) {
+                if (couponRunning) {
+                    if (couponBar != null) {
+                        couponBar.setText(text);
+                    }
+                } else if (couponAt != null) {
+                    couponAt.setText(text);
                 }
             }
         });

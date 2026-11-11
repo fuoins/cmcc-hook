@@ -8,8 +8,9 @@
     <string name="about_title">关于</string>
     <string name="about_desc">LSPosed 模块 · 中国移动福利活动自动化助手</string>
     <string name="about_link_tip">捐赠 / Telegram / 项目点条目直接打开；QQ 群直接唤起 QQ 加群</string>
-    <string name="about_donate">捐赠支持</string>
     <string name="about_donate_url">https://zy520.de5.net/juanzeng/</string>
+    <string name="donate_title">捐赠支持</string>
+    <string name="donate_row">打开捐赠页面</string>
     <string name="about_group">交流群组 · Telegram</string>
     <string name="about_group_url">https://t.me/yidongqdzs</string>
     <string name="about_qq">交流群组 · QQ</string>
@@ -48,6 +49,8 @@
     <string name="task_egg_desc">浏览任务全部做完换次数，再把次数一次抽完；纯接口，后台跑</string>
     <string name="task_goose">收鹅蛋换好礼</string>
     <string name="task_goose_desc">离屏加载活动页，页面内打卡、领饲料、投喂、收蛋、领任务</string>
+    <string name="task_ad_block">自动关闭广告</string>
+    <string name="task_ad_block_desc">拦掉首页弹窗接口，并关掉开屏期间的广告弹层；默认开。万一首页数据异常，关掉即可恢复。</string>
     <string name="task_auto">自动补跑</string>
     <string name="task_auto_desc">上面开关打开的活动，每天自动补跑一次；关掉就只手动执行</string>
     <string name="task_keepalive">定时自检</string>    <string name="task_keepalive_desc">每 30 分钟唤醒一次，解冻中国移动 App 并跑掉当天没完成的活动；不打开界面、不弹通知</string>
@@ -74,15 +77,9 @@
     <string name="capture_secondary">注入其他进程（默认关闭）</string>
     <string name="capture_secondary_desc">加固壳的 :tools 安全进程始终跳过。只有需要抓取推送 / X5 沙盒等进程时才打开，平时保持关闭更稳定。</string>
 
-    <string name="actions_title">快捷操作</string>
-    <string name="open_cmcc">打开中国移动</string>
-    <string name="copy_welfare_url">复制福利中心链接</string>
-    <string name="open_logs">查看日志</string>
     <string name="welfare_url_copied">福利中心链接已复制</string>
     <string name="cmcc_not_installed">未找到中国移动 App</string>
 
-    <string name="howto_title">抓取步骤</string>
-    <string name="howto_body">1. 在 LSPosed 中启用本模块，作用域只勾选「中国移动」，然后强制停止中国移动 App。\n2. 打开中国移动 App，进入福利中心页面。\n3. 按顺序点一遍需要自动化的签到、领奖、任务按钮。\n4. 回到本页，点「查看日志」，再点「刷新」检查是否抓到了接口。\n5. 点「导出到 Download」，把导出的 txt 文件发回来。导出的日志包含账号凭据，请只发给可信的人。</string>
     <string name="capture_warning">日志可能包含 Cookie、Token、Authorization、手机号等敏感信息，仅保存在本机。导出后请勿上传到公开网盘或群聊。</string>
 
     <string name="capture_verbose_raw">详细原始返回</string>
@@ -136,7 +133,14 @@
     <string name="welfare_hint">活动都已内置。点一行可以：在软件内打开、复制链接、采集这个活动、导出采集报告。已接入的开关打开就会跑；待适配的点「采集这个活动」，把那一页的控件和接口带出来，照着就能接。</string>
     <string name="welfare_all">全部活动</string>
     <string name="welfare_summary_placeholder">共 0 项 · 已开 0 项</string>
-    <string name="welfare_refresh">重读清单</string>
+    <string name="welfare_refresh">刷新</string>
+    <string name="grab_title">抢券</string>
+    <string name="grab_wed">周三 88 元话费券</string>
+    <string name="grab_wed_desc">每周三 08:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
+    <string name="grab_noon">12 点话费券</string>
+    <string name="grab_noon_desc">每天 12:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
+    <string name="grab_enter">进入等待</string>
+    <string name="grab_idle">还没开始。提前进去会在页面上等，到点自动抢；已经过点就直接试着抢。</string>
     <string name="welfare_never">内置活动已全部列出。点「扫描福利专区」可以发现福利专区里新上架、内置表里还没有的活动。</string>
     <string name="welfare_at">上次采集：%1$s · 新发现 %2$d 个</string>
     <string name="welfare_state_impl">已接入</string>

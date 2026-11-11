@@ -73,7 +73,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "realpage5-20261111";
+    static final String BUILD = "grab6-20261111";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -300,6 +300,18 @@ final class FlowTask {
                 + "不发请求、不解密、不拼签名、不自动登录。跑完关掉自己开的页。\n");
 
         JSONObject tree;
+        // v4.2.0：先确认 App 在前台（不在就拉起来），并把每一步写到模块界面。
+        // 用户原话：「刷新你要看移动还在不在前台 没在就拉前台」。
+        if (RealPage.foreground()) {
+            HookLog.progress("flow", "✓ App 已在前台");
+            diary.append("前台: App 已在前台\n");
+        } else {
+            HookLog.progress("flow", "· App 在后台，正在拉到前台…");
+            diary.append("前台: App 在后台 → 自动拉起\n");
+            boolean ok = RealPage.ensureForeground();
+            HookLog.progress("flow", ok ? "✓ 已把 App 拉到前台" : "· App 拉不起来，继续试");
+            diary.append("前台: 拉起").append(ok ? "成功" : "失败").append('\n');
+        }
         RealPage.beginSession();
         try {
             tree = readTree(diary);
@@ -320,6 +332,7 @@ final class FlowTask {
             String rt = tree.optString("rawTree", "");
             diary.append("全量树原文(前 2000 字):\n")
                     .append(rt.length() > 2000 ? rt.substring(0, 2000) + "…" : rt).append('\n');
+            HookLog.progress("flow", "✓ 读到 " + countItems(tree) + " 条套餐");
             HookLog.log("FLOW", "流量余量 · 全量树 " + countItems(tree) + " 条 · " + BUILD,
                     diary.toString());
             send(tree);
@@ -349,25 +362,30 @@ final class FlowTask {
      * 三级都空才退回离屏，离屏再空才用首页 localStorage 的 3 条汇总兜底。
      */
     private static JSONObject readTree(StringBuilder diary) {
+        HookLog.progress("flow", "· 找已打开的余量页…");
         JSONObject live = readLive(diary);
         if (live != null && countItems(live) > 0) {
             return live;
         }
         // v4.0.9：余量页没开着就主动用 App 容器拉起来 —— 所有功能都走真页，
         // 真页起不来才退回离屏（离屏那条路 18:12 日志里是零请求，只做兜底）。
+        HookLog.progress("flow", "· 打开 App 官方余量页…");
         if (openRealPage(diary)) {
+            HookLog.progress("flow", "· 等页面请求并解密…");
             live = readLive(diary);
             if (live != null && countItems(live) > 0) {
                 return live;
             }
             // 11-10 23:32 日志：真页开着、轮询 2 轮就空手而归（单次 eval 超时吃掉
             // 全部预算）。光等不够，再给它一次干净的加载。
+            HookLog.progress("flow", "· 页面在但没数据，重载一次…");
             reloadOpened(diary);
             live = readLive(diary);
             if (live != null && countItems(live) > 0) {
                 return live;
             }
         }
+        HookLog.progress("flow", "· 真页没读到，改用离线页兜底…");
         return readOffscreen(diary);
     }
 
@@ -580,6 +598,7 @@ final class FlowTask {
         JSONObject last = null;
         int rounds = 0;
         String lastState = "";
+        long lastReportAt = -2_000L;
         while (System.currentTimeMillis() < end) {
             rounds++;
             String raw = null;
@@ -604,6 +623,12 @@ final class FlowTask {
                     }
                 } catch (Throwable ignored) {
                 }
+            }
+            // v4.2.0：等的时候把真实进度写到屏幕上，用户不必猜「是不是卡死了」。
+            long waited = System.currentTimeMillis() - (end - deadlineMs);
+            if (waited >= lastReportAt + 2_000L) {
+                lastReportAt = waited;
+                HookLog.progress("flow", "· 等页面请求并解密（已等 " + (waited / 1000) + "s）");
             }
             try {
                 Thread.sleep(gapMs);

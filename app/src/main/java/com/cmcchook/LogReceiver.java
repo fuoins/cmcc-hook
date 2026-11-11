@@ -29,6 +29,8 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_FLOW_DATA = "com.cmcchook.action.FLOW_DATA";
     /** v4.0 电话进程框架层短信通道的安装诊断（回答「还得加东西吗」）。 */
     static final String ACTION_SMS_DIAG = "com.cmcchook.action.SMS_DIAG";
+    /** v4.2.0 刷新 / 抢券的实时步骤（界面上滚动显示，不用干等）。 */
+    static final String ACTION_PROGRESS = HookLog.ACTION_PROGRESS;
 
     /** 优惠券页开着时，收到广播立刻刷新；关着就只落盘。 */
     interface CouponWatcher {
@@ -50,6 +52,17 @@ public final class LogReceiver extends BroadcastReceiver {
 
     static void setFlowWatcher(FlowWatcher watcher) {
         flowWatcher = watcher;
+    }
+
+    /** 刷新进度：界面开着就实时换状态行，关着就丢掉（不需要落盘）。 */
+    interface ProgressWatcher {
+        void onProgress(String scope, String text);
+    }
+
+    private static volatile ProgressWatcher progressWatcher;
+
+    static void setProgressWatcher(ProgressWatcher watcher) {
+        progressWatcher = watcher;
     }
 
     @Override
@@ -89,6 +102,8 @@ public final class LogReceiver extends BroadcastReceiver {
             handleFlowData(context, intent);
         } else if (ACTION_SMS_DIAG.equals(action)) {
             handleSmsDiag(context, intent);
+        } else if (ACTION_PROGRESS.equals(action)) {
+            handleProgress(intent);
         }
     }
 
@@ -157,6 +172,18 @@ public final class LogReceiver extends BroadcastReceiver {
      * InboundSmsHandler 找没找到、hook 到几个方法。这条广播把它们写进日志页，
      * 下次导日志就能一眼定位，不用再猜「是不是还得加东西」。
      */
+    private void handleProgress(Intent intent) {
+        ProgressWatcher watcher = progressWatcher;
+        if (watcher == null) {
+            return;
+        }
+        try {
+            watcher.onProgress(intent.getStringExtra("scope"),
+                    intent.getStringExtra("text"));
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void handleSmsDiag(Context context, Intent intent) {
         String summary = intent.getStringExtra("summary");
         String detail = intent.getStringExtra("detail");

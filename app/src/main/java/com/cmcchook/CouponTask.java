@@ -330,10 +330,16 @@ final class CouponTask {
             LiveHost live = new LiveHost(real.raw());
             long end = System.currentTimeMillis() + SCAN_LIST_WAIT_MS;
             boolean ready = false;
+            long lastSay = -3_000L;
             while (System.currentTimeMillis() < end) {
                 if ("1".equals(live.eval(LIST_JS, 3_000L))) {
                     ready = true;
                     break;
+                }
+                long waited = SCAN_LIST_WAIT_MS - (end - System.currentTimeMillis());
+                if (waited >= lastSay + 2_000L) {
+                    lastSay = waited;
+                    HookLog.progress("coupon", "· 等券列表渲染（已等 " + Math.max(0, waited / 1000) + "s）");
                 }
                 sleep(400L);
             }
@@ -366,10 +372,16 @@ final class CouponTask {
         // 等券列表真的画出来：光「文档加载完」不够，SPA 骨架里一个券按钮都没有。
         long end = System.currentTimeMillis() + SCAN_LIST_WAIT_MS;
         boolean ready = false;
+        long lastSay = -3_000L;
         while (System.currentTimeMillis() < end) {
             if ("1".equals(off.eval(LIST_JS, 3_000L))) {
                 ready = true;
                 break;
+            }
+            long waited = SCAN_LIST_WAIT_MS - (end - System.currentTimeMillis());
+            if (waited >= lastSay + 2_000L) {
+                lastSay = waited;
+                HookLog.progress("coupon", "· 等券列表渲染（已等 " + Math.max(0, waited / 1000) + "s）");
             }
             sleep(400L);
         }
@@ -461,6 +473,8 @@ final class CouponTask {
         busy = true;
         Host host = null;
         try {
+            // v4.2.0：刷新时把每一步写到券页状态行，用户不用干等。
+            HookLog.progress("coupon", "· 打开 App 卡券页…");
             // v4.0.8：一键扫描 = 纯离屏，界面不动、只按一下，不碰前台真页。
             //
             // 22:05 / 22:06 真机日志定位到的真根因：离屏页 Vue 券列表恒不渲染
@@ -488,6 +502,7 @@ final class CouponTask {
                                 + "桥清单与页面发出的接口清单。");
                 return;
             }
+            HookLog.progress("coupon", "✓ 读到 " + countOf(raw) + " 张券");
             sendList(raw);
             HookLog.log("COUPON", "卡券扫描 · " + countOf(raw) + " 张",
                     "现场: " + (host == null ? "无" : host.name()) + "\n" + describe(raw));

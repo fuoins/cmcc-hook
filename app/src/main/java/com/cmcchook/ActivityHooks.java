@@ -61,6 +61,9 @@ final class ActivityHooks {
                                 HookLog.setApplication(app);
                                 CrashHooks.ensureDefaultHandler();
                                 logAppStart(app);
+                                // v4.2.0：开屏窗口的起点 + 广告弹层观察（Dialog / PopupWindow）。
+                                AdGuard.markStart();
+                                AdGuard.install();
                                 TaskReceiver.install(app);
                                 // v4.0.1：在中国移动 App 主进程里注册 SMS_RECEIVED，用它自己的
                                 // 短信权限读验证码，绕开小米对第三方模块的验证码防护。
@@ -77,6 +80,11 @@ final class ActivityHooks {
             XposedBridge.hookAllMethods(Activity.class, "onCreate", new XC_MethodHook() {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
+                    // 广告观察独立于「页面」抓取开关：删广告是功能，不是抓包。
+                    try {
+                        AdGuard.observeActivity((Activity) param.thisObject);
+                    } catch (Throwable ignored) {
+                    }
                     if (!HookPrefs.ui()) {
                         return;
                     }

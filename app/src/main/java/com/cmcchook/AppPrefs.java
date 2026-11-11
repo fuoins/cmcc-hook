@@ -27,6 +27,8 @@ final class AppPrefs {
     static final String KEY_PAGE_EGG = "auto_page_egg";
     static final String KEY_PAGE_GOOSE = "auto_page_goose";
     static final String KEY_API_ONLY = "api_only";
+    /** 自动关闭启动 / 首页广告（拦截首页弹窗接口 + 关掉广告类弹层），默认开。 */
+    static final String KEY_AD_BLOCK = "ad_block";
     static final String KEY_KEEPALIVE = "keep_alive";
     static final String KEY_KEEP_GAP = "keep_gap";
 

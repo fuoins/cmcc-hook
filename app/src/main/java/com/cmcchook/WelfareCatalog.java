@@ -227,6 +227,43 @@ final class WelfareCatalog {
             "1026082720", "1126037461"
     };
 
+    /**
+     * v4.2.0：用户自己删掉的「采集发现」条目。
+     *
+     * <p>内置活动不允许删（删了就再也找不回来，页面上会整块消失）；采集发现的新入口
+     * 是模块扫出来的，用户不想要就该能删。删掉的 id 存在 settings 里，下次扫描即使
+     * 又扫到同一条也不再冒出来。
+     */
+    private static final String KEY_HIDDEN = "welfare_hidden";
+
+    static boolean hidden(Context ctx, String id) {
+        if (ctx == null || id == null || id.isEmpty()) {
+            return false;
+        }
+        try {
+            java.util.Set<String> set = prefs(ctx).getStringSet(KEY_HIDDEN, null);
+            return set != null && set.contains(id.toLowerCase(Locale.US));
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    static void hide(Context ctx, String id) {
+        if (ctx == null || id == null || id.isEmpty()) {
+            return;
+        }
+        try {
+            java.util.Set<String> old = prefs(ctx).getStringSet(KEY_HIDDEN, null);
+            java.util.Set<String> next = new java.util.LinkedHashSet<>();
+            if (old != null) {
+                next.addAll(old);
+            }
+            next.add(id.toLowerCase(Locale.US));
+            prefs(ctx).edit().putStringSet(KEY_HIDDEN, next).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 这个活动号是不是已经下线、不展示。 */
     private static boolean retired(String id) {
         if (id == null || id.isEmpty()) {
@@ -271,10 +308,21 @@ final class WelfareCatalog {
                 }
             }
             if (hit >= 0) {
-                built.set(hit, built.get(hit).withUrl(url));
+                // v4.2.0：wisdom-h5 那两条（签到抽奖 / 乡友问答）不能被商城的页面地址覆盖。
+                // 采集时「签到抽奖」按钮跳的是福利专区首页，覆盖之后「在软件内打开」
+                // 就进了商城，页面根本不认识那些路由。
+                String frag = built.get(hit).frag;
+                boolean wisdom = "signinlottery".equals(frag) || "answerquestions".equals(frag);
+                if (!wisdom || url.contains("wisdom-h5") || url.contains("digismart.lncmcc.com")) {
+                    built.set(hit, built.get(hit).withUrl(url));
+                }
                 continue;
             }
             if (!looksLikeActivity(url) || !seen.add(id)) {
+                continue;
+            }
+            // 用户删掉过的，扫描再扫到也不再冒出来。
+            if (hidden(ctx, id)) {
                 continue;
             }
             String name = one[0] == null || one[0].isEmpty() ? "新入口 · " + id : one[0];

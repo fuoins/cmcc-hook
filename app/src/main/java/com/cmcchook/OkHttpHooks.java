@@ -57,6 +57,24 @@ final class OkHttpHooks {
         try {
             XposedBridge.hookAllMethods(clazz, "proceed", new XC_MethodHook() {
                 @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    // 广告拦截：首页弹窗接口直接打断，调用方走失败分支就不弹。
+                    // 等价于「这一条请求断网」，App 必然要处理网络失败，不会崩。
+                    if (!AdGuard.enabled()) {
+                        return;
+                    }
+                    Object request = findRequest(param.args);
+                    if (request == null) {
+                        return;
+                    }
+                    String url = requestUrl(request);
+                    if (AdGuard.blockable(url)) {
+                        param.setThrowable(new java.io.IOException("cmcc-hook: ad blocked"));
+                        AdGuard.reportBlocked(url);
+                    }
+                }
+
+                @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     handleProceed(param);
                 }

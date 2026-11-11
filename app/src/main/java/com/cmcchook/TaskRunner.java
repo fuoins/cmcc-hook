@@ -622,6 +622,14 @@ final class TaskRunner {
     }
 
     /** 按命令重新找一次入口，只在静默取数之后用。 */
+    /** 地址是不是 wisdom-h5 那个 SPA（签到抽奖 / 乡友问答都在它里面）。 */
+    private static boolean wisdomish(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        return url.contains("wisdom-h5") || url.contains("digismart.lncmcc.com");
+    }
+
     private static String resolveEntry(String cmd) {
         if (CMD_SIGN.equals(cmd)) {
             return TaskApi.signEntry();
@@ -666,13 +674,18 @@ final class TaskRunner {
         if (CMD_WEEKLY.equals(cmd)) {
             return TaskApi.findEntry("zzcj2");
         }
+        // v4.2.0：11-11 08:22 日志实证 —— 模块「从软件进入」签到抽奖时打开的是
+        // wx.10086.cn/website/businessPlatform/shop?pageid=f381…（福利专区首页），
+        // 而用户手点进的是 digismart.lncmcc.com/wisdom-h5/index.html（页面自己 SSO 换票
+        // 再跳 #/signInLottery）。原因是采集把「签到抽奖」按钮所在的商城页当成了活动入口。
+        // 现在只要地址不在 wisdom-h5 这个 SPA 上，就一律用内置根地址 + 路由。
         if (CMD_SIGNLOTTERY.equals(cmd)) {
             String e = TaskApi.findEntry("signInLottery");
-            return e.isEmpty() ? WisdomTask.ACT_SIGN : e;
+            return wisdomish(e) ? e : WisdomTask.ACT_SIGN;
         }
         if (CMD_QUIZ.equals(cmd)) {
             String e = TaskApi.findEntry("answerQuestions");
-            return e.isEmpty() ? WisdomTask.ACT_QUIZ : e;
+            return wisdomish(e) ? e : WisdomTask.ACT_QUIZ;
         }
         if (cmd.startsWith(CMD_DIY)) {
             return TaskApi.findEntry("diy-client/" + cmd.substring(CMD_DIY.length()));
@@ -1070,6 +1083,12 @@ final class TaskRunner {
         List<String> cmds = new ArrayList<>();
         try {
             for (WelfareCatalog.Item item : WelfareCatalog.items(HookLog.context())) {
+                // v4.2.0：抢券类（周三 88 元话费券 08:00、每日 12 点话费券）不进「一键全做」。
+                // 一键是随手跑一轮，赶不上开抢时间，跑了也是空手；它们改成福利页手动
+                // 「进入等待」，到点由 GrabTask 抢。
+                if (CMD_WED.equals(item.cmd) || CMD_SECKILL.equals(item.cmd)) {
+                    continue;
+                }
                 if (WelfareCatalog.runnable(item) && WelfareCatalog.enabled(HookLog.context(), item)
                         && !cmds.contains(item.cmd)) {
                     cmds.add(item.cmd);

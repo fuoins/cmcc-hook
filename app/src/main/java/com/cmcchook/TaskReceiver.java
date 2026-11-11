@@ -182,6 +182,27 @@ final class TaskReceiver {
                         }, "cmcc-coupon").start();
                         return;
                     }
+                    // v4.2.0 抢券：提前进页面等、到点自动抢。和流量一样不进任务队列 ——
+                    // 它可能要等几个小时，进队列会把「过任务」堵死。
+                    if (cmd.startsWith(GrabTask.CMD)) {
+                        final String kind = cmd.substring(GrabTask.CMD.length());
+                        ack(context, cmd);
+                        final BroadcastReceiver.PendingResult grabPending = goAsync();
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    GrabTask.run(kind);
+                                } finally {
+                                    try {
+                                        grabPending.finish();
+                                    } catch (Throwable ignored) {
+                                    }
+                                }
+                            }
+                        }, "cmcc-grab").start();
+                        return;
+                    }
                     // v4.0 流量余量：离屏只读官方余量页，结果用广播回模块 UI。
                     // 和券扫描一样不进任务队列（只读、不记今日状态、不占用「过任务」串行池）。
                     if (TaskRunner.CMD_FLOW.equals(cmd)) {

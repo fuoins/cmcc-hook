@@ -158,7 +158,10 @@ final class CanvasTask {
                         "按钮点到了，但页面没发出请求也没变成已打卡。把完整日志发我。");
             }
             if (out.optInt("already", 0) == 1
-                    || text0.contains("已打卡") || text0.contains("明天再来")) {
+                    || text0.contains("已打卡") || text0.contains("明天再来")
+                    // v4.2.0：打卡成功的页面会把抽奖次数发下来，文案变成
+                    // 「今日抽奖次数已用完」，这就是「今天打过了」的等价证据。
+                    || text0.contains("抽奖次数已用完") || text0.contains("机会已用完")) {
                 String summary = name + " · 今天已经打过卡";
                 return TaskRunner.Result.idle(summary, detail.toString(), summary);
             }
@@ -313,11 +316,16 @@ final class CanvasTask {
         // v3.91：21:33 日志 —— 服务端账号风控，不是模块坏了、也不是没机会。
         // 别再笼统报「接口拒绝」，更不能引导用户反复重试（会加重风控）。
         if (drawRisk > 0) {
-            String summary = name + " · 账号触发服务端风控（SCORE_REFUSE），本次未完成";
-            return TaskRunner.Result.fail(summary,
-                    detail.append("判定: 服务端风控拦截（v3.92），已停止重试\n").toString(),
-                    "这次是账号/设备被服务端风控拦了，不是模块坏了，也不是没抽奖次数。"
-                            + "别在短时间内反复点这个活动（会加重风控），过一阵或换个号再试。");
+            // v4.2.0：用户明确要求「周周那个风控不算过任务」—— SCORE_REFUSE 是服务端
+            // 当场拒绝，不是模块没做、也不是活动没机会。以前报 fail，界面记一个 ✗，
+            // 还会进失败计数、下一轮又去撞一次，只会加重风控。改成 idle：
+            // 记为「今天不做」，不重试。
+            String summary = name + " · 服务端风控拦了，今天先不做（不算失败）";
+            return TaskRunner.Result.idle(summary,
+                    detail.append("判定: 服务端风控拦截（v4.2.0 改判 idle），已停止重试\n")
+                            .toString(),
+                    "这次是账号/设备被服务端风控拦了，不是模块坏了，也不是没机会。"
+                            + "模块不会反复重试；过一阵再手动执行一次。");
         }
         if (signTry > 0 || drawTry > 0) {
             return TaskRunner.Result.fail(name + " · 动作发了但没成功",
@@ -1176,7 +1184,10 @@ final class CanvasTask {
                     // 先把「今天到底签没签」用页面自己的按钮问清楚，别拿文案猜。
                     var markV=NET.length;
                     var dom={try:0,ok:0,hits:[],before:cut(t0,160),after:''};
-                    var already=/已打卡|今日已签|今天已签|明天再来/.test(t0);
+                    // v4.2.0：11-11 08:22 日志 —— 7 日打卡页文案是「今日抽奖次数已用完」，
+                    // 说明今天已经打过卡（打卡才有抽奖次数）。旧正则不认这句，
+                    // 脚本以为没打卡，接着找按钮找不到，最后报「没找到打卡入口」。
+                    var already=/已打卡|今日已签|今天已签|明天再来|抽奖次数已用完|机会已用完|已连续/.test(t0);
                     if(NEED_SIGN && !already){
                       var mark0=NET.length;
                       var got=hitAny(['立即打卡','今日打卡','打卡','签到'],1);

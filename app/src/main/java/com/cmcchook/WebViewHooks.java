@@ -910,7 +910,7 @@ final class WebViewHooks {
      * <p>只认明确的几种，不按域名一刀切：球赛活动自己也会跨到 lyh 的其它子页，
      * 拦宽了活动就跑不下去。
      */
-    private static boolean isDetourUrl(String url) {
+    static boolean isDetourUrl(String url) {
         if (url == null || url.isEmpty()) {
             return false;
         }

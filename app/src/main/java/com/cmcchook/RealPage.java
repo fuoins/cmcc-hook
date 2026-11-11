@@ -694,6 +694,13 @@ final class RealPage {
         // 先用「带渠道参数」的同类地址替换裸地址：11-10 22:27 的砸蛋就是裸地址
         // 被 wx 302 到 notice/limited?A_C_CODE=null，白跑一轮还报「完成」。
         url = preferBetter(url);
+        // v4.2.0：不管复用还是新开，先确认 App 在前台 —— 用户原话「刷新你要看移动还在不在
+        // 前台 没在就拉前台」。以前只在「需要新开页」时才拉，命中已开页但 App 在后台时
+        // 页面是冻结的，eval 一直拿不到数据，最后被判成「真页读不到」。
+        if (!foreground()) {
+            HookLog.log("PAGE", "App 不在前台 · 打开前先拉起", "目标: " + shortUrl(url));
+            ensureForeground();
+        }
         long deadline = System.currentTimeMillis() + Math.max(8_000L, timeoutMs);
         String match = key == null || key.isEmpty() ? pathKey(url) : key;
 
@@ -707,8 +714,20 @@ final class RealPage {
             // 顶到了 transferDownload 下载引导页（标题「中国移动客户端」），鹅蛋脚本
             // 当场失去 JS 上下文，任务卡死。用户手动点开活动是「新开一个页面」，这里对齐。
             if (sv != null && sameHost(sessionUrl, url)) {
-                view = sv;
-                reused = true;
+                // v4.2.0：先看这一页现在到底停在哪。用户「看完流量再去看券」时，前台那个
+                // 真页已经被导航成卡券页了；此时若直接 navigateFast 回余量页，等于把用户
+                // 正在看的券页抢走，下次刷新券又要重开。只有「当前确实还停在目标页」才复用，
+                // 否则另开一页，谁都不打扰。
+                String cur = lastUrlOf(sv);
+                boolean samePage = cur == null || cur.isEmpty()
+                        || samePath(cur, pathKey(url));
+                if (samePage) {
+                    view = sv;
+                    reused = true;
+                } else {
+                    HookLog.log("PAGE", "前台真页已变成别的页面 · 另开一页",
+                            "当前: " + shortUrl(cur) + "\n目标: " + shortUrl(url));
+                }
             }
         }
 
@@ -747,6 +766,53 @@ final class RealPage {
                 page.navigateFast(url, Math.max(6_000L, deadline - System.currentTimeMillis()));
             }
         }
+        // v4.2.0：页面里的「下载 App」广告位会把整页顶到 transferDownload 引导页，
+        // 看起来像打开了，其实活动页的 JS 上下文已经销毁 —— 11-11 08:22 日志里
+        // 鹅蛋和球赛就是这样「现场: null」直接跳过的。这里复查最终地址，
+        // 被顶走就丢掉这一页重开一次；再被顶走才认输并写清原因。
+        String landed = page.href();
+        if (WebViewHooks.isDetourUrl(landed) && !WebViewHooks.isDetourUrl(url)) {
+            HookLog.log("PAGE", "真页被下载引导页顶走 · 重开一次",
+                    "打开: " + shortUrl(url) + "\n实际: " + shortUrl(landed)
+                            + "\n做法: 关掉这一页，重新用 App 容器打开目标地址。");
+            try {
+                if (isOwned(view)) {
+                    closePage(view);
+                }
+            } catch (Throwable ignored) {
+            }
+            view = null;
+            page = null;
+            sessionView = null;
+            sessionUrl = null;
+            if (ensureForeground() && openH5(url)) {
+                view = await(match, deadline);
+                if (view != null) {
+                    markOwned(view);
+                    page = WebPage.attachReal(view, url);
+                    if (page != null) {
+                        page.awaitDoc(Math.min(12_000L,
+                                Math.max(4_000L, deadline - System.currentTimeMillis())));
+                    }
+                }
+            }
+            if (page == null) {
+                HookLog.log("PAGE", "重开失败 · 容器没起来", "目标: " + shortUrl(url));
+                return null;
+            }
+            String again = page.href();
+            if (WebViewHooks.isDetourUrl(again) && !WebViewHooks.isDetourUrl(url)) {
+                HookLog.log("PAGE", "重开后仍是下载引导页 · 放弃这一页",
+                        "目标: " + shortUrl(url) + "\n实际: " + shortUrl(again));
+                try {
+                    closePage(view);
+                } catch (Throwable ignored) {
+                }
+                return null;
+            }
+            reused = false;
+        }
+
         sessionView = view;
         sessionUrl = url;
         HookLog.log("PAGE", (reused ? "复用真页" : "打开真页") + " · " + shortUrl(url),
