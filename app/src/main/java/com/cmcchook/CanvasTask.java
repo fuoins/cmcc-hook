@@ -1002,6 +1002,76 @@ final class CanvasTask {
                 }
                 return -2;
               }
+              // 次数读不到时的最后一级：直接看页面自己怎么写的。
+              // 周周三期的首屏就是「您有 3 次翻牌机会」，比接口更可靠；
+              // 组件里也常留一份 residueLotteryCount / residueNum。
+              function remainFromPage(){
+                try{
+                  var t=(document.body?document.body.innerText:'').replace(/\\s+/g,' ');
+                  var m=/([0-9]+)\\s*次(翻牌|抽奖)/.exec(t);
+                  if(m) return parseInt(m[1],10);
+                }catch(e){}
+                for(var i=0;i<comps.length;i++){
+                  var n='';
+                  try{ n=cname(comps[i]) }catch(e){}
+                  if(!/lottery|draw|choujiang/i.test(n)) continue;
+                  var d=null;
+                  try{ d=comps[i].$data }catch(e){}
+                  if(!d) continue;
+                  for(var k in d){
+                    if(!/residue|remain|chance|left|num|count/i.test(k)) continue;
+                    var v=Number(d[k]);
+                    if(!isNaN(v) && v>=0 && v<100) return v;
+                  }
+                }
+                return -2;
+              }
+              // 从请求钩子里捞这一次的抽奖回执，供「点卡片」和「调方法」共用。
+              function lotteryResult(mark){
+                var hit=null;
+                for(var q=mark;q<NET.length;q++){
+                  if(/\\/lottery\\/lottery/.test(NET[q].u)){ hit=NET[q]; break }
+                }
+                if(!hit) return null;
+                var code='',msg='';
+                try{
+                  var d=JSON.parse(hit.b);
+                  code=String(d.code==null?'':d.code);
+                  msg=String(d.msg||d.message||'');
+                }catch(e){}
+                return {ok:(code==='60000'||code==='200'),code:code,msg:msg,
+                        risk:riskOf(hit.b),data:hit.b,via:'page'};
+              }
+              // 点页面上的翻牌卡片。三期页面根本没有「翻牌」两个字，按钮就是三张
+              // 背面卡片，只能按 class / 近正方形尺寸去找，点完只认 /lottery/lottery 回执。
+              async function drawByClick(id){
+                var mark=NET.length;
+                var tgt=null,area=0;
+                var tags=document.querySelectorAll('div,li,img,span');
+                for(var i=0;i<tags.length;i++){
+                  var e=tags[i];
+                  var cls=String(e.className||'')+' '+(e.id||'');
+                  if(!/card|flip|poker|fanpai|turn/i.test(cls)) continue;
+                  var r=null;
+                  try{ r=e.getBoundingClientRect() }catch(x){ continue }
+                  if(!r||r.width<40||r.height<40) continue;
+                  var ratio=r.width/r.height;
+                  if(ratio<0.6||ratio>1.6) continue;
+                  if(ownText(e).length>4) continue;
+                  var a=r.width*r.height;
+                  if(a>area){ area=a; tgt=e }
+                }
+                if(!tgt){
+                  // 没有 class 线索时退回按文字点（有些活动卡片上写「立即开启」）。
+                  var t=clickDrawExact();
+                  if(!t) return null;
+                  await wait(2500);
+                  return lotteryResult(mark);
+                }
+                if(!tapEl(tgt)) return null;
+                await wait(2500);
+                return lotteryResult(mark);
+              }
               // getTaskList 里拿了任务清单：次数为 0 时先把没做的任务做了。
               function readTasks(){
                 var out=[];
@@ -1070,29 +1140,34 @@ final class CanvasTask {
                 }
                 if(!c) return null;
                 var mark=NET.length;
-                var tries=[id,{activityId:id},undefined];
+                // 页面按钮一般绑成 @click="goLottery"（无参），但有的版本要传奖品对象。
+                // 按方法声明了几个参数决定先试哪种：11-11 12:39 无参调用直接抛
+                // 「Cannot read properties of undefined (reading '__ob__')」，说明
+                // 三期这版是要对象的，盲猜会白跑。
+                var fn=null;
+                try{ fn=c.goLottery }catch(e){}
+                if(!isFn(fn)){ try{ fn=c.$options&&c.$options.methods&&c.$options.methods.goLottery }catch(e){} }
+                var item=null;
+                try{
+                  var cand=c.picLotteryList||c.lotteryList||c.picList||c.list||[];
+                  item=(cand&&cand.length)?cand[0]:null;
+                }catch(e){}
+                var arity=0;
+                try{ arity=fn?fn.length:0 }catch(e){}
+                var tries=arity===0
+                    ? [undefined,id,{activityId:id}]
+                    : [item,id,{activityId:id},undefined];
                 for(var t=0;t<tries.length;t++){
                   try{
                     var rt=invoke(c,'goLottery',tries[t]);
                     if(rt&&isFn(rt.then)) await rt;
-                  }catch(e){ line('  goLottery 调用异常: '+e) }
+                  }catch(e){ line('  goLottery 调用异常('+t+'): '+e) }
                   await wait(2600);
                   if(NET.length>mark) break;
                 }
-                if(NET.length<=mark) return null;
-                var hit=null;
-                for(var q=mark;q<NET.length;q++){
-                  if(/\\/lottery\\/lottery/.test(NET[q].u)){ hit=NET[q]; break }
-                }
-                if(!hit) return {ok:false,code:'',msg:'页面没发抽奖请求',risk:false,via:'page'};
-                var code='',msg='';
-                try{
-                  var d=JSON.parse(hit.b);
-                  code=String(d.code==null?'':d.code);
-                  msg=String(d.msg||d.message||'');
-                }catch(e){}
-                return {ok:(code==='60000'||code==='200'),code:code,msg:msg,
-                        risk:riskOf(hit.b),data:hit.b,via:'page'};
+                var res=lotteryResult(mark);
+                if(res) return res;
+                return {ok:false,code:'',msg:'页面没发抽奖请求',risk:false,via:'page'};
               }
               async function lotteryOnce(id){
                 var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/lottery',
@@ -1355,7 +1430,7 @@ final class CanvasTask {
 
               (async function(){
                 try{
-                  line('=== 画布活动 v3.37 ===');
+                  line('=== 画布活动 v3.38 ===');
                   line('URL: '+cut(location.href,220));
                   hookNet();
                   // coc 页面进页先走 checkUID / getUserInfo，这段时间文案是
@@ -1585,79 +1660,45 @@ final class CanvasTask {
                         line('奖池 '+id+' 剩余: '+rem);
                       } else {
                         var nr=netRemain();
-                        if(nr>=0){ rem=nr; line('奖池 '+id+' 剩余(页面): '+nr) }
-                        else line('奖池 '+id+' 剩余: '+rem);
+                        if(nr>=0){ rem=nr; line('奖池 '+id+' 剩余(页面请求): '+nr) }
                       }
-                      if(rem<=0){
-                        // 次数为 0：多半是「浏览任务」没做。先拿任务清单，
-                        // 用页面自己的任务组件提交一遍，再复查次数。
-                        var tids=readTasks();
-                        draw.tasks=tids.length;
-                        if(tids.length){
-                          line('  待做任务: '+tids.length+' 个');
-                          var tn=[];
-                          for(var c2=0;c2<comps.length;c2++){
-                            if(/task/i.test(cname(comps[c2]))) tn.push(comps[c2]);
-                          }
-                          // v4.3.0：上限从 4 提到 8。周周有好礼的任务清单常有 5~7 个，
-                          // 只做 4 个就永远拿不满次数（11-11 反馈「做了一半、没抽完」）。
-                          for(var q3=0;q3<tids.length && q3<8;q3++){
-                            var tid=tids[q3], hit=false;
-                            // 页面自己的浏览任务上报接口。先直发一次：
-                            // 服务端只认 taskId 的话，这一发就把任务记上了。
-                            try{
-                              var tv=await post('/coc3/coc3-market-activity/cmpp-manage/task/visit',{taskId:tid});
-                              var cv=codeOf(tv.data);
-                              line('  任务上报: '+tid+' → '+cv);
-                              if(cv!=='0'){
-                                var tv2=await post('/coc3/coc3-market-activity/cmpp-manage/task/visit',{activityId:id,taskId:tid});
-                                line('  任务上报(带活动): '+tid+' → '+codeOf(tv2.data));
-                              }
-                              // 任务上报挨着发会触发「访问过于频繁」，间隔拉到 1.4~2 秒。
-                              await wait(1400+Math.floor(Math.random()*600));
-                            }catch(e){ line('  任务上报失败: '+e) }
-                            for(var c3=0;c3<tn.length && !hit;c3++){
-                              var ms3=taskNames(mnames(tn[c3]));
-                              for(var m3=0;m3<ms3.length && !hit;m3++){
-                                var mark2=NET.length;
-                                try{
-                                  var rt=invoke(tn[c3],ms3[m3],tid);
-                                  if(rt&&isFn(rt.then)) await rt;
-                                  draw.taskTry=(draw.taskTry||0)+1;
-                                  await wait(900);
-                                  if(NET.length===mark2){
-                                    // 有的组件要对象参数，再补一次。
-                                    try{ invoke(tn[c3],ms3[m3],{taskId:tid}) }catch(e2){}
-                                    await wait(700);
-                                  }
-                                  line('  任务提交: '+cname(tn[c3])+'.'+ms3[m3]+'('+tid+')');
-                                  hit = NET.length>mark2;
-                                }catch(e){ line('  任务提交失败: '+cname(tn[c3])+'.'+ms3[m3]+' '+e) }
-                              }
-                            }
-                          }
-                          await wait(1500);
-                          var nr2=await remainOf(id);
-                          if(nr2<0) nr2=netRemain();
-                          if(nr2>=0){ rem=nr2; line('  任务后剩余: '+nr2) }
-                        }
+                      // v4.4.0：模块直发缺 phone 头时常回 500/404，请求钩子也会因为
+                      // 页面重载被清空 —— 这时 rem 是负数（读不到），不是「0 次」。
+                      // 11-11 12:39 就是这样：首屏明明写着「您有 3 次翻牌机会」，
+                      // 模块却按 -2 判成没次数，一次都没抽，最后报「没有拿到结果」。
+                      if(rem<0){
+                        rem=remainFromPage();
+                        if(rem>=0) line('奖池 '+id+' 剩余(页面文案): '+rem);
+                      }
+                      if(rem===0){
+                        // 真的 0 次：说明「浏览任务」还没记上。任务现在统一在 Java 侧
+                        // 点「去逛逛」完成，这里不再直发 task/visit —— 11-11 12:39 那 9 发
+                        // 全部返回 923「手机号码非法」，纯噪音。
+                        line('  次数为 0：浏览任务可能还没记上，本轮不抽');
+                        continue;
                       }
                       if(rem>=0){ draw.seen++; draw.left+=rem; draw.rems.push(id+':'+rem) }
-                      if(rem<=0) continue;
                       // v4.3.0：上限 5 → 10。做完任务后次数常常一次给到 6~8 次，
-                      // 卡在 5 次就会「有次数没抽完」。
-                      var times=Math.min(rem,10);
+                      // 卡在 5 次就会「有次数没抽完」。读不到次数时按 3 次试探。
+                      var times=rem<0?3:Math.min(rem,10);
+                      if(rem<0) line('  次数读不到，按最多 3 次尝试（以页面回执为准）');
                       // 任务上报刚打完，服务端还在限频窗口里，先缓一下再抽。
                       await wait(2600);
                       for(var k=0;k<times;k++){
                         draw.try++;
-                        // 先走页面自己的翻牌方法：风控头/wasm 参数由页面补，
-                        // 和用户手点完全同一条路。没有这个方法才退回直连。
-                        var r=await drawViaPage(id,comps);
+                        // 顺序对齐用户手点：先点页面上的翻牌卡片（页面自己组请求、
+                        // 自己带设备指纹与风控头），点不到再调组件方法，最后才直连。
+                        var r=await drawByClick(id);
+                        if(r) line('  抽奖 '+id+' 点了页面翻牌卡片（页面自己发请求）');
+                        if(!r) r=await drawViaPage(id,comps);
                         if(r&&r.via==='page'&&r.ok!==false){
                           line('  抽奖 '+id+' 走页面 goLottery（页面自带风控参数）');
                         }
-                        if(!r) r=await lotteryOnce(id);
+                        // 「页面没发请求」不等于被拒：再退一次直连，别在这里就收手。
+                        if(!r || (r.ok===false && r.msg==='页面没发抽奖请求')){
+                          r=await lotteryOnce(id)||r;
+                        }
+                        if(!r) r={ok:false,code:'',msg:'没有可用的抽奖通道',risk:false};
                         // v3.91：命中服务端风控立即收手，绝不再补刀重试。
                         if(r.risk){
                           draw.risk=(draw.risk||0)+1;
@@ -1702,6 +1743,11 @@ final class CanvasTask {
                         if(ms.length) dc.push({c:comps[i],ms:ms,n:cname(comps[i])});
                       }
                       if(dc.length){
+                        // 组件名带 lottery 的排前面：dc[0] 以前可能是个无关组件，
+                        // 11-11 12:39 就是拿它调了一次，直接抛 __ob__ 异常。
+                        dc.sort(function(a,b){
+                          return (/lottery|draw/i.test(b.n)?1:0)-(/lottery|draw/i.test(a.n)?1:0)
+                        });
                         try{
                           var ret=invoke(dc[0].c,dc[0].ms[0]);
                           if(ret&&isFn(ret.then)) ret=await ret;
