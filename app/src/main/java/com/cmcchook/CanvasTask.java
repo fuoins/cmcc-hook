@@ -453,17 +453,22 @@ final class CanvasTask {
     /** 一轮最多做几个浏览任务。每个约 12 秒（跳 1.5 + 停 6 + 回 4）。 */
     private static final int WEEKLY_TASK_TRIES = 8;
 
-    /** 数页面上还剩几个「去逛逛」卡片（卡片里带 (0/1)）。-1 = 读不到。 */
+    /** 数页面上还剩几个待做任务卡片。认 (0/1) / （0/1）等多种写法；-1 = 读不到。 */
     private static final String WEEKLY_TODO_COUNT = """
             (function(){
               try{
-                var all=document.querySelectorAll('div,span,a,button,p'),n=0;
+                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与'];
+                var all=document.querySelectorAll('div,span,a,button,p,li,uni-view,uni-text,view,text,img,image'),n=0;
                 for(var i=0;i<all.length;i++){
-                  var t=(all[i].innerText||'').replace(/\\s+/g,'');
-                  if(t!=='去逛逛')continue;
-                  var p=all[i],hit=false;
-                  for(var k=0;k<5&&p;k++){
-                    var pt=(p.innerText||'').replace(/\\s+/g,'');
+                  var e=all[i];
+                  var t=(e.innerText||e.textContent||'').replace(/\\s+/g,'');
+                  var isWord=false;
+                  for(var w=0;w<WORDS.length;w++){ if(t===WORDS[w]){isWord=true;break} }
+                  var tag=String(e.tagName||'').toUpperCase();
+                  if(!isWord && tag!=='IMG' && tag!=='IMAGE') continue;
+                  var p=e,hit=false;
+                  for(var k=0;k<6&&p;k++){
+                    var pt=(p.innerText||p.textContent||'').replace(/\\s+/g,'');
                     if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;break}
                     p=p.parentElement;
                   }
@@ -475,46 +480,77 @@ final class CanvasTask {
             """;
 
     /**
-     * 点第一个「去逛逛」。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
-     * 卡片标题从按钮向上爬到带 (0/1) 的那层拿。
+     * 点第 __SKIP__ 个待做任务卡片。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
+     * v4.10.0：原来只发 MouseEvent，周周是 uni-app 的 @tap，Vue handler 根本不触发
+     * （14:28 日志实证「( 0/1)」点 8 次一个没记上）。补完整 Touch/Pointer/Mouse
+     * 序列 + elementFromPoint 校正落点；同时支持「去逛逛」是 <img> 的情况。
      */
     private static final String WEEKLY_TASK_ONE = """
             (function(){
               try{
-                var all=[].slice.call(document.querySelectorAll('div,span,a,button,p')),btn=null;
+                var SKIP=__SKIP__;
+                var WORDS=['去逛逛','去完成','去看看','去浏览','去参与'];
+                var all=[].slice.call(document.querySelectorAll('div,span,a,button,p,li,uni-view,uni-text,view,text,img,image'));
+                var cards=[];
                 for(var i=0;i<all.length;i++){
-                  var t=(all[i].innerText||'').replace(/\\s+/g,'');
-                  if(t!=='去逛逛')continue;
-                  var p=all[i],hit=false;
-                  for(var k=0;k<5&&p;k++){
-                    var pt=(p.innerText||'').replace(/\\s+/g,'');
-                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;break}
+                  var e=all[i];
+                  var t=(e.innerText||e.textContent||'').replace(/\\s+/g,'');
+                  var isWord=false;
+                  for(var w=0;w<WORDS.length;w++){ if(t===WORDS[w]){isWord=true;break} }
+                  var tag=String(e.tagName||'').toUpperCase();
+                  if(!isWord && tag!=='IMG' && tag!=='IMAGE') continue;
+                  var p=e,hit=false,card=null;
+                  for(var k=0;k<6&&p;k++){
+                    var pt=(p.innerText||p.textContent||'').replace(/\\s+/g,'');
+                    if(pt.indexOf('(0/')>=0||pt.indexOf('（0/')>=0){hit=true;card=p;break}
                     p=p.parentElement;
                   }
-                  if(hit){btn=all[i];break}
+                  if(!hit)continue;
+                  var r={width:0,height:0}; try{ r=e.getBoundingClientRect() }catch(x){}
+                  if(r.width<6||r.height<6)continue;
+                  cards.push({e:e,card:card});
                 }
-                if(!btn)return JSON.stringify({none:1});
-                var card=btn,name='';
-                for(var j=0;j<5&&card;j++){
-                  var ct=(card.innerText||'').replace(/\\s+/g,'');
-                  if(ct.indexOf('(0/')>=0||ct.indexOf('（0/')>=0){name=ct.slice(0,40);break}
-                  card=card.parentElement;
-                }
+                if(!cards.length)return JSON.stringify({none:1});
+                var at=Math.min(SKIP,cards.length-1);
+                var btn=cards[at].e,name='';
+                try{ name=(cards[at].card.innerText||cards[at].card.textContent||'')
+                  .replace(/\\s+/g,'').slice(0,40) }catch(x){}
                 var r=btn.getBoundingClientRect();
                 var x=r.left+r.width/2,y=r.top+r.height/2;
+                var tgt=btn;
                 try{
-                  var names=['touchstart','touchend','mousedown','mouseup','click'];
-                  for(var m=0;m<names.length;m++){
-                    var ev=document.createEvent('MouseEvents');
-                    ev.initMouseEvent(names[m],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
-                    btn.dispatchEvent(ev);
-                  }
-                }catch(e){}
-                try{if(typeof btn.click==='function')btn.click()}catch(e){}
-                return JSON.stringify({name:name,url:String(location.href)});
+                  var f=document.elementFromPoint(x,y);
+                  if(f&&(f===btn||btn.contains(f)||f.contains(btn)))tgt=f;
+                }catch(x){}
+                function tev(type,end){
+                  try{
+                    var tch=new Touch({identifier:1,target:tgt,clientX:x,clientY:y,
+                      pageX:x+window.scrollX,pageY:y+window.scrollY,screenX:x,screenY:y,
+                      radiusX:1,radiusY:1,rotationAngle:0,force:1});
+                    tgt.dispatchEvent(new TouchEvent(type,{bubbles:true,cancelable:true,view:window,
+                      touches:end?[]:[tch],targetTouches:end?[]:[tch],changedTouches:[tch]}));
+                  }catch(x){}
+                }
+                tev('touchstart',false);
+                var ps=['pointerdown','mousedown','pointerup','mouseup'];
+                for(var m=0;m<ps.length;m++){
+                  try{
+                    var ev=ps[m].indexOf('pointer')===0
+                      ? new PointerEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y})
+                      : new MouseEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y});
+                    tgt.dispatchEvent(ev);
+                  }catch(x){}
+                }
+                tev('touchend',true);
+                try{if(typeof tgt.click==='function')tgt.click()}catch(e){}
+                return JSON.stringify({name:name,url:String(location.href),idx:at,total:cards.length});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
             })()
             """;
+
+    private static String weeklyTaskOne(WebPage page, int skip) {
+        return page.eval(WEEKLY_TASK_ONE.replace("__SKIP__", String.valueOf(skip)), 10_000L);
+    }
 
     private static int weeklyTodo(WebPage page) {
         String v = page.eval(WEEKLY_TODO_COUNT, 6_000L);
@@ -548,9 +584,11 @@ final class CanvasTask {
         }
         detail.append("浏览任务: 待做 ").append(left)
                 .append(" 个，点「去逛逛」后停留 ").append(WEEKLY_STAY_MS / 1000).append(" 秒\n");
-        int done = 0;
+        int done = 0, skip = 0;
         for (int i = 0; i < WEEKLY_TASK_TRIES && left > 0; i++) {
-            String raw = page.eval(WEEKLY_TASK_ONE, 10_000L);
+            // v4.10.0：点了没记上时换下一张卡片，别一直点第一个（老逻辑 8 次全打在
+            // 同一个按钮上，日志里「( 0/1)」一个没变）。
+            String raw = weeklyTaskOne(page, skip);
             if (raw == null || raw.isEmpty()) {
                 detail.append("浏览任务: 点击脚本没回报，停止\n");
                 break;
@@ -571,7 +609,9 @@ final class CanvasTask {
                 break;
             }
             String name = o.optString("name", "");
-            detail.append("浏览任务 ").append(i + 1).append(": 点「")
+            detail.append("浏览任务 ").append(i + 1).append(": 点第 ")
+                    .append(o.optInt("idx", 0) + 1).append("/")
+                    .append(o.optInt("total", 0)).append(" 张「")
                     .append(name.isEmpty() ? "去逛逛" : name).append("」\n");
             sleep(1_500L);
             String landed = page.url();
@@ -591,10 +631,19 @@ final class CanvasTask {
             int now = weeklyTodo(page);
             if (now >= 0 && now < left) {
                 done++;
+                skip = 0;
                 detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
                 left = now;
             } else if (now >= 0) {
-                detail.append("浏览任务: 剩余仍 ").append(now).append("（这个没记上）\n");
+                skip++;
+                detail.append("浏览任务: 剩余仍 ").append(now).append("（这张没记上，下一轮换卡片）\n");
+                left = now;
+                if (skip >= left) {
+                    detail.append("浏览任务: 所有待做卡片都试过仍没记上，停止\n");
+                    break;
+                }
+            } else {
+                skip++;
             }
         }
         detail.append("浏览任务: 本轮记上 ").append(done).append(" 个，剩余 ").append(left).append(" 个\n");
@@ -1733,13 +1782,20 @@ final class CanvasTask {
                         continue;
                       }
                       if(rem>=0){ draw.seen++; draw.left+=rem; draw.rems.push(id+':'+rem) }
-                      // v4.3.0：上限 5 → 10。做完任务后次数常常一次给到 6~8 次，
-                      // 卡在 5 次就会「有次数没抽完」。读不到次数时按 3 次试探。
-                      var times=rem<0?3:Math.min(rem,10);
-                      if(rem<0) line('  次数读不到，按最多 3 次尝试（以页面回执为准）');
+                      // v4.10.0：抽奖一律抽到「剩余次数 0」。
+                      // 有余额就按余额抽（上限 40），读不到余额就按 12 次试探，
+                      // 每轮开头重读一次余额，到 0 立即收手 —— 覆盖「做任务又补发次数」
+                      // 和「次数一次给到 10 次以上」两种「抽了但有剩」的情况。
+                      var times=rem>0?Math.min(rem,40):12;
+                      if(rem<0) line('  次数读不到，按最多 12 次尝试，抽到余额 0 / 接口明确没次数为止');
                       // 任务上报刚打完，服务端还在限频窗口里，先缓一下再抽。
                       await wait(2600);
                       for(var k=0;k<times;k++){
+                        // v4.10.0：每轮重读余额，服务端把次数抽到 0 就收手。
+                        if(k>0){
+                          var cur=await remainOf(id);
+                          if(cur===0){ line('  奖池 '+id+' 余额已到 0，收手'); break }
+                        }
                         draw.try++;
                         // 顺序对齐用户手点：先点页面上的翻牌卡片（页面自己组请求、
                         // 自己带设备指纹与风控头），点不到再调组件方法，最后才直连。

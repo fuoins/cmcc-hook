@@ -1,16 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <!--
+      LSPosed「推荐应用」= 模块会被注入到哪些进程。
+
+      v4.10.0：按 XposedSmsCode 官方 scope.list（GitLab beta 分支
+      app/src/main/resources/META-INF/xposed/scope.list）补齐短信相关进程：
+
+        com.android.phone                AOSP 电话服务
+        com.xiaomi.phone                 小米 / HyperOS 电话服务（官方源码
+                                        SmsHandlerHook.XIAOMI_PHONE_PACKAGE）
+        com.android.providers.telephony 短信数据库 Provider
+        com.android.mms                 AOSP / 小米短信 App
+        com.google.android.apps.messaging Google 短信
+
+      前两个是 hook com.android.internal.telephony.InboundSmsHandler
+      （dispatchIntent 取 PDU）的主通道；后三个让动态 SMS_DELIVER /
+      SMS_RECEIVED 兜底接收器能装在默认短信 App / Provider 进程里 ——
+      它们是系统进程，不受「验证码安全保护」对第三方 App 的屏蔽。
+
+      v4.0.4 曾把 com.xiaomi.phone 当成「臆造包、设备上不存在」删掉，
+      并让框架层通道只在 com.android.phone 安装，正好漏掉小米 ——
+      这是小米一直读不到验证码的根因之一。这里加回。
+
+      官方清单另有 system / android（system_server，给它的权限注入 hook 用）。
+      本模块没有框架 hook，注入 system_server 无收益且有风险，故不列。
+
+      这些都是系统应用，LSPosed 默认隐藏：先在设置里打开「显示系统应用」，
+      勾选后必须重启手机。
+    -->
     <string-array name="xposed_scope">
-        <!-- 主作用域：中国移动 App。任务、券核销、离屏页面都跑在这个进程里。 -->
+        <!-- 主作用域：中国移动 App。任务、券核销、页面都跑在这个进程里。 -->
         <item>com.greenpoint.android.mc10086.activity</item>
-        <!-- 框架层短信通道：对齐 XposedSmsCode，只 hook 电话服务进程里的
-             com.android.internal.telephony.InboundSmsHandler。
-             小米 / HyperOS 的「电话服务」真实包名就是 com.android.phone
-             （见 HyperCeiler 官方作用域清单；短信 App 是 com.android.mms）。
-             之前这里写过的 com.xiaomi.phone 是臆造的包名，设备上不存在，
-             按它勾选等于没勾 —— v4.0.4 删除。
-             注意：这是系统应用，LSPosed 默认隐藏，要先在 LSPosed 设置里打开
-             「显示系统应用」才能看到并勾选，勾完必须重启手机。 -->
         <item>com.android.phone</item>
+        <item>com.xiaomi.phone</item>
+        <item>com.android.providers.telephony</item>
+        <item>com.android.mms</item>
+        <item>com.google.android.apps.messaging</item>
     </string-array>
 </resources>

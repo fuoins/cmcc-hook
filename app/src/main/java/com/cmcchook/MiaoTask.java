@@ -40,6 +40,12 @@ final class MiaoTask {
                     "离屏 WebView 没能加载活动页。重开一次中国移动 App 再试。");
         }
 
+        // v4.10.0：先做「赚阳光值」列表里的免费任务。这些任务点了会跳到别的
+        // 活动页，脚本上下文会被销毁，所以由 Java 侧逐个点 → 停 5 秒 → 拉回本页复查。
+        // 全部做完（或没有待做）之后，再注入主脚本做页面内的签到/浇水/收豆。
+        int freeTasks = runFreeTasks(page, entry, detail);
+        detail.append("赚阳光值免费任务: 完成 ").append(freeTasks).append(" 个\n");
+
         page.eval(MIAO_SCRIPT, 8_000L);
         String raw = null;
         long deadline = System.currentTimeMillis() + 95_000L;
@@ -113,6 +119,12 @@ final class MiaoTask {
             String summary = "豆苗养成记 · 完成 " + Math.max(clickOk, 1) + " 个动作";
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
         }
+        // v4.10.0：赚阳光值免费任务已经逐个点了（跳出去停 5 秒再拉回来），
+        // 即使页面内主脚本这一轮没读到新的 2xx，也不能判成「没做成」。
+        if (freeTasks > 0) {
+            String summary = "豆苗养成记 · 完成 " + freeTasks + " 个赚阳光值任务";
+            return TaskRunner.Result.ok(summary, detail.toString(), summary);
+        }
         // 3) v4.0.5：判定顺序修正 —— 旧版先判「点了按钮没回执 → 失败」，
         //    导致下面「今天已经做过」的兜底永远走不到（只要点过任何按钮）。
         //    19:24 日志实证：点了「主动领取」0 回执，但首屏是一串「+ 10 已领」
@@ -167,6 +179,147 @@ final class MiaoTask {
             HookLog.log("MIAO", "豆苗页面执行明细 " + part, chunk.toString());
         }
     }
+
+    /** 一轮最多点几个「赚阳光值」任务，防异常情况下无限跳转。 */
+    private static final int MIAO_FREE_TRIES = 12;
+    /** 浏览类任务的停留门槛：用户实测 5 秒就够。 */
+    private static final long MIAO_STAY_MS = 5_000L;
+
+    /**
+     * v4.10.0：逐个做「赚阳光值」列表里的免费任务。
+     *
+     * <p>这些任务点了会跳到别的活动页（26xysrqtyld / ydyhl / fls / wljxmh …），
+     * 页面脚本上下文会被销毁，所以跟周周「去逛逛」一样走 Java 侧循环：
+     * 点一个 → 停 5 秒 → 拉回豆苗页 → 复查剩余待做数，直到没有待做或收敛。
+     *
+     * <p>付费订购类（办理铂金会员 / 畅看会员 / 去订购）由脚本按「去订购」按钮
+     * 与卡片文案双重排除，只点免费的「去浏览/去分享/去领取/去看看/去邀请/去关注」。
+     */
+    private static int runFreeTasks(WebPage page, String entry, StringBuilder detail) {
+        int done = 0;
+        int lastLeft = -1;
+        int stall = 0;
+        for (int i = 0; i < MIAO_FREE_TRIES; i++) {
+            String raw = page.eval(MIAO_FREE_ONE, 10_000L);
+            if (raw == null || raw.isEmpty()) {
+                detail.append("  免费任务: 点击脚本没回报，停止\n");
+                break;
+            }
+            JSONObject o;
+            try {
+                o = new JSONObject(raw);
+            } catch (Throwable e) {
+                detail.append("  免费任务: 回报解析失败 ").append(brief(raw)).append('\n');
+                break;
+            }
+            if (o.has("err")) {
+                detail.append("  免费任务脚本: ").append(o.optString("err")).append('\n');
+                break;
+            }
+            int left = o.optInt("left", 0);
+            if (o.has("none")) {
+                detail.append("  免费任务: 没有待做的了\n");
+                break;
+            }
+            String name = o.optString("name", "免费任务");
+            detail.append("  免费任务 ").append(i + 1).append(": 点「").append(name)
+                    .append("」，页面待做 ").append(left).append('\n');
+            sleep(1_200L);
+            String landed = page.url();
+            boolean jumped = landed != null && !landed.contains("2026dmycj");
+            if (jumped) {
+                detail.append("    已跳到 ").append(brief(landed)).append("，停留 5 秒\n");
+            } else {
+                detail.append("    页面内跳转/未离开，仍停 5 秒让服务端计时长\n");
+            }
+            sleep(MIAO_STAY_MS);
+            if (!page.navigate(entry, 25_000L)) {
+                detail.append("  免费任务: 拉回豆苗页失败，停止\n");
+                break;
+            }
+            sleep(2_500L);
+            done++;
+            if (left == lastLeft) {
+                if (++stall >= 3) {
+                    detail.append("  免费任务: 待做数连续不降，收手\n");
+                    break;
+                }
+            } else {
+                stall = 0;
+            }
+            lastLeft = left;
+        }
+        detail.append("  免费任务: 本轮点了 ").append(done).append(" 个\n");
+        return done;
+    }
+
+    /**
+     * 点「赚阳光值」列表里第一个待做的免费任务。做完的任务按钮会变成「已完成」，
+     * 所以每次点第一个不会重复。返回点到的任务名、页面剩余待做数；none=没待做。
+     */
+    private static final String MIAO_FREE_ONE = """
+            (function(){
+              try{
+                function vis(e){
+                  try{
+                    var r=e.getBoundingClientRect();
+                    if(!r||r.width<2||r.height<2)return false;
+                    var s=getComputedStyle(e);
+                    return s.display!=='none'&&s.visibility!=='hidden'&&s.opacity!=='0';
+                  }catch(x){return false}
+                }
+                function fire(e){
+                  try{
+                    var r=e.getBoundingClientRect(),cx=r.left+r.width/2,cy=r.top+r.height/2;
+                    var mk=function(){return {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}};
+                    var ts=['pointerdown','touchstart','mousedown','pointerup','touchend','mouseup'];
+                    for(var i=0;i<ts.length;i++){
+                      try{
+                        var ev;
+                        if(ts[i].indexOf('pointer')===0)ev=new PointerEvent(ts[i],mk());
+                        else if(ts[i].indexOf('touch')===0)ev=new Event(ts[i],{bubbles:true,cancelable:true});
+                        else ev=new MouseEvent(ts[i],mk());
+                        e.dispatchEvent(ev);
+                      }catch(x){}
+                    }
+                    if(typeof e.click==='function')e.click();
+                    return true;
+                  }catch(x){return false}
+                }
+                var WORDS=['去浏览','去分享','去领取','去看看','去邀请','去关注'];
+                var PAY=/去订购|办理|会员|铂金|畅看|订购订单/;
+                var all=document.querySelectorAll('button,a,div,span,li,p,i');
+                var left=0, target=null, name='';
+                for(var i=0;i<all.length;i++){
+                  var e=all[i];
+                  if(!vis(e))continue;
+                  var t=(e.innerText||'').replace(/\\s+/g,'');
+                  var ok=false;
+                  for(var j=0;j<WORDS.length;j++){if(t===WORDS[j]){ok=true;break}}
+                  if(!ok)continue;
+                  var card=e,ct='';
+                  for(var d=0;d<4&&card;d++){
+                    var s=(card.innerText||'').replace(/\\s+/g,' ').trim();
+                    if(s.length>ct.length)ct=s;
+                    card=card.parentElement;
+                  }
+                  var slice=ct.slice(0,60);
+                  if(PAY.test(slice))continue;
+                  if(/已完成/.test(slice))continue;
+                  left++;
+                  if(!target){target=e;name=slice.slice(0,40)}
+                }
+                if(!target)return JSON.stringify({none:1,left:left});
+                var el=target;
+                fire(el);
+                for(var u=0;u<3&&el;u++){
+                  el=el.parentElement;
+                  if(el)fire(el);
+                }
+                return JSON.stringify({name:name,left:left,url:String(location.href)});
+              }catch(err){return JSON.stringify({err:String(err&&err.message||err)})}
+            })()
+            """;
 
     private static String brief(String text) {
         if (text == null) {

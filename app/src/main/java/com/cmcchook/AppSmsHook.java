@@ -21,9 +21,10 @@ import android.telephony.SmsMessage;
  *       RECEIVE_SMS / READ_SMS 权限不够。</li>
  *   <li>电话进程框架层通道（{@link PhoneSmsHook}）在短信分发前拦 PDU，是
  *       XposedSmsCode 的正解，但必须让 LSPosed 额外勾选「电话服务 /
- *       {@code com.android.phone}」作用域并重启手机；16:44 日志里 {@code SMSDIAG}
- *       一条都没有，证明这条通道压根没被注入。v4.0.3 及以前的作用域还写错了包名
- *       （{@code com.xiaomi.phone} 不存在），v4.0.4 已删。</li>
+ *       {@code com.android.phone} / {@code com.xiaomi.phone}」作用域并重启手机；
+ *       16:44 日志里 {@code SMSDIAG} 一条都没有，证明这条通道压根没被注入。
+ *       v4.0.4 曾把 {@code com.xiaomi.phone} 误删（正好漏掉小米），v4.10.0 按
+ *       XposedSmsCode 官方 scope.list 加回。</li>
  * </ul>
  *
  * <p>本类换一条最短的路：模块本来就 hook 在<b>中国移动 App 主进程</b>里（日志

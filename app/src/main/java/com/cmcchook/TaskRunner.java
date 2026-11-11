@@ -529,6 +529,31 @@ final class TaskRunner {
         });
     }
 
+    /**
+     * v4.10.0：一键末尾「统一收尾轮」。
+     *
+     * <p>抽奖 / 投喂 / 收蛋 / 抽拼图这类「消耗型」动作，各活动内部已经改到
+     * 「任务全部做完之后」再执行，并循环到余额为 0。但同一活动后做的任务、
+     * 或别的活动补发的次数，仍可能攒下新的余额。一键过全部在所有活动跑完后，
+     * 再对下面这几个活动补跑一轮：此时任务都已完成，各活动会自然跳过任务阶段、
+     * 只把服务端口径下的最新余额抽 / 喂 / 收到 0。
+     *
+     * <p>为什么不新造「只收尾」入口：这几个活动的开页 / 换票 / 登录链路各不
+     * 相同，复用 runOne 最稳。收尾结果只写进明细，不改主流程的完成计数与成败。
+     */
+    private static final String[] SWEEP_CMDS = {
+            CMD_GOOSE, CMD_SATURDAY, CMD_WEEKLY, CMD_SIGNLOTTERY
+    };
+
+    private static boolean inCmds(String[] cmds, String cmd) {
+        for (String c : cmds) {
+            if (cmd.equals(c)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static Result dispatch(String cmd) {
         if (CMD_ALL.equals(cmd)) {
             return runAll();
@@ -1062,6 +1087,47 @@ final class TaskRunner {
                 + (idleCount > 0 ? "（其中 " + idleCount + " 项今天无需操作）" : "")
                 + (aborted ? " · 登录态熔断，后续 " + (cmds.length - abortedAt) + " 项未跑" : "")
                 + " · " + brief.toString().trim();
+
+        // v4.10.0 一键末尾统一收尾轮：所有活动任务跑完后，对「消耗型」活动按
+        // 最新余额再补一轮抽奖 / 投喂 / 收蛋。做任务常会补发次数或饲料，
+        // 若某活动先抽后做任务，就会剩次数没用掉。登录态熔断时跳过，
+        // 避免风控期继续撞 qwhdsso/login。收尾结果只写明细，不改完成计数。
+        if (!aborted) {
+            boolean any = false;
+            for (String sc : SWEEP_CMDS) {
+                if (!inCmds(cmds, sc)) {
+                    continue;
+                }
+                any = true;
+                break;
+            }
+            if (any) {
+                RealPage.closeOwned();
+                StringBuilder sweepDetail = new StringBuilder("\n=== 收尾复查（补抽 / 补喂 / 收蛋到 0）===\n");
+                HookLog.log("TASK", "一键过全部 · 收尾复查开始",
+                        "任务全部跑完，按最新余额补抽 / 补喂 / 收蛋，覆盖做任务后又攒下的次数。");
+                for (String sc : SWEEP_CMDS) {
+                    if (!inCmds(cmds, sc)) {
+                        continue;
+                    }
+                    RealPage.closeOwned();
+                    try {
+                        Result one = runOne(sc);
+                        sweepDetail.append("· ").append(label(sc)).append("：")
+                                .append(one.summary).append('\n');
+                        if (one.detail != null && !one.detail.isEmpty()) {
+                            sweepDetail.append(tail(one.detail, 700)).append('\n');
+                        }
+                    } catch (Throwable e) {
+                        sweepDetail.append("· ").append(label(sc)).append("：异常 ").append(e).append('\n');
+                    }
+                }
+                RealPage.closeOwned();
+                detail.append(sweepDetail);
+                HookLog.log("TASK", "一键过全部 · 收尾复查完成", sweepDetail.toString());
+            }
+        }
+
         if (okCount == 0) {
             return Result.fail(summary, detail.toString(), text.toString().trim());
         }

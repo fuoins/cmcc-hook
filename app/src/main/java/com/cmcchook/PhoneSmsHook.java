@@ -17,10 +17,10 @@ import de.robv.android.xposed.XposedHelpers;
 import de.robv.android.xposed.callbacks.XC_LoadPackage;
 
 /**
- * 系统电话进程里的短信入口（v4.0.4 对齐 XposedSmsCode 源码重写）。
+ * 短信相关系统进程里的短信入口（v4.10.0 对齐 XposedSmsCode 官方 scope.list）。
  *
- * <p>参考的是 LSPosed 仓库 {@code com.github.tianma8023.xposed.smscode} 的
- * {@code SmsHandlerHook}：在 {@code com.android.phone} 进程里 hook 框架类
+ * <p>参考的是 XposedSmsCode 的 {@code SmsHandlerHook}：在 {@code com.android.phone}
+ * / {@code com.xiaomi.phone} 进程里 hook 框架类
  * {@code com.android.internal.telephony.InboundSmsHandler}，拦
  * {@code dispatchIntent()} 里携带短信 PDU 的 Intent，从框架层拿正文，
  * 不依赖任何 App 层的短信权限、自启动或广播白名单。
@@ -33,18 +33,22 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * XposedSmsCode 只认 {@link #SMS_DELIVER_ACTION}（发给默认短信应用的那个），
  * 本实现同时兼容 {@link #SMS_RECEIVED}，覆盖部分 ROM 直接分发 SMS_RECEIVED 的情况。
  *
- * <p><b>v4.0.4 修正的三处硬伤（按源码逐条核对）</b>：
- * <ul>
- *   <li>作用域里写过 {@code com.xiaomi.phone} —— 设备上不存在这个包，
- *       小米的电话服务真实包名就是 {@code com.android.phone}（见 HyperCeiler
- *       官方作用域清单）。已删除，{@code arrays.xml} 同步。</li>
- *   <li>旧注释声称「XposedSmsCode 源码里专门为小米列了 com.xiaomi.phone」——
- *       源码 {@code ANDROID_PHONE_PACKAGE = "com.android.phone"} 只有一个，
- *       没有小米特判，该说法是臆造，已改正。</li>
- *   <li>旧实现只靠 {@code SMS_RECEIVED} 兜底 + 手写 {@code createFromPdu}，
- *       没有 hook 构造函数拿 Context。现在构造函数与 dispatchIntent 都 hook，
- *       解析优先用 {@link Telephony.Sms.Intents#getMessagesFromIntent(Intent)}。</li>
- * </ul>
+ * <p><b>v4.10.0 更正 v4.0.4 的错误结论</b>：v4.0.4 把 {@code com.xiaomi.phone}
+ * 当成「臆造包、设备上不存在」删掉，唯一依据是「HyperCeiler 作用域清单里没有它」
+ * —— 那份清单本来就不覆盖全部系统进程。对照 XposedSmsCode 官方
+ * {@code META-INF/xposed/scope.list} 与 {@code SmsHandlerHook} 源码：它明确定义
+ * {@code XIAOMI_PHONE_PACKAGE = "com.xiaomi.phone"}，且
+ * {@code isSmsHandlerPackage()} 同时认 {@code com.android.phone} 与
+ * {@code com.xiaomi.phone}。小米 / HyperOS 上 {@code InboundSmsHandler} 有可能
+ * 跑在 {@code com.xiaomi.phone}，删掉它就正好漏掉小米 —— 这是「框架层通道装不上、
+ * 小米一直读不到验证码」的根因之一。现已加回作用域，并把
+ * {@code com.android.providers.telephony} / {@code com.android.mms} /
+ * {@code com.google.android.apps.messaging} 一并纳入，让动态兜底接收器也能装在
+ * 默认短信 App / Provider 进程里（它们是系统进程，不受验证码保护屏蔽）。
+ *
+ * <p>旧实现要点保留：构造函数与 {@code dispatchIntent} 都 hook，解析优先用
+ * {@link Telephony.Sms.Intents#getMessagesFromIntent(Intent)}，手写
+ * {@code createFromPdu} 只作兜底。</p>
  *
  * <p>必须如实说明的限制：XposedSmsCode 的 README 明写
  * 「此模块适用于偏原生的系统，其他第三方定制 Rom 可能不适用」。小米系统开关
@@ -62,7 +66,10 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
  * </ul>
  *
  * <p>启用条件：LSPosed → 模块 → 作用域，除「中国移动」外还要勾「电话服务」
- * （{@code com.android.phone}，系统应用需先打开「显示系统应用」），然后<b>重启手机</b>。
+ * {@code com.android.phone} 和小米的 {@code com.xiaomi.phone}（系统应用需先打开
+ * 「显示系统应用」），建议把短信 App / Provider 也勾上，然后<b>重启手机</b>。
+ * 完整清单见 {@code arrays.xml} 的 {@code xposed_scope} 与
+ * {@link PhoneSmsReceiver#SMS_PACKAGES}。
  */
 public final class PhoneSmsHook {
 
@@ -397,7 +404,7 @@ public final class PhoneSmsHook {
                     | Intent.FLAG_RECEIVER_FOREGROUND);
             out.putExtra("summary", "框架层短信通道安装诊断 · " + diagPkg);
             StringBuilder d = new StringBuilder();
-            d.append("这条诊断由系统电话进程发出 —— 出现即代表模块已被注入电话进程。\n");
+            d.append("这条诊断由被注入的短信相关进程发出 —— 出现即代表模块已注入进程 ").append(diagPkg).append("。\n");
             d.append("进程: ").append(diagProc).append('\n');
             d.append("Android SDK: ").append(diagSdk).append('\n');
             d.append("InboundSmsHandler: ").append(diagHandler).append('\n');
@@ -408,11 +415,12 @@ public final class PhoneSmsHook {
             d.append("已回传短信条数: ").append(diagRelayCount).append('\n');
             d.append("────────────────────────\n");
             d.append("判读：\n");
-            d.append("· 连这条诊断都没出现 → 模块没被注入电话进程：LSPosed → 模块 → 作用域，\n");
-            d.append("  除「中国移动」外还要勾「电话服务」(com.android.phone)。\n");
-            d.append("  它是系统应用，先在 LSPosed 打开「显示系统应用」，勾完重启手机。\n");
-            d.append("  （v4.0.3 及以前的作用域里写的是 com.xiaomi.phone，那个包不存在，\n");
-            d.append("   按它勾等于没勾 —— v4.0.4 已删除。）\n");
+            d.append("· 连这条诊断都没出现 → 模块没被注入任何短信进程：LSPosed → 模块 → 作用域，\n");
+            d.append("  除「中国移动」外勾「电话服务」com.android.phone，小米 / HyperOS 还要勾\n");
+            d.append("  com.xiaomi.phone，建议连 com.android.providers.telephony / com.android.mms 一起勾。\n");
+            d.append("  都是系统应用，先在 LSPosed 打开「显示系统应用」，勾完重启手机。\n");
+            d.append("  （v4.0.4 曾把 com.xiaomi.phone 当成「不存在的包」删掉，正好漏掉小米；\n");
+            d.append("   v4.10.0 按 XposedSmsCode 官方 scope.list 已加回。）\n");
             d.append("· 方法数为 0 且兜底也没注册 → 该 ROM 改了框架类名，需按它的框架再适配。\n");
             d.append("· 出现这条诊断、且券核销时「最近拦到的 action」有值、「已回传」增加，\n");
             d.append("  但模块仍没自动填码 → 短信正文到了模块，问题在白名单/等码窗口，\n");

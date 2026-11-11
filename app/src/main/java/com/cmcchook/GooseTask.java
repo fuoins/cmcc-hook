@@ -200,7 +200,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.03 已装载 · 短链换票 + 逐任务点(按提交回执验收)",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.10.0 已装载 · 短链换票 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -825,7 +825,22 @@ final class GooseTask {
             // 浏览任务不能在 VUE_SCRIPT 里连着点：一点就跳走，脚本上下文随即销毁。
             // 这里交给 runTaskLoop 一个个来 —— 点一个、等页面自己跳出去又回来、
             // 再复查剩余数。11-11 12:02 手动日志就是这条路径，全程不做人为停留。
+            // v4.10.0：任务必须先全部做完，投喂 / 收蛋放到之后的收尾阶段 ——
+            // 任务会发下新的饲料 / 蛋，先喂先收就会「做了任务却没喂、喂后没领蛋」。
             int taskDoneReal = todo > 0 ? runTaskLoop(page, detail, page.url(), todo) : 0;
+            JSONObject fin = runFinish(page, detail);
+            if (fin != null && fin.optBoolean("ok", false)) {
+                JSONArray finActs = fin.optJSONArray("actions");
+                if (finActs != null) {
+                    for (int i = 0; i < finActs.length(); i++) {
+                        lines.append("· ").append(finActs.optString(i)).append('\n');
+                    }
+                }
+                JSONObject finAfter = fin.optJSONObject("after");
+                if (finAfter != null) {
+                    after = finAfter;   // 让下面的 changed 判定用投喂 / 收蛋之后的真实快照
+                }
+            }
             int done = out.optInt("taskDone", 0) + taskDoneReal;
             int travelItems = out.optInt("travelItems", 0);
             int travelTap = out.optInt("travelTap", 0);
@@ -840,9 +855,9 @@ final class GooseTask {
                 }
                 lines.append('\n');
             }
-            int rounds = out.optInt("rounds", 0);
+            int rounds = fin == null ? 0 : fin.optInt("rounds", 0);
             if (rounds > 0) {
-                lines.append("投喂/收蛋循环: ").append(rounds).append(" 轮（收敛或达上限）\n");
+                lines.append("收尾投喂/收蛋循环: ").append(rounds).append(" 轮（饲料/待收蛋收敛到 0）\n");
             }
             if (total > 0) {
                 lines.append("日常任务: 共 ").append(total).append(" 个，")
@@ -1274,6 +1289,47 @@ final class GooseTask {
         return done;
     }
 
+    /**
+     * v4.10.0 收尾阶段：等所有浏览任务做完后，注入 FINISH_SCRIPT 把饲料喂完、
+     * 蛋收完，收敛到 0。返回脚本回报（含 actions / rounds / 收尾后快照）。
+     *
+     * <p>投喂 / 收蛋也是提交类接口（feedGoose / harvestEgg），NET_HOOK_SCRIPT
+     * 会把它们记进 localStorage 的 __cmccGS 计数；runVueOnce 里随后用
+     * submitCount 取到的总数自然包含这一段，不用这里单独记账。
+     */
+    private static JSONObject runFinish(WebPage page, StringBuilder detail) {
+        page.eval("(function(){try{window.__cmcc_goose_finish=''}catch(e){}})()", 3_000L);
+        // 收尾阶段发出的 feedGoose / harvestEgg 也要计入提交回执：NET_HOOK_SCRIPT
+        // 是幂等的，页面若在浏览任务里重载过，这里正好补装一次。
+        page.eval(NET_HOOK_SCRIPT, 5_000L);
+        page.eval(FINISH_SCRIPT, 8_000L);
+        long deadline = System.currentTimeMillis() + 100_000L;
+        String raw = null;
+        while (System.currentTimeMillis() < deadline) {
+            String value = page.eval(
+                    "(function(){var v=window.__cmcc_goose_finish;return v?String(v):'';})()", 6_000L);
+            if (value != null && !value.isEmpty()) {
+                raw = value;
+                break;
+            }
+            sleep(600L);
+        }
+        if (raw == null) {
+            detail.append("收尾阶段: 投喂/收蛋脚本 100 秒没回报（保持任务阶段结果）\n");
+            return null;
+        }
+        try {
+            JSONObject fin = new JSONObject(raw);
+            if (!fin.optBoolean("ok", false)) {
+                detail.append("收尾阶段: 脚本未成功（").append(fin.optString("msg", "")).append("）\n");
+            }
+            return fin;
+        } catch (Throwable e) {
+            detail.append("收尾阶段: 回报解析失败 ").append(brief(raw)).append('\n');
+            return null;
+        }
+    }
+
     /** 本轮已经发成功的提交类回执条数。-1 = 读不到。 */
     private static int submitCount(WebPage page) {
         String v = page.eval("(function(){try{var o=JSON.parse(localStorage.getItem('__cmccGS')||'{}');"
@@ -1661,42 +1717,14 @@ final class GooseTask {
                   }
                 }catch(e){ out.actions.push('打卡异常:'+e.message) }
 
-                // ---- 4. 投喂/收蛋 收敛循环 (v3.97) ----
-                // 10:40 日志实证：任务做完饲料 10→64，投喂却只发 1 次 feedGoose，
-                // 收蛋只发 1 次 harvestEgg，末尾还写着「可投喂饲料64袋」。
-                // 根因是旧版每样只做一次就收工：投喂一次后饲料还够、蛋也新产出来，
-                // 却不再喂也不再收。现在按「刷新→有饲料就喂→有蛋就收→再刷新」
-                // 循环，直到饲料/蛋连续两轮不再变化，或达到 6 轮上限。
-                // 全程只调页面自己的 c.feedGooseFun / c.harvestEggFun / c.indexFun，
-                // 加密参数、签名、票据全由页面 JS 生成，模块不碰请求、不碰票据。
-                var lastKey='', stall=0, rounds=0;
-                for(var rd=0; rd<6; rd++){
-                  try{ if(typeof c.indexFun==='function'){ await c.indexFun('1'); await wait(1500) } }catch(e){}
-                  var pp=c.pageInitData||{};
-                  var feed=numOf(pp.feedCount), eggs=numOf(pp.eggCount);
-                  var key=feed+'/'+eggs;
-                  var did=false;
-                  if(feed>0 && typeof c.feedGooseFun==='function'){
-                    try{ c.feedGooseFun(); await wait(2300); did=true;
-                         out.actions.push('第'+(rd+1)+'轮投喂（饲料 '+feed+'）') }
-                    catch(e){ out.actions.push('第'+(rd+1)+'轮投喂异常:'+e.message) }
-                  }
-                  if(eggs>0 && typeof c.harvestEggFun==='function'){
-                    try{ c.harvestEggFun(); await wait(2300); did=true;
-                         out.actions.push('第'+(rd+1)+'轮收蛋（'+eggs+' 枚）') }
-                    catch(e){ out.actions.push('第'+(rd+1)+'轮收蛋异常:'+e.message) }
-                  }
-                  rounds=rd+1;
-                  if(!did){ out.actions.push('第'+(rd+1)+'轮: 饲料/待收蛋都为空，收敛'); break }
-                  if(key===lastKey){
-                    stall++;
-                    if(stall>=2){ out.actions.push('第'+(rd+1)+'轮: 连续两轮无变化，收敛'); break }
-                  }else{ stall=0 }
-                  lastKey=key;
-                }
-                out.rounds=rounds;
+                // ---- 4. 投喂/收蛋：本轮不再在这里做 (v4.10.0) ----
+                // 用户实证：先喂饲料/领蛋，再做任务，任务又发下新的饲料/蛋，
+                // 结果「做了任务但没喂、喂后没领蛋」。VUE_SCRIPT 是一次性注入，
+                // 浏览任务要由 Java 侧 runTaskLoop 逐个点、页面还会往返跳，
+                // 所以在脚本里投喂永远早于任务。这里整个抽掉，改由独立的
+                // FINISH_SCRIPT 在「全部任务做完之后」再注入，收敛到饲料/待收蛋为 0。
 
-                // ---- 6. 奖金箱 ----
+                // ---- 5. 奖金箱 ----
                 try{
                   if(typeof c.getBoxListFun==='function'){
                     await c.getBoxListFun(); await wait(1200);
@@ -1719,6 +1747,94 @@ final class GooseTask {
                 out.submitPaths=t2.submitPaths; out.queryPaths=t2.queryPaths;
                 out.arrayFields=arrayFields(c);
                 done(out);
+              })().catch(function(e){ done({ok:false,stage:'crash',msg:String(e)}) });
+              return '1';
+            })()
+            """;
+
+    /**
+     * v4.10.0 收尾阶段脚本：等「全部任务做完」之后才注入。
+     *
+     * <p>用户实证：先投喂 / 领蛋，再做任务，任务又发下新的饲料 / 蛋，末尾
+     * 还挂着「可投喂饲料 N 袋」，于是「做了任务但没喂、喂后没领蛋」。VUE_SCRIPT
+     * 是一次性注入、浏览任务由 Java 侧 runTaskLoop 逐个点，天生先于任务，
+     * 所以把投喂 / 收蛋整段抽到这里：先刷新读最新 feedCount / eggCount，
+     * 有饲料就喂、有蛋就收，循环到两者都归 0（或连续无变化 / 达上限）。
+     *
+     * <p>投喂会产出新蛋，下一轮刷新就能看到 eggCount&gt;0，再收 —— 天然覆盖
+     * 「喂之后领蛋」。全程只调页面自己的 feedGooseFun / harvestEggFun / indexFun，
+     * 加密参数、签名、票据都由页面 JS 生成，模块不碰请求、不碰票据。
+     * 提交回执由 NET_HOOK_SCRIPT 记进 localStorage，Java 侧收尾后统一读数。
+     */
+    private static final String FINISH_SCRIPT = """
+            (function(){
+              var ID='__cmcc_goose_finish';
+              window[ID]='';
+              function done(o){ try{ window[ID]=JSON.stringify(o) }catch(e){ window[ID]='{"ok":false,"stage":"crash"}' } }
+              function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
+              function numOf(v){
+                if(v===null||v===undefined) return -1;
+                if(typeof v==='number') return isFinite(v)?v:-1;
+                var n=parseInt(String(v).replace(/[^0-9-]/g,''),10);
+                return isNaN(n)?-1:n;
+              }
+              function snap(c){
+                var p=c.pageInitData||{};
+                return {egg:String(p.eggCount==null?'':p.eggCount),
+                        my:String(p.myEggCount==null?'':p.myEggCount),
+                        feed:String(p.feedCount==null?'':p.feedCount),
+                        sign:String(p.signFlag==null?'':p.signFlag),
+                        travel:String(p.travelStatus==null?'':p.travelStatus)};
+              }
+              function findComp(v,d){
+                if(!v||d>10) return null;
+                if(typeof v.feedGooseFun==='function'||typeof v.harvestEggFun==='function') return v;
+                var cs=v.$children||[];
+                for(var i=0;i<cs.length;i++){ var r=findComp(cs[i],d+1); if(r) return r }
+                return null;
+              }
+              (async function(){
+                var root=document.querySelector('#app');
+                var vm=root&&root.__vue__;
+                var c=vm?findComp(vm,0):null;
+                if(!c){ done({ok:false,stage:'init',msg:'收尾阶段没找到组件'}); return }
+                var actions=[], rounds=0, lastKey='', stall=0, noFeed=0, noEgg=0;
+                for(var rd=0; rd<16; rd++){
+                  try{ if(typeof c.indexFun==='function'){ await c.indexFun('1'); await wait(1200) } }catch(e){}
+                  var pp=c.pageInitData||{};
+                  var feed=numOf(pp.feedCount), eggs=numOf(pp.eggCount);
+                  var key=feed+'/'+eggs, did=false;
+                  // 先喂：饲料会转成蛋，下一轮刷新再收，覆盖「喂之后领蛋」。
+                  if(feed>0 && typeof c.feedGooseFun==='function'){
+                    try{
+                      var beforeFeed=feed;
+                      c.feedGooseFun(); await wait(1800); did=true;
+                      actions.push('第'+(rd+1)+'轮投喂（饲料 '+beforeFeed+'）');
+                    }catch(e){ actions.push('第'+(rd+1)+'轮投喂异常:'+e.message) }
+                  } else { noFeed++ }
+                  // 再收：把本轮 / 上轮投喂产出的蛋收干净。
+                  try{ if(typeof c.indexFun==='function'){ await c.indexFun('1'); await wait(600) } }catch(e){}
+                  var pp2=c.pageInitData||{}, eggs2=numOf(pp2.eggCount);
+                  if(eggs2>0 && typeof c.harvestEggFun==='function'){
+                    try{ c.harvestEggFun(); await wait(1800); did=true;
+                         actions.push('第'+(rd+1)+'轮收蛋（'+eggs2+' 枚）') }
+                    catch(e){ actions.push('第'+(rd+1)+'轮收蛋异常:'+e.message) }
+                  } else { noEgg++ }
+                  rounds=rd+1;
+                  if(!did){ actions.push('第'+(rd+1)+'轮: 饲料/待收蛋都为空，收敛'); break }
+                  if(key===lastKey){
+                    stall++;
+                    if(stall>=3){ actions.push('第'+(rd+1)+'轮: 连续三轮无变化，收敛'); break }
+                  }else{ stall=0 }
+                  lastKey=key;
+                }
+                // 收尾刷新：让服务端把这一轮投喂 / 收蛋结算完，回灌到快照。
+                try{
+                  if(typeof c.indexFun==='function'){ await c.indexFun('1'); await wait(1600) }
+                  if(typeof c.signIndexFun==='function'){ await c.signIndexFun(); await wait(600) }
+                  if(typeof c.taskIndexFun==='function'){ await c.taskIndexFun(); await wait(800) }
+                }catch(e){}
+                done({ok:true,stage:'done',rounds:rounds,actions:actions,after:snap(c)});
               })().catch(function(e){ done({ok:false,stage:'crash',msg:String(e)}) });
               return '1';
             })()

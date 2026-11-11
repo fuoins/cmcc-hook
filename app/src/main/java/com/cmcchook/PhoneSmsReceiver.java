@@ -34,17 +34,39 @@ public final class PhoneSmsReceiver extends BroadcastReceiver {
     /** 显式指定包名，避免被系统的隐式广播管控拦掉。 */
     static final String MODULE_PACKAGE = "com.cmcchook";
     /**
-     * 电话进程包名：原生与小米 / HyperOS 都是 {@code com.android.phone}。
-     * v4.0.4 删除了臆造的 {@code com.xiaomi.phone}（设备上不存在，见 HyperCeiler
-     * 官方作用域清单：电话服务 com.android.phone、短信 com.android.mms）。
+     * 短信相关进程（v4.10.0 对齐 XposedSmsCode 官方 {@code scope.list}）。
+     *
+     * <p>前两个是电话服务：AOSP 用 {@code com.android.phone}，小米 / HyperOS 还有
+     * {@code com.xiaomi.phone}。XposedSmsCode 源码 {@code SmsHandlerHook} 明确定义了
+     * {@code ANDROID_PHONE_PACKAGE} / {@code XIAOMI_PHONE_PACKAGE} 两个常量，
+     * {@code isSmsHandlerPackage()} 两个都认 —— {@code InboundSmsHandler} 就跑在
+     * 这两个进程里，是框架层取 PDU 的主通道。
+     *
+     * <p>后三个是短信库 / 短信 App：本项目不在这些进程 hook 框架类（找不到
+     * {@code InboundSmsHandler} 会安全跳过），但会注册动态
+     * {@code SMS_DELIVER / SMS_RECEIVED} 兜底接收器。它们是系统进程，不在小米
+     * 「验证码安全保护」对第三方 App 的屏蔽范围内。
+     *
+     * <p><b>v4.0.4 的错误结论已纠正</b>：当时把 {@code com.xiaomi.phone} 当成
+     * 「臆造包、设备上不存在」从作用域和判定里删掉，依据只是「HyperCeiler 清单里没有」
+     * —— 那份清单本来就不覆盖全部系统进程。结果框架层通道只在
+     * {@code com.android.phone} 安装，正好漏掉小米，这是小米一直读不到验证码的根因之一。
+     * 对照 XposedSmsCode 源码后加回。
      */
-    static final String[] PHONE_PACKAGES = {"com.android.phone"};
+    static final String[] SMS_PACKAGES = {
+            "com.android.phone",
+            "com.xiaomi.phone",
+            "com.android.providers.telephony",
+            "com.android.mms",
+            "com.google.android.apps.messaging",
+    };
 
+    /** 是否短信相关进程：命中就在该进程装框架层/兜底通道，然后立刻 return。 */
     static boolean isPhonePackage(String pkg) {
         if (pkg == null) {
             return false;
         }
-        for (String p : PHONE_PACKAGES) {
+        for (String p : SMS_PACKAGES) {
             if (p.equals(pkg)) {
                 return true;
             }

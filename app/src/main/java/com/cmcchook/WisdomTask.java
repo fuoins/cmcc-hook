@@ -325,14 +325,16 @@ final class WisdomTask {
                     "前台真页和离屏 WebView 都没能加载活动页。去福利专区点开一次签到页再试。");
         }
         tagAccount(page);
-        // 复用前台真页时它会一直开着，清掉上一轮脚本可能留下的回报，避免 await 读到旧结果。
+        // v4.10.0：清掉上一轮回报和心跳，再注入。签抽页加载后会抹掉 h5token
+        // 并 reload 一次，一次性注入的脚本上下文会被冲掉，旧 await 死等 120 秒
+        // 零回报 → FAIL。改用 awaitSign（心跳 + 幂等重注入）。
         page.eval("(function(){try{delete window.__cmcc_sign}catch(e){}"
-                + "try{window.__cmcc_sign=''}catch(e){}})()", 3_000L);
+                + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0}catch(e){}})()", 3_000L);
         page.eval(SIGN_JS, 8_000L);
-        JSONObject out = await(page, "__cmcc_sign", 120_000L, detail);
+        JSONObject out = awaitSign(page, detail);
         if (out == null) {
             return TaskRunner.Result.fail("签到抽奖 · 页面脚本超时",
-                    detail.append("脚本 120 秒没有回报\n").toString(),
+                    detail.append("脚本 150 秒没有终态回报（含重注入）\n").toString(),
                     "页面能打开但脚本没回报。把完整日志发我。");
         }
         return judge("签到抽奖", out, detail);
@@ -354,6 +356,51 @@ final class WisdomTask {
                 }
             }
             sleep(600L);
+        }
+        return null;
+    }
+
+    /**
+     * v4.10.0：签抽页专用等待。脚本每秒写一次 {@code window.__cmcc_sign_hb} 心跳，
+     * 终态才写 {@code window.__cmcc_sign}。页面重载 / 路由重写把注入脚本冲掉后，
+     * 心跳会停更 —— 这时重新注入 SIGN_JS（最多 3 次），而不是干等 120 秒报错。
+     * 重注入是幂等的：已签到会被 signedNow() 跳过签到段，抽奖靠 NET 回执继续抽到 0，
+     * 任务按钮靠 SEEN 不会重复点，不会重复消耗机会。
+     */
+    private static JSONObject awaitSign(WebPage page, StringBuilder detail) {
+        long deadline = System.currentTimeMillis() + 150_000L;
+        long lastHb = System.currentTimeMillis();
+        int reinject = 0;
+        while (System.currentTimeMillis() < deadline) {
+            String v = page.eval("(function(){try{return JSON.stringify({"
+                    + "r:(window.__cmcc_sign?String(window.__cmcc_sign):''),"
+                    + "h:Number(window.__cmcc_sign_hb||0)||0})}catch(e){return ''}})()", 6_000L);
+            if (v != null && !v.isEmpty()) {
+                try {
+                    JSONObject probe = new JSONObject(v);
+                    long hb = probe.optLong("h", 0L);
+                    if (hb > lastHb) {
+                        lastHb = hb;
+                    }
+                    String r = probe.optString("r", "");
+                    if (!r.isEmpty()) {
+                        return new JSONObject(r);
+                    }
+                } catch (Throwable e) {
+                    detail.append("回报解析失败: ").append(brief(v)).append('\n');
+                    return null;
+                }
+            }
+            long quiet = System.currentTimeMillis() - lastHb;
+            if (quiet > 12_000L && reinject < 3) {
+                reinject++;
+                detail.append("页面重载/脚本掉线（心跳停 ").append(quiet / 1000)
+                        .append(" 秒），重注入签到脚本 第 ").append(reinject).append(" 次\n");
+                HookLog.log("TASK", "签到抽奖 · 脚本心跳丢失，重注入", "第 " + reinject + " 次");
+                page.eval(SIGN_JS, 8_000L);
+                lastHb = System.currentTimeMillis();
+            }
+            sleep(700L);
         }
         return null;
     }
@@ -1095,6 +1142,17 @@ final class WisdomTask {
               var ID='__cmcc_sign';
               window[ID]='';
               var L=[], NET=[];
+              // v4.10.0：脚本以前只在最后 done() 写一次 __cmcc_sign。签抽页加载后
+              // 会把 h5token 从 URL 里抹掉并 reload 一次（14:40:08 日志实证：
+              // 三次「票据已刷新」后页面又发了一整套 cardDetail/wheelDetail），
+              // 一次性注入的上下文直接被冲掉，Java 侧死等 120 秒零回报 → FAIL。
+              // 现在每秒写一次心跳，Java 侧发现心跳停更就重新注入本脚本（幂等：
+              // 已签到会跳过签到段，抽奖靠 NET 回执继续抽到 0，不会重复消耗）。
+              window.__cmcc_sign_hb=Date.now();
+              try{ if(window.__cmcc_sign_hb_t) clearInterval(window.__cmcc_sign_hb_t) }catch(e){}
+              window.__cmcc_sign_hb_t=setInterval(function(){
+                try{ window.__cmcc_sign_hb=Date.now() }catch(e){}
+              },1000);
               function line(s){L.push(String(s))}
               function tx(e){
                 if(!e) return '';
@@ -1397,6 +1455,11 @@ final class WisdomTask {
                   try{ cs=getComputedStyle(e) }catch(x){}
                   if(cs.display==='none'||cs.visibility==='hidden'||cs.opacity==='0') continue;
                   var s=String(imgTail(e)).toLowerCase();
+                  // v4.10.0：乡村答题入口也是签抽页上的一张胶囊图，点它会跳到
+                  // #/answerQuestions（14:41:53 日志实证 H5-ROUTE），脚本上下文
+                  // 直接没了 —— 这正是「脚本超时零回报」的嫌疑来源之一。签到候选
+                  // 里必须硬排除，绝不能让签到轮把它当签到图点掉。
+                  if(/answer|dati|wenda|xczs|xiangcun|talent|know|nongye|zhishi|nongchang/.test(s)) continue;
                   var sc=0;
                   // v3.85：17:42 日志实证 —— 活动页图片文件名就是拼音首字母：
                   //   ljqd.*.png  = 立即签到（171x55，真正触发 signIn 的那张）
@@ -1421,6 +1484,56 @@ final class WisdomTask {
                 out.sort(function(a,b){ return b.sc-a.sc || (b.w*b.h)-(a.w*a.h) });
                 return out;
               }
+              // ---- v4.10.0：抽奖按钮（图片）与「抽到 0」判据 ----
+              // 用户实证：签抽页「立即抽奖」也是图片，没有文本；而 wheelDetail /
+              // cardDetail 的 data 全是 iv 加密密文，NET 里读不到明文剩余次数。
+              // 所以抽奖改成「点一次 → 数 NET 里 signInActivity/lottery 回执有没有
+              // +1」，连续 3 次点击都不再产生新回执就判定次数到 0，上限 40 防死循环。
+              function drawImgCands(){
+                var out=[], imgs=document.images||[];
+                for(var j=0;j<imgs.length;j++){
+                  var e=imgs[j], r={width:0,height:0,left:0,top:0};
+                  try{ r=e.getBoundingClientRect() }catch(x){ continue }
+                  var w=r.width,h=r.height;
+                  // 转盘中心的抽奖按钮可能是近圆形，不能套签到胶囊的比例。
+                  if(w<48||h<24||w>460||h>320) continue;
+                  var ratio=w/h;
+                  if(ratio<0.4||ratio>6) continue;
+                  var cs={display:'',visibility:'',opacity:''};
+                  try{ cs=getComputedStyle(e) }catch(x){}
+                  if(cs.display==='none'||cs.visibility==='hidden'||cs.opacity==='0') continue;
+                  var s=String(imgTail(e)).toLowerCase();
+                  // 签到图 / 答题 banner / 广告图硬排除：点了会跳走或误触发别的活动。
+                  if(/ljqd|yqd|qddj|sign|qiandao|answer|dati|wenda|xczs|xiangcun|talent|know|banner|advert|guanggao|jkyhf|rule|gift|lipin|jiangpin/.test(s)) continue;
+                  var sc=0;
+                  if(/ljcj|lijichou|choujiang|zpcj|zpchl|zhuanpan|lottery|draw|wheel|cj|chou|jiang/.test(s)) sc+=12;
+                  if(/btn|button|anniu|go|now|start/.test(s)) sc+=4;
+                  if(w>=80&&w<=300&&h>=28&&h<=110) sc+=3;
+                  if(sc<=0) continue;
+                  out.push({e:e,sc:sc,w:w,h:h,x:r.left+w/2,y:r.top+h/2,
+                            src:imgTail(e),tag:String(e.tagName||'IMG')});
+                }
+                out.sort(function(a,b){ return b.sc-a.sc || (b.w*b.h)-(a.w*a.h) });
+                return out;
+              }
+              // 只在页面明确写出「用完/不足」时返回 0；规则文案里那些
+              // 「每签到3次可获得1次抽奖机会」的数字一律不采信，避免误判。
+              function chanceLeft(){
+                var b=norm(bodyText());
+                if(/机会已用完|次数不足|暂无抽奖|抽奖机会不足|没有抽奖机会|今日次数已用完|次数已用完|无抽奖机会|抽奖次数为0|剩余0次/.test(b)) return 0;
+                return -1;
+              }
+              // 数某一段路径的 200 回执：signIn / signInDoTask / lottery 都靠它验收。
+              function netCount(seg){
+                var n=0;
+                for(var i=0;i<NET.length;i++){
+                  if(NET[i].code!==200) continue;
+                  var sg=NET[i].u.split('?')[0].split('/').pop();
+                  if(sg===seg) n++;
+                }
+                return n;
+              }
+              function lotteryCount(){ return netCount('lottery')+netCount('lotteryDo') }
               // 按坐标点：先取这一点的最上层元素，再在这一点派发完整事件序列。
               // 图片按钮外面常盖一层透明容器，点容器才能触发它自己的 @tap。
               function clickAt(x,y){
@@ -1877,53 +1990,100 @@ final class WisdomTask {
                     }
                   }
 
-                  // 3) 任务：去完成 / 去浏览 / 领取
-                  for(var r=0;r<4;r++){
-                    if(netSign()) break;
-                    var t=hit(['去完成','去浏览','去领取','立即领取','领取'],
-                              ['已领取','已完成','已结束']);
+                  // ---- v4.10.0 顺序原则：签到 → 任务 → 抽奖（消耗型动作一律最后） ----
+                  // 旧代码在任务循环开头写 if(netSign()) break、抽奖整段包在
+                  // if(!netSign()) 里 —— 签到一成功 netSign() 恒为 true，任务直接
+                  // 跳过、抽奖整段跳过，正好对上用户说的「没签到、任务没做」。
+                  // 另外「立即签到 / 立即抽奖」都是图片，抽奖原来只按文本连点 3 次。
+                  // 3) 任务：先把会产出抽奖次数的任务全做完，再抽。
+                  var TASK_WORDS=['去完成','去浏览','去领取','立即领取','领取','去看看','去参与'];
+                  var TASK_SKIP=['已领取','已完成','已结束','去兑换','规则说明','立即抽奖','抽奖'];
+                  SEEN={};   // 任务按钮每个只点一次，靠「按钮变成已完成」推进到下一个
+                  for(var r=0;r<12;r++){
+                    for(var ct=0;ct<2;ct++){ if(closeTip()){ await wait(500) } else break }
+                    var t=hit(TASK_WORDS,TASK_SKIP);
                     if(!t) break;
+                    var tname=tx(t).slice(0,12);
                     clickEl(t); did++;
-                    detail.push('点任务:' + tx(t).slice(0,10));
-                    line('点任务「' + tx(t).slice(0,12) + '」');
-                    await wait(2000);
-                    SEEN={};
-                  }
-
-                  // 4) 抽奖
-                  if(!netSign()){
-                    for(var tp2=0;tp2<2;tp2++){
-                      if(closeTip()){ await wait(600); } else break;
+                    detail.push('点任务:'+tname);
+                    line('点任务「'+tname+'」');
+                    await wait(2200);
+                    // 浏览类任务只要求停留 5 秒（用户实证），跳走后拉回本页继续。
+                    if(String(location.href).toLowerCase().indexOf('signinlottery')<0){
+                      line('任务跳走了，停 5 秒后回签到页继续');
+                      await wait(5000);
+                      try{ history.back() }catch(e){}
+                      await wait(2500);
                     }
-                    for(var d=0;d<3;d++){
-                      var l=hit(['立即抽奖','抽奖','转盘'],
-                                ['抽奖记录','抽奖机会已用完','暂无抽奖','转盘抽奖','每日签到','签到集卡','去兑换','每签到3次']);
-                      if(!l) break;
-                      clickEl(l); did++;
-                      detail.push('点抽奖');
-                      line('点「' + tx(l).slice(0,10) + '」');
-                      await wait(3200);
+                  }
+                  line('任务阶段结束: signInDoTask 回执 '+netCount('signInDoTask')+' 条');
+
+                  // 4) 抽奖：所有任务做完后统一抽，一律抽到「剩余次数 0」。
+                  // 三个 tab 的内容同时在 DOM 里（靠 CSS 显隐），先切到「转盘抽奖」。
+                  SEEN={};
+                  var dtab=hit(['转盘抽奖'],['每日签到','签到集卡']);
+                  if(dtab){ clickEl(dtab); did++; line('切到「转盘抽奖」'); await wait(1200) }
+                  for(var tp2=0;tp2<3;tp2++){
+                    if(closeTip()){ await wait(600); } else break;
+                  }
+                  var DRAW_WORDS=['立即抽奖','抽奖','抽取','立即抽取'];
+                  var DRAW_SKIP=['抽奖记录','抽奖机会已用完','暂无抽奖','转盘抽奖','每日签到',
+                                 '签到集卡','去兑换','每签到3次','抽奖规则','我的奖品'];
+                  var triedDrawImg={}, drawMode=0, drawnThis=0, stall=0, noBtn=0;
+                  for(var d=0;d<40;d++){
+                    if(chanceLeft()===0){ line('页面显示抽奖次数已用完，收手'); break }
+                    for(var ct2=0;ct2<2;ct2++){ if(closeTip()){ await wait(500) } else break }
+                    var before=lotteryCount();
+                    var moved=false;
+                    // ① 文本按钮：uni-app 把「立 即 抽 奖」写成带空格的 DIV，norm 后能命中。
+                    if(drawMode===0){
                       SEEN={};
+                      var l=hit(DRAW_WORDS,DRAW_SKIP);
+                      if(l){ clickEl(l); did++; moved=true; line('点「'+tx(l).slice(0,10)+'」') }
+                    }
+                    // ② 图片按钮：用户实证「立即抽奖」也是图片，按坐标 elementFromPoint 补点。
+                    if(!moved){
+                      var di=drawImgCands(), dm=null;
+                      for(var ci=0;ci<di.length;ci++){
+                        var dk=di[ci].src+'|'+Math.round(di[ci].w)+'x'+Math.round(di[ci].h);
+                        if(!triedDrawImg[dk]){ dm=di[ci]; triedDrawImg[dk]=1; break }
+                      }
+                      if(dm){
+                        clickAt(dm.x,dm.y); did++; moved=true;
+                        line('点抽奖图片「'+String(dm.src).slice(0,20)+'」'
+                          +Math.round(dm.w)+'x'+Math.round(dm.h));
+                      }
+                    }
+                    if(!moved){
+                      if(++noBtn>=2){ line('文本/图片都找不到抽奖按钮，收手'); break }
+                      await wait(1200);
+                      triedDrawImg={}; drawMode=1-drawMode;
+                      continue;
+                    }
+                    noBtn=0;
+                    await wait(3000);
+                    var after=lotteryCount();
+                    if(after>before){ drawnThis+=after-before; stall=0 }
+                    else{
+                      stall++;
+                      line('这一轮点击没有新的 lottery 回执（连续 '+stall+' 次）');
+                      // 连续两轮没回执就换一种点法（文本↔图片），避免一直点错元素。
+                      if(stall>=2){ drawMode=1-drawMode; triedDrawImg={} }
+                      if(stall>=3){ line('连续 3 次点击都没有抽奖回执，判定次数到 0，收手'); break }
                     }
                   }
+                  line('抽奖阶段结束: 本轮 lottery 回执 '+lotteryCount()+' 条 / 新抽 '+drawnThis+' 次');
 
-                  await wait(1500);
-                  var sign=0, drawn=0;
-                  for(var i=0;i<NET.length;i++){
-                    var n=NET[i];
-                    if(n.code!==200) continue;
-                    // 取路径最后一段精确比对：signInTaskList / signInDoTask 也带
-                    // "signIn" 前缀，用包含判断会把「列任务」当成「签到成功」。
-                    var seg=n.u.split('?')[0].split('/').pop();
-                    if(seg==='signIn') sign++;
-                    if(seg==='lottery'||seg==='lotteryDo') drawn++;
-                  }
-                  var okSign=(sign>0)||signedNow();
+                  await wait(1200);
+                  var sign=netCount('signIn');
+                  var drawn=lotteryCount();
+                  var tasks=netCount('signInDoTask');
+                  var okSign=(sign>0)||signedAlready||signedNow();
                   if(okSign) done('ok',(sign>0?'签到有回执'
                     :(signedAlready?'今天已经签过（按钮已是「已签到」）':'页面已显示签到成功'))
-                    +'，动作 ' + did + ' 次');
-                  else if(drawn>0) done('ok','抽奖有回执，动作 ' + did + ' 次');
-                  else if(signedAlready) done('idle','今天已签到（动作 ' + did + ' 次）');
+                    +'，任务回执 '+tasks+' 条，抽奖回执 '+drawn+' 条，动作 '+did+' 次');
+                  else if(drawn>0) done('ok','抽奖有回执 '+drawn+' 条，任务回执 '+tasks+' 条，动作 '+did+' 次');
+                  else if(signedAlready) done('idle','今天已签到（动作 '+did+' 次）');
                   else if(did>0){
                     // v3.83：点击没生效时把真实 DOM 带回来，别再靠猜按钮文案。
                     line('DOM 快照: ' + domSnapshot());

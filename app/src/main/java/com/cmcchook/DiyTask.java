@@ -3,6 +3,9 @@ package com.cmcchook;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * qwhdhub「diy-client」通用活动引擎。
  *
@@ -38,8 +41,12 @@ final class DiyTask {
 
     /** 单个组件最多做几个任务，防止一次跑太久。 */
     private static final int MAX_TASKS = 12;
-    /** 单个组件最多抽几次，防止异常情况下无限抽；正常按服务端剩余次数走。 */
-    private static final int MAX_DRAW = 10;
+    /**
+     * v4.10.0：抽奖一律抽到服务端「剩余次数 = 0」。
+     * 这里只是防死循环的兜底上限（服务端不给递减时最多抽这么多次），
+     * 正常由 {@code readRemain} 读到 0 就收手。
+     */
+    private static final int MAX_DRAW = 40;
     private static final int MAX_COMPONENTS = 3;
 
     private DiyTask() {
@@ -91,6 +98,10 @@ final class DiyTask {
             int undoTasks = 0;
             int drawTimes = 0;
             int comps = 0;
+            // v4.10.0 两阶段：先把所有环节的「补领 + 做任务」跑完，收集环节 ID；
+            // 全部任务做完之后，再统一遍历环节抽奖到剩余 0 次。
+            // 用户实证：先抽奖再做任务，任务又发下新的抽奖次数，结果「抽了但有剩」。
+            List<String> allComps = new ArrayList<>();
             for (int i = 0; i < methods.length() && comps < MAX_COMPONENTS; i++) {
                 JSONObject pm = methods.optJSONObject(i);
                 JSONObject ap = pm == null ? null : pm.optJSONObject("actPlayMethod");
@@ -99,6 +110,7 @@ final class DiyTask {
                     continue;
                 }
                 comps++;
+                allComps.add(comp);
                 String method = ap.optString("name", "玩法" + comps);
                 detail.append("-- 环节 ").append(comps).append(": ").append(method)
                         .append(" (").append(comp).append(")\n");
@@ -164,24 +176,15 @@ final class DiyTask {
                     sleep(1_100);
                 }
 
-                // 抽奖：只有「有剩余次数」且「有中奖名额」才抽，避免空抽
-                JSONObject rem = remain(comp, referer);
-                int remain = rem == null ? 0 : rem.optInt("remain", 0);
-                int winRemain = rem == null ? 0 : rem.optInt("winRemain", 0);
-                detail.append("   次数: 剩余 ").append(remain)
-                        .append("，可中 ").append(winRemain).append('\n');
-                if (remain > 0 && winRemain > 0) {
-                    int times = Math.min(remain, MAX_DRAW);
-                    for (int d = 0; d < times; d++) {
-                        String prize = draw(comp, referer, detail);
-                        if (prize == null) {
-                            break;
-                        }
-                        drawTimes++;
-                        text.append(name).append("·抽奖 ").append(prize).append('\n');
-                        sleep(1_300);
-                    }
-                }
+                // v4.10.0：本环节不再抽奖，抽奖统一放到「所有任务做完后」的收尾阶段。
+            }
+
+            // ---- v4.10.0 收尾阶段：所有环节的任务/补领都做完，再统一抽到 0 ----
+            detail.append("▶ 抽奖收尾（任务全部完成后，一律抽到剩余次数 0）\n");
+            for (String comp : allComps) {
+                int drawn = drain(comp, referer, name, text, detail);
+                drawTimes += drawn;
+                detail.append("   环节 ").append(comp).append(": 抽 ").append(drawn).append(" 次\n");
             }
 
             // ---- 复查：做完再拉一遍，确认真的变成 DONE ----
@@ -251,6 +254,63 @@ final class DiyTask {
         } catch (Throwable e) {
             return null;
         }
+    }
+
+    /**
+     * v4.10.0 收尾抽奖：把某个环节的抽奖次数一律抽到服务端「剩余 = 0」。
+     *
+     * <p>不再看 {@code winRemain}（可中名额）—— 旧版就卡在「还有次数但可中名额
+     * 为 0」直接不抽，用户实证「抽奖了但有剩的没抽」。现在只要还有次数就抽，
+     * 未中奖也算消耗一次，继续抽到 0。
+     *
+     * <p>三重收手条件，任一命中即停：
+     * <ol>
+     *   <li>{@code draw()} 返回 null：服务端明确说停手（次数用尽 / 风控 / 非 SUCCESS）；</li>
+     *   <li>重读 {@code remain} 得到 0；</li>
+     *   <li>服务端剩余次数连续几轮不再下降，或达到 {@link #MAX_DRAW} 硬上限
+     *       （防接口异常时空转）。</li>
+     * </ol>
+     */
+    private static int drain(String comp, String referer, String name,
+                             StringBuilder text, StringBuilder detail) {
+        int drawn = 0;
+        JSONObject first = remain(comp, referer);
+        int serverLeft = first == null ? -1 : first.optInt("remain", -1);
+        // 服务端给了明确剩余次数就以它为上限（+2 余量）；读不到则靠 draw 停手 + 硬上限。
+        int cap = serverLeft > 0 ? Math.min(serverLeft + 2, MAX_DRAW) : MAX_DRAW;
+        detail.append("   环节 ").append(comp).append(" 抽奖前剩余: ")
+                .append(serverLeft < 0 ? "读不到" : serverLeft).append('\n');
+        int lastLeft = -2;
+        int stall = 0;
+        for (int i = 0; i < cap; i++) {
+            String prize = draw(comp, referer, detail);
+            if (prize == null) {
+                detail.append("   环节 ").append(comp).append(" 抽奖接口停手\n");
+                break;
+            }
+            drawn++;
+            text.append(name).append("·抽奖 ").append(prize).append('\n');
+            sleep(1_100);
+            JSONObject now = remain(comp, referer);
+            int left = now == null ? -1 : now.optInt("remain", -1);
+            if (left == 0) {
+                detail.append("   环节 ").append(comp).append(" 剩余次数已到 0\n");
+                break;
+            }
+            if (left > 0) {
+                if (left == lastLeft) {
+                    if (++stall >= 3) {
+                        detail.append("   环节 ").append(comp)
+                                .append(" 剩余次数连续不降，收手\n");
+                        break;
+                    }
+                } else {
+                    stall = 0;
+                }
+                lastLeft = left;
+            }
+        }
+        return drawn;
     }
 
     /** 抽一次，返回奖品描述；返回 null 表示该停手了。 */
