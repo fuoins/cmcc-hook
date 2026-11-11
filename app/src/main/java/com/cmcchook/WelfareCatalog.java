@@ -252,6 +252,11 @@ final class WelfareCatalog {
         if (ctx == null) {
             return;
         }
+        // 只在模块进程写：{@code items()} 也会在中国移动进程里被调用，
+        // 那边的 prefs(ctx) 是中国移动自己的 SharedPreferences，写进去既没用也污染。
+        if (!HookLog.MODULE_PACKAGE.equals(ctx.getPackageName())) {
+            return;
+        }
         try {
             SharedPreferences p = prefs(ctx);
             if (p.getBoolean(KEY_OFF_MIGRATED, false)) {
