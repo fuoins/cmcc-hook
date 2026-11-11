@@ -200,7 +200,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.01 已装载 · 短链换票 + 点卡片做任务（带 toDoTask 兜底）",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.02 已装载 · 短链换票 + 点任务图片按钮（带 toDoTask 兜底）",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -924,6 +924,7 @@ final class GooseTask {
     private static final String TASK_ONE_SCRIPT = """
             (function(){
               try{
+                var FORCE=__FORCE__;
                 function undone(list){var r=[];for(var i=0;i<list.length;i++){var t=list[i];if(!t)continue;
                   var s=String(t.isComplete);if(s==='1'||s==='true')continue;r.push(t)}return r}
                 var el=document.querySelector('#app')||document.querySelector('#root');
@@ -933,58 +934,114 @@ final class GooseTask {
                   var cs=o.$children||[];for(var i=0;i<cs.length;i++){var x=find(cs[i],d+1);if(x)return x}return null}
                 var c=v&&find(v,0);
                 if(!c)return JSON.stringify({err:'组件没找到'});
-                var todo=undone(c.taskListArr||[]);
+                var list=c.taskListArr||[];
+                var todo=undone(list);
                 if(!todo.length)return JSON.stringify({none:1});
                 var t=todo[0];
                 var title=String(t.jobTitle||t.taskKey||'');
-                // 12:55 日志：任务数据里 jobTitle 是「浏览我的亲友圈」这种不带括号的，
-                // 页面上渲染出来的却是「浏览「我的亲友圈」 +10」—— 去掉引号再比，
-                // 否则 indexOf 永远不命中，日志只会写「任务卡片没找到」。
+                var idx=list.indexOf(t); if(idx<0)idx=0;
                 function norm(s){return String(s||'').replace(/[「」『』【】"\\s]/g,'')}
+                // toDoTask 内部就是「发 doTask → toJump 打开落地页」，和手点同一条链路。
+                // 绝不覆盖 c.toJump —— 12:02 那次「登记成功但人没去」就是把它摘掉了。
+                function byComp(tag){
+                  try{
+                    if(typeof c.toDoTask==='function'){
+                      c.toDoTask(t,idx);
+                      return JSON.stringify({name:title,kind:'toDoTask',tag:tag||''});
+                    }
+                  }catch(e){}
+                  return '';
+                }
+                if(FORCE)return byComp('force');
                 var key=norm(title).slice(0,6);
                 var qm=/[「『【]([^」』】]+)[」』】]/.exec(title);
                 var alt=qm&&qm[1]?norm(qm[1]):'';
-                var nodes=document.querySelectorAll('.doTaskDiv *,div,span,a,button,p');
-                var best=null,bestLen=99999;
+                // 先按任务名找到标题节点，再往上扩到「含图片/按钮」的整块卡片。
+                // 12:55 日志里 jobTitle 是「浏览我的亲友圈」，页面渲染成
+                // 「浏览「我的亲友圈」 +10」，去掉引号再比才命中。
+                var scope=document.querySelector('.doTaskDiv');
+                if(!scope)scope=document.body;
+                var nodes=scope.querySelectorAll('*');
+                var anchor=null,anchorLen=99999;
                 for(var i=0;i<nodes.length;i++){
                   var e=nodes[i],tx=norm(e.innerText);
-                  if(!tx||tx.length>160)continue;
+                  if(!tx||tx.length>200)continue;
                   var hitC=(key&&tx.indexOf(key)>=0)||(alt&&tx.indexOf(alt)>=0);
                   if(!hitC)continue;
-                  if(tx.length<bestLen){best=e;bestLen=tx.length}
+                  if(tx.length<anchorLen){anchor=e;anchorLen=tx.length}
                 }
-                if(!best){
-                  // DOM 里认不出卡片时，退回组件自己的入口：toDoTask 内部就是
-                  // 「发 doTask → toJump 打开落地页」，和手点同一条逻辑。
-                  // 注意别再覆盖 c.toJump —— 12:02 那次「登记成功但人没去」就是被摘掉了跳转。
-                  try{
-                    if(typeof c.toDoTask==='function'){
-                      var idx=(c.taskListArr||[]).indexOf(t);
-                      c.toDoTask(t, idx<0?0:idx);
-                      return JSON.stringify({name:title,btn:false,via:'toDoTask'});
-                    }
-                  }catch(e2){}
-                  return JSON.stringify({err:'任务卡片没找到',name:title});
+                if(!anchor){
+                  // 连标题都是图时按列表顺序取：taskListArr 与 .doTaskDiv 顺序一致。
+                  var cards=document.querySelectorAll('.doTaskDiv');
+                  if(cards.length>idx)anchor=cards[idx];
                 }
-                var btn=null,inner=best.querySelectorAll('button,a,span,div,p');
-                for(var j=0;j<inner.length;j++){
-                  var s=(inner[j].innerText||'').replace(/\\s+/g,'');
+                if(!anchor)return byComp('nocard')||JSON.stringify({err:'任务卡片没找到',name:title});
+                var card=anchor;
+                for(var up=0;up<6&&card&&card.parentElement;up++){
+                  if(card.querySelector('img')||card.querySelector('[class*=btn]')
+                     ||/doTask/i.test(String(card.className||'')))break;
+                  card=card.parentElement;
+                }
+                if(!card)card=anchor;
+                // 「去完成」这块在页面上是图片（绿底白字圆角），文字节点是空的。
+                // 旧脚本只认 innerText，永远匹配不上，最后去点标题那块容器，
+                // 落点压在文字上，页面自己的 @click 收不到。
+                var cands=[];
+                function push(node,score,kind){
+                  if(!node)return;
+                  var r=null;
+                  try{ r=node.getBoundingClientRect() }catch(x){ return }
+                  if(!r||r.width<8||r.height<8)return;
+                  for(var q=0;q<cands.length;q++){ if(cands[q].el===node)return }
+                  cands.push({el:node,score:score+r.left/100,kind:kind,r:r});
+                }
+                var txts=card.querySelectorAll('button,a,span,div,p,i,em');
+                for(var j=0;j<txts.length;j++){
+                  var s=norm(txts[j].innerText);
                   if(s==='去完成'||s==='去逛逛'||s==='去参与'||s==='立即完成'
-                     ||s==='去看看'||s==='去领取'||s==='去做任务'){btn=inner[j];break}
+                     ||s==='去看看'||s==='去领取'||s==='去做任务'||s==='立即领取'){push(txts[j],100,'text');break}
                 }
-                var target=btn||best,r=target.getBoundingClientRect();
-                if(!r||r.width<2||r.height<2){target=best;r=best.getBoundingClientRect()}
-                var x=r.left+r.width/2,y=r.top+r.height/2;
+                var imgs=card.querySelectorAll('img');
+                for(var m=0;m<imgs.length;m++){
+                  var im=imgs[m],ir=null;
+                  try{ ir=im.getBoundingClientRect() }catch(x){ continue }
+                  if(!ir||ir.width<20||ir.height<12)continue;
+                  var ratio=ir.width/Math.max(ir.height,1);
+                  var tag=(im.src||'')+' '+(im.className||'')+' '+(im.alt||'')
+                          +' '+(im.getAttribute('data-src')||'');
+                  var named=/task|btn|button|complete|finish|go|receive|lingqu|done|goto/i.test(tag);
+                  var shape=(ir.height>=16&&ir.height<=80&&ratio>=1.4&&ratio<=8);
+                  if(named||shape)push(im,(named?60:30)+(shape?25:0),'img');
+                }
+                if(!cands.length){
+                  var bs=card.querySelectorAll('[class*=btn],[class*=Btn],[class*=button],[onclick]');
+                  for(var n=0;n<bs.length;n++)push(bs[n],25,'box');
+                }
+                if(!cands.length)return byComp('nobtn')||JSON.stringify({err:'任务按钮没找到',name:title});
+                cands.sort(function(a,b){return b.score-a.score});
+                var pick=cands[0];
+                var r2=pick.r;
+                var x=r2.left+r2.width/2,y=r2.top+r2.height/2;
+                // 图片上可能压着透明层或 pointer-events:none，取该点最上层再补一发。
+                var layers=[pick.el];
                 try{
-                  var names=['touchstart','touchend','mousedown','mouseup','click'];
-                  for(var k=0;k<names.length;k++){
-                    var ev=document.createEvent('MouseEvents');
-                    ev.initMouseEvent(names[k],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
-                    target.dispatchEvent(ev);
+                  var top=document.elementFromPoint(x,y);
+                  if(top&&top!==pick.el)layers.push(top);
+                }catch(x){}
+                for(var L=0;L<layers.length;L++){
+                  var tg=layers[L];
+                  var seq=['touchstart','touchend','mousedown','mouseup','click'];
+                  for(var k=0;k<seq.length;k++){
+                    try{
+                      var ev=document.createEvent('MouseEvents');
+                      ev.initMouseEvent(seq[k],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
+                      tg.dispatchEvent(ev);
+                    }catch(x){}
                   }
-                }catch(e){}
-                try{if(typeof target.click==='function')target.click()}catch(e){}
-                return JSON.stringify({name:title,btn:!!btn,url:String(location.href)});
+                  try{ if(typeof tg.click==='function')tg.click() }catch(x){}
+                }
+                return JSON.stringify({name:title,kind:pick.kind,x:Math.round(x),y:Math.round(y),
+                                       url:String(location.href)});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
             })()
             """;
@@ -1023,7 +1080,9 @@ final class GooseTask {
         int done = 0;
         int miss = 0;
         for (int i = 0; i < TASK_TRIES; i++) {
-            String raw = page.eval(TASK_ONE_SCRIPT, 10_000L);
+            // miss>0 = 上一次点了但剩余数没降：这一轮不再猜落点，直接走组件入口
+            // （toDoTask 内部发 doTask + toJump 打开落地页，和手点同一条链路）。
+            String raw = page.eval(TASK_ONE_SCRIPT.replace("__FORCE__", miss > 0 ? "1" : "0"), 10_000L);
             if (raw == null || raw.isEmpty()) {
                 detail.append("浏览任务: 点击脚本没回报，停止\n");
                 break;
@@ -1044,9 +1103,14 @@ final class GooseTask {
                 break;
             }
             String name = o.optString("name", "");
-            String via = o.optString("via", "");
-            detail.append("浏览任务 ").append(i + 1).append(": 点「").append(name).append("」")
-                    .append(o.optBoolean("btn") ? "（按钮）" : (via.isEmpty() ? "（卡片）" : "（" + via + "）"))
+            String kind = o.optString("kind", "");
+            String kd = "text".equals(kind) ? "文字按钮"
+                    : "img".equals(kind) ? "图片按钮"
+                    : "box".equals(kind) ? "按钮容器"
+                    : "toDoTask".equals(kind) ? "组件入口"
+                    : "卡片";
+            detail.append("浏览任务 ").append(i + 1).append(": 点「").append(name).append("」（").append(kd).append("）")
+                    .append(o.has("x") ? " @" + o.optInt("x") + "," + o.optInt("y") : "")
                     .append('\n');
             sleep(2_000L);
             String nowUrl = page.url();

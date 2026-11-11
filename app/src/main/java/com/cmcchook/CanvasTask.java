@@ -1062,6 +1062,27 @@ final class CanvasTask {
                   if(a>area){ area=a; tgt=e }
                 }
                 if(!tgt){
+                  // 三张牌也可能是没有 card/flip class 的 img，按近正方形 + 尺寸兜底。
+                  // 只在 class 完全没线索时才用，取面积最大那张（牌位比奖品图标大），
+                  // 并排除屏幕上部 20% —— 那里是 banner 与奖品展示区。
+                  var imgs2=document.querySelectorAll('img');
+                  area=0;
+                  for(var m2=0;m2<imgs2.length;m2++){
+                    var im2=imgs2[m2],r3=null;
+                    try{ r3=im2.getBoundingClientRect() }catch(x){ continue }
+                    if(!r3||r3.width<60||r3.height<60) continue;
+                    var ra=r3.width/r3.height;
+                    if(ra<0.7||ra>1.4) continue;
+                    if(r3.top<window.innerHeight*0.2) continue;
+                    var a3=r3.width*r3.height;
+                    if(a3>area){ area=a3; tgt=im2 }
+                  }
+                  if(tgt){
+                    var rr0=tgt.getBoundingClientRect();
+                    line('  翻牌卡片按方形图片命中: '+Math.round(rr0.width)+'x'+Math.round(rr0.height));
+                  }
+                }
+                if(!tgt){
                   // 没有 class 线索时退回按文字点（有些活动卡片上写「立即开启」）。
                   var t=clickDrawExact();
                   if(!t) return null;
@@ -1302,7 +1323,7 @@ final class CanvasTask {
               function clickDrawExact(){
                 var want=/翻牌|抽奖|开启|立即抽|抽取/;
                 var bad=/记录|规则|说明|详情|我的|奖品|次数|剩余|已抽/;
-                var tags=document.querySelectorAll('button,a,div,span,img');
+                var tags=document.querySelectorAll('button,a,div,span');
                 var best=null,area=0;
                 for(var i=0;i<tags.length;i++){
                   var e=tags[i];
@@ -1314,9 +1335,43 @@ final class CanvasTask {
                   var a=r.width*r.height;
                   if(a>area){ area=a; best=e }
                 }
-                if(!best) return '';
-                var txt=ownText(best)||String(best.innerText||'').replace(/\\s+/g,'').slice(0,8);
-                return tapEl(best)?txt:'';
+                if(best){
+                  var txt=ownText(best)||String(best.innerText||'').replace(/\\s+/g,'').slice(0,8);
+                  if(tapEl(best)) return txt;
+                }
+                // 「立即抽好礼」这块在页面上是图片（橙底白字长条），ownText 恒为空，
+                // 上面那圈文字匹配永远漏掉它。这里单独按 img 收一遍：
+                // 名称命中优先，其次看形状（横条按钮），顶部 8% 的 banner 排除。
+                var imgs=document.querySelectorAll('img');
+                var cands=[];
+                for(var m=0;m<imgs.length;m++){
+                  var im=imgs[m],ir=null;
+                  try{ ir=im.getBoundingClientRect() }catch(x){ continue }
+                  if(!ir||ir.width<80||ir.width>460) continue;
+                  if(ir.height<28||ir.height>140) continue;
+                  var ratio=ir.width/Math.max(ir.height,1);
+                  if(ratio<1.2||ratio>8) continue;
+                  var tag2=(im.src||'')+' '+(im.className||'')+' '+(im.alt||'')
+                           +' '+(im.getAttribute('data-src')||'');
+                  var named=/lottery|draw|flip|card|btn|button|chou|prize|gift/i.test(tag2);
+                  var inBtn=false;
+                  try{ inBtn=!!im.closest('button,a,[class*=btn],[class*=Btn]') }catch(x){}
+                  var shape=(ratio>=1.5&&ratio<=4.5);
+                  if(!named&&!inBtn&&!shape) continue;
+                  if(!named&&!inBtn&&ir.top<window.innerHeight*0.25) continue;
+                  var sc=(named?60:0)+(inBtn?30:0)+(shape?15:0)+(ir.width>=140?10:0);
+                  cands.push({e:im,s:sc,w:Math.round(ir.width),h:Math.round(ir.height),n:named});
+                }
+                cands.sort(function(a,b){return b.s-a.s});
+                for(var q=0;q<cands.length&&q<3;q++){
+                  if(tapEl(cands[q].e)){
+                    line('  图片按钮候选 '+cands.length+' 个，点 '+cands[q].w+'x'+cands[q].h
+                         +(cands[q].n?'（名称命中）':'（形状）'));
+                    return '图片按钮 '+cands[q].w+'x'+cands[q].h;
+                  }
+                }
+                if(cands.length) line('  图片按钮候选 '+cands.length+' 个，但都没点下去');
+                return '';
               }
               // v3.89：只点「自己就写着签到/打卡」的元素，文本必须精确等于。
               function clickSignExact(){
@@ -1430,7 +1485,7 @@ final class CanvasTask {
 
               (async function(){
                 try{
-                  line('=== 画布活动 v3.38 ===');
+                  line('=== 画布活动 v3.39 ===');
                   line('URL: '+cut(location.href,220));
                   hookNet();
                   // coc 页面进页先走 checkUID / getUserInfo，这段时间文案是
