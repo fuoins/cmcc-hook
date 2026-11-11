@@ -169,6 +169,79 @@ final class WebSession {
         return url == null ? "" : (url.length() <= 80 ? url : url.substring(0, 80) + "…");
     }
 
+    /**
+     * 等页面自己把 SSO 跳转链走完，再判定它到底是什么页。
+     *
+     * <p>11-11 12:33 实证：鹅蛋入口 {@code ssoJump.html?dwzCode=0AnebE} 是一个
+     * 407 字节的桩页，真页容器一匹配到它就返回了；模块立刻按「小 DOM + 空正文」
+     * 判成访问受限并 close()。而 70 毫秒后同一 WebView 就跳到了
+     * {@code lyhVue/index.html#/bgIndex?pc=…}（pc/pk 齐全），被自己关在门外。
+     *
+     * <p>判定条件：URL 不再是中转页，且连续 900ms 没变化。上限 {@code timeoutMs}，
+     * 超时就返回原页，由调用方按「跳转链没走完」处理。
+     */
+    private static WebPage waitLanded(WebPage page, long timeoutMs) {
+        if (page == null || page.raw() == null) {
+            return page;
+        }
+        long startAt = System.currentTimeMillis();
+        // 没经过中转页的普通活动，最多等 3.5 秒看地址稳不稳定；
+        // 一旦发现自己在 SSO / 短链中转页上，就放宽到调用方给的预算（默认 16 秒）。
+        long end = startAt + Math.min(timeoutMs, 3_500L);
+        String last = null;
+        long stableAt = 0L;
+        while (System.currentTimeMillis() < end) {
+            String now;
+            try {
+                now = page.href();
+            } catch (Throwable e) {
+                return page;
+            }
+            if (page.raw() == null) {
+                return page;
+            }
+            if (now == null) {
+                now = "";
+            }
+            if (now.contains("qwhdsso/login")) {
+                return page;
+            }
+            if (RealPage.transit(now)) {
+                long wider = startAt + timeoutMs;
+                if (wider > end) {
+                    end = wider;
+                }
+            }
+            if (now.isEmpty()) {
+                // WebView 还没拿到第一个地址：这不是「稳定」，是没开始。
+                last = now;
+                stableAt = 0L;
+                try {
+                    Thread.sleep(220L);
+                } catch (InterruptedException e) {
+                    return page;
+                }
+                continue;
+            }
+            if (now.equals(last) && !RealPage.transit(now)) {
+                if (stableAt == 0L) {
+                    stableAt = System.currentTimeMillis();
+                } else if (System.currentTimeMillis() - stableAt >= 900L) {
+                    return page;
+                }
+            } else {
+                stableAt = 0L;
+                last = now;
+            }
+            try {
+                Thread.sleep(220L);
+            } catch (InterruptedException e) {
+                return page;
+            }
+        }
+        return page;
+    }
+
     /** 页面建立后的统一收尾：登录态检测、场景快照、挂到 current。 */
     private static boolean settle(String key, WebPage page, long start) {
         return settle(key, page, start, 0);
@@ -178,6 +251,22 @@ final class WebSession {
         if (page == null || page.raw() == null) {
             HookLog.log("TASK", "页面打开失败 · " + key, "");
             return false;
+        }
+        // 先让跳转链跑完：中转页上的任何判定都是噪声。
+        page = waitLanded(page, depth == 0 ? 16_000L : 8_000L);
+        if (page == null || page.raw() == null) {
+            HookLog.log("TASK", "页面在跳转途中被关掉 · " + key, "");
+            return false;
+        }
+        // 落地这一跳的文档可能刚开始加载（finished 被 onPageStarted 复位），
+        // 给它 8 秒把文档建起来，别把正在加载的活动页当白屏关掉。
+        long okEnd = System.currentTimeMillis() + 8_000L;
+        while (!page.ok() && page.raw() != null && System.currentTimeMillis() < okEnd) {
+            try {
+                Thread.sleep(300L);
+            } catch (InterruptedException ignored) {
+                break;
+            }
         }
         long cost = System.currentTimeMillis() - start;
         String text = "";
@@ -228,6 +317,19 @@ final class WebSession {
             title = page.title();
         } catch (Throwable ignored) {
         }
+        if (RealPage.transit(pageUrl)) {
+            // 等到上限还停在中转页：短链失效、门户没下发 token，或者网络卡在中间。
+            // 这跟「入口缺渠道参数」是两回事，日志别写错，不然排查方向会歪。
+            HookLog.log("TASK", "跳转链没走完 · " + key + " · 仍停在短链",
+                    "URL: " + pageUrl + "\n标题: " + title + "\n现场: " + scene + "\n"
+                            + "等了 16 秒仍在中转页（ssoJump / rr/dwz / uniTokenValidate 这些），"
+                            + "没有跳到活动页。\n"
+                            + "常见原因是短链过期，或门户这次没把 token 接住。\n"
+                            + "在中国移动 App 里手动点进一次这个活动，再点「执行任务」重试即可；"
+                            + "不会锁定当天任务。");
+            page.close();
+            return false;
+        }
         boolean channelBlocked = (title != null && title.contains("渠道未开放"))
                 || (text != null && text.contains("渠道未开放"))
                 || (scene != null && scene.contains("channelNonsupport"));
@@ -238,7 +340,25 @@ final class WebSession {
         boolean suspect = (title != null && (title.contains("受限") || title.contains("无法访问")))
                 || (text != null && (text.contains("受限") || text.contains("无法访问")))
                 || (scene != null && scene.matches(".*html=\\d{1,3}( ·|\\z).*"));
-        boolean limited = !channelBlocked && suspect && RealPage.blocked(page);
+        boolean limited = false;
+        if (!channelBlocked && suspect && !RealPage.transit(pageUrl)) {
+            limited = RealPage.blocked(page);
+            if (limited) {
+                // 刚落地的一瞬间，Vue 还没 mount、DOM 只有几百字节，也像「壳页」。
+                // 等 1.2 秒再复核一次，两次都判才认，避免把正在渲染的活动页关掉。
+                try {
+                    Thread.sleep(1_200L);
+                } catch (InterruptedException ignored) {
+                }
+                limited = RealPage.blocked(page);
+                if (limited) {
+                    try {
+                        title = page.title();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
         if ((channelBlocked || limited) && depth == 0) {
             // 先别急着判死：换一个带渠道参数的入口（学到的 / 真页登记表 /
             // 内置表 / 鹅蛋球赛的缓存入口）重开一次，多数情况能救回来。

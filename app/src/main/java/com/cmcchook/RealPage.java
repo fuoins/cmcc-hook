@@ -133,6 +133,29 @@ final class RealPage {
     }
 
     /**
+     * SSO / 短链中转页：几秒内会自己跳到真正的活动页，不能拿来判定页面状态。
+     *
+     * <p>鹅蛋的真实链是
+     * {@code ssoJump.html?dwzCode=… → uniTokenValidate.wap → rr/dwz/… → addToProductStores.wap → lyhVue#/bgIndex?pc=…}，
+     * 每一跳都是一个几乎空白的桩页，跳完整条链只要 1 秒左右。以前一看到第一跳
+     * 就判「壳页/受限」，等于每次都把活动页关在门外。
+     */
+    static boolean transit(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        String u = url.toLowerCase(java.util.Locale.US);
+        return u.contains("ssojump")
+                || u.contains("/rr/dwz/")
+                || u.contains("unitokenvalidate")
+                || u.contains("addtoproductstores")
+                || u.contains("jumpotherchinaneturl")
+                || u.contains("/rr/lm/")
+                || u.contains("uni_token")
+                || u.contains("authtokenvalidate");
+    }
+
+    /**
      * 页面是不是「被服务端重定向到受限页」，只看站点给的明确特征。
      *
      * <p>11-10 22:56 实证：周三充值日的首屏 {@code html=790}、Vue 还没 mount，
@@ -142,6 +165,12 @@ final class RealPage {
      */
     private static boolean shellPage(String url, String text, String len) {
         if (url != null && RealEntry.hasChannel(url)) {
+            return false;
+        }
+        // 11-11 12:33 实证：鹅蛋入口 ssoJump.html 只有 407 字节、正文为空，
+        // 被这条「小 DOM」规则判成受限页，模块当场 close()，把后面那一跳
+        // （带完整 pc/pk 的 lyhVue）掐断了。中转页永远不算壳页。
+        if (transit(url)) {
             return false;
         }
         int n = 0;
