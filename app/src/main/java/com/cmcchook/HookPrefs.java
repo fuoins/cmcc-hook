@@ -20,6 +20,8 @@ final class HookPrefs {
     private static volatile boolean pageEgg = true;
     private static volatile boolean pageGoose = true;
     private static volatile boolean autoTrigger;
+    /** r10：常驻采集旁路开关。跟着 reload 的 1.5s 缓存走，别每请求读一次文件。 */
+    private static volatile boolean rawCapture;
 
     private HookPrefs() {
     }
@@ -116,6 +118,12 @@ final class HookPrefs {
         return autoTrigger;
     }
 
+    /** r10：常驻采集开关（走 reload 缓存，1.5s 内生效）。 */
+    static boolean rawCapture() {
+        reload(false);
+        return rawCapture;
+    }
+
     private static volatile long lastFlagAt;
 
     /**
@@ -206,6 +214,7 @@ final class HookPrefs {
             pageEgg = p.getBoolean("auto_page_egg", true);
             pageGoose = p.getBoolean("auto_page_goose", true);
             autoTrigger = p.getBoolean("auto_trigger", false);
+            rawCapture = p.getBoolean("raw_capture", false);
         } catch (Throwable e) {
             HookLog.logcat("reload prefs failed: " + e);
         }

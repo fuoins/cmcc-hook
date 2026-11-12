@@ -247,4 +247,8 @@
     <string name="capture_export_fail">导出采集报告失败</string>
     <string name="capture_cleared">采集记录已清空</string>
     <string name="capture_summary">已录 %1$d 条请求</string>
+    <string name="capture_state_unknown">采集状态读取中…</string>
+    <string name="capture_state">采集 %1$s · %2$d 条 · 最近 %3$s</string>
+    <string name="capture_no_data_on">开关已开，但一条都没收到：先强制停止「中国移动」再打开（让模块重新加载），随便进一个活动页后回来导出。</string>
+    <string name="capture_no_data_off">常驻采集还是关的：先把上面的开关打开。</string>
 </resources>

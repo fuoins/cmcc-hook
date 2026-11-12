@@ -44,9 +44,9 @@ final class RawCaptureStore {
         return new File(ctx.getFilesDir(), FILE);
     }
 
-    static synchronized void append(Context ctx, String line) {
+    static synchronized boolean append(Context ctx, String line) {
         if (line == null || line.isEmpty()) {
-            return;
+            return false;
         }
         try {
             File f = file(ctx);
@@ -63,8 +63,20 @@ final class RawCaptureStore {
             FileOutputStream out = new FileOutputStream(file(ctx), true);
             out.write((line.replace('\n', ' ') + "\n").getBytes(StandardCharsets.UTF_8));
             out.close();
+            return true;
         } catch (Throwable e) {
             HookLog.logcat("raw capture append failed: " + e);
+            return false;
+        }
+    }
+
+    /** 最近一次落盘时间，给界面显示「采集是不是还活着」。 */
+    static long lastAt(Context ctx) {
+        try {
+            File f = file(ctx);
+            return f.exists() ? f.lastModified() : 0L;
+        } catch (Throwable e) {
+            return 0L;
         }
     }
 
@@ -103,17 +115,28 @@ final class RawCaptureStore {
     }
 
     static synchronized int count(Context ctx) {
-        String text = load(ctx);
-        if (text.isEmpty()) {
+        // 流式数行：文件上限 24MB，别为了一个数字把整份读进内存（设置页每次进来都调）。
+        try {
+            File f = file(ctx);
+            if (!f.exists()) {
+                return 0;
+            }
+            FileInputStream in = new FileInputStream(f);
+            byte[] chunk = new byte[8192];
+            int n;
+            int lines = 0;
+            while ((n = in.read(chunk)) > 0) {
+                for (int i = 0; i < n; i++) {
+                    if (chunk[i] == '\n') {
+                        lines++;
+                    }
+                }
+            }
+            in.close();
+            return lines;
+        } catch (Throwable e) {
             return 0;
         }
-        int n = 0;
-        for (int i = 0; i < text.length(); i++) {
-            if (text.charAt(i) == '\n') {
-                n++;
-            }
-        }
-        return n;
     }
 
     static String exportName(Context ctx) {
@@ -133,6 +156,9 @@ final class RawCaptureStore {
         Map<String, Integer> sessions = new HashMap<>();
         int encrypted = 0;
         int unassigned = 0;
+        JSONArray probes = new JSONArray();
+        long firstAt = 0;
+        long lastAt = 0;
         if (!raw.isEmpty()) {
             String[] lines = raw.split("\n");
             for (String line : lines) {
@@ -203,6 +229,18 @@ final class RawCaptureStore {
                     Integer v = sessions.get(sid);
                     sessions.put(sid, (v == null ? 0 : v) + 1);
                 }
+                long ts = o.optLong("ts", 0);
+                if (ts > 0) {
+                    if (firstAt == 0 || ts < firstAt) {
+                        firstAt = ts;
+                    }
+                    if (ts > lastAt) {
+                        lastAt = ts;
+                    }
+                }
+                if ("selfcheck".equals(o.optString("source", ""))) {
+                    probes.put(o);
+                }
                 records.put(o);
             }
         }
@@ -233,6 +271,30 @@ final class RawCaptureStore {
             }
             sum.put("params", params);
             report.put("summary", sum);
+
+            // 自检段：一眼看出「目标进程读到开关没有」「记录的时间跨度」「广播通没通」。
+            JSONObject sc = new JSONObject();
+            sc.put("records", records.length());
+            sc.put("firstAt", firstAt);
+            sc.put("lastAt", lastAt);
+            sc.put("probes", probes);
+            Boolean sw = null;
+            for (int i = probes.length() - 1; i >= 0; i--) {
+                JSONObject p = probes.optJSONObject(i);
+                if (p != null) {
+                    sw = p.optBoolean("enabled", false);
+                    break;
+                }
+            }
+            if (sw == null) {
+                sc.put("switchInTarget", JSONObject.NULL);
+                sc.put("hint", "目标进程没有自检记录：采集开关可能没被读到，"
+                        + "或中国移动进程启动后没有任何请求。");
+            } else {
+                sc.put("switchInTarget", sw.booleanValue());
+                sc.put("hint", sw ? "目标进程读到开关=开" : "目标进程读到开关=关");
+            }
+            report.put("selfcheck", sc);
             report.put("records", records);
         } catch (Throwable e) {
             HookLog.logcat("raw capture report failed: " + e);

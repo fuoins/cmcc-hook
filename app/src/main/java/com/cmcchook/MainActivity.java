@@ -420,6 +420,7 @@ public final class MainActivity extends AppCompatActivity {
         // r8：快路径默认开（失败自动兜底），常驻采集默认关（含敏感头，按需打开）。
         bindSwitch(R.id.switchFastPath, AppPrefs.KEY_FAST_PATH, true);
         bindSwitch(R.id.switchRawCapture, AppPrefs.KEY_RAW_CAPTURE, false);
+        refreshCaptureState();
         View btnCaptureExport = findViewById(R.id.btnCaptureExport);
         if (btnCaptureExport != null) {
             btnCaptureExport.setOnClickListener(v -> exportCapture());
@@ -1399,10 +1400,34 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     /** r8：导出常驻采集的结构化报告（原始流 + deps[] 参数来源 + 密文域标注）。 */
+    /**
+     * r10：采集状态一行字。
+     *
+     * <p>r8 只显示「还没录到请求」，用户没法判断断在开关、广播还是落盘。
+     * 现在把模块侧开关、已落盘条数、最后写入时间直接摊开；导出的报告里
+     * 还有目标进程自检（它真实读到的开关值）。
+     */
+    private void refreshCaptureState() {
+        TextView tv = findViewById(R.id.captureState);
+        if (tv == null) {
+            return;
+        }
+        boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+        int n = RawCaptureStore.count(this);
+        long at = RawCaptureStore.lastAt(this);
+        String when = at > 0
+                ? new SimpleDateFormat("HH:mm:ss", Locale.US).format(new Date(at))
+                : "—";
+        tv.setText(getString(R.string.capture_state, on ? "开" : "关", n, when));
+    }
+
     private void exportCapture() {
+        refreshCaptureState();
         int n = RawCaptureStore.count(this);
         if (n == 0) {
-            Toast.makeText(this, R.string.capture_no_data, Toast.LENGTH_LONG).show();
+            boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+            Toast.makeText(this, on ? R.string.capture_no_data_on : R.string.capture_no_data_off,
+                    Toast.LENGTH_LONG).show();
             return;
         }
         final String name = RawCaptureStore.exportName(this);
@@ -1429,6 +1454,7 @@ public final class MainActivity extends AppCompatActivity {
 
     private void clearCapture() {
         RawCaptureStore.clear(this);
+        refreshCaptureState();
         Toast.makeText(this, R.string.capture_cleared, Toast.LENGTH_SHORT).show();
     }
 
@@ -2376,6 +2402,9 @@ public final class MainActivity extends AppCompatActivity {
                 Toast.makeText(MainActivity.this,
                         isChecked ? "已过滤 H5 埋点噪音" : "已关闭过滤，H5 日志将逐条记录",
                         Toast.LENGTH_SHORT).show();
+            }
+            if (AppPrefs.KEY_RAW_CAPTURE.equals(key)) {
+                refreshCaptureState();
             }
         });
     }

@@ -173,6 +173,9 @@ final class OkHttpHooks {
                 return;
             }
             String url = requestUrl(request);
+            if (!RawCapture.wanted(url)) {
+                return;
+            }
             Object response = param.getResult();
             int code = response == null ? 0 : intValue(call(response, "code"), 0);
             RawCapture.record("okhttp", RawCapture.of(url, requestMethod(request), code,

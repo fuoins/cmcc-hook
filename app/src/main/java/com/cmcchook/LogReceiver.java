@@ -5,6 +5,9 @@ import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_LOG = "com.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.cmcchook.action.HEARTBEAT";
@@ -249,14 +252,42 @@ public final class LogReceiver extends BroadcastReceiver {
         }
     }
 
-    /** r8：一条原始记录追加进 JSONL，不去重、不截断、不进任务队列。 */
+    /** r8：一批原始记录追加进 JSONL，不去重、不截断、不进任务队列。 */
     private void handleRawCapture(Context context, Intent intent) {
         try {
             String json = intent.getStringExtra(RawCapture.EXTRA_JSON);
-            if (json != null && !json.isEmpty()) {
-                RawCaptureStore.append(context, json);
+            if (json == null || json.isEmpty()) {
+                return;
             }
-        } catch (Throwable ignored) {
+            int ok = 0;
+            int fail = 0;
+            String t = json.trim();
+            if (t.startsWith("[")) {
+                JSONArray arr = new JSONArray(t);
+                for (int i = 0; i < arr.length(); i++) {
+                    JSONObject o = arr.optJSONObject(i);
+                    if (o == null) {
+                        continue;
+                    }
+                    if (RawCaptureStore.append(context, o.toString())) {
+                        ok++;
+                    } else {
+                        fail++;
+                    }
+                }
+            } else if (RawCaptureStore.append(context, t)) {
+                ok++;
+            } else {
+                fail++;
+            }
+            if (fail > 0) {
+                // 落盘失败不能再静默：写一条模块日志，导出日志时能看到。
+                HookLog.log("RAW", "采集落盘失败 " + fail + " 条",
+                        "成功 " + ok + " 条\n"
+                                + "目录: " + context.getFilesDir());
+            }
+        } catch (Throwable e) {
+            HookLog.log("RAW", "采集落盘异常", String.valueOf(e));
         }
     }
 
