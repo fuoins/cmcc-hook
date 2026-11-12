@@ -92,8 +92,9 @@ final class RawCapture {
             on = false;
         }
         if (!selfChecked) {
-            selfChecked = true;
-            selfCheck(on);
+            // 只有真的发出去才记「已自检」：极早期请求拿不到 Context 时下次重试，
+            // 否则报告里会永远缺这条，又变成黑盒。
+            selfChecked = selfCheck(on);
         }
         return on;
     }
@@ -256,7 +257,7 @@ final class RawCapture {
         }
     }
 
-    private static void selfCheck(boolean on) {
+    private static boolean selfCheck(boolean on) {
         try {
             JSONObject o = new JSONObject();
             o.put("ts", System.currentTimeMillis());
@@ -270,9 +271,10 @@ final class RawCapture {
             o.put("module", HookLog.MODULE_VERSION);
             o.put("maxChars", MAX_CHARS);
             o.put("batchMax", BATCH_MAX);
-            send("[" + o.toString() + "]");
+            return send("[" + o.toString() + "]");
         } catch (Throwable e) {
             HookLog.logcat("raw capture selfcheck failed: " + e);
+            return false;
         }
     }
 
