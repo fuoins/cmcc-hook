@@ -220,6 +220,7 @@ final class MiaoTask {
      * 与卡片文案双重排除，只点免费的「去浏览/去分享/去领取/去看看/去邀请/去关注」。
      */
     private static int runFreeTasks(WebPage page, String entry, StringBuilder detail) {
+        detail.append("赚阳光值任务: r16 图片按钮(IMG.content-btn)按结构定位，不靠 innerText\n");
         int done = 0;
         int lastLeft = -1;
         int stall = 0;
@@ -280,6 +281,14 @@ final class MiaoTask {
     /**
      * 点「赚阳光值」列表里第一个待做的免费任务。做完的任务按钮会变成「已完成」，
      * 所以每次点第一个不会重复。返回点到的任务名、页面剩余待做数；none=没待做。
+     *
+     * <p>r16：11-12 20:42 日志实证，豆苗这三个浏览任务（看移动爱购直播 /
+     * 浏览热销榜单 / 浏览精选爆品）的按钮是 {@code IMG.content-btn}，元素链
+     * {@code IMG.content-btn < DIV.content-bg < DIV.comp-box}，图片上没有任何文字。
+     * 旧版只按 innerText 精确匹配「去浏览」这类词，一个都找不到，于是日志写
+     * 「赚阳光值免费任务: 完成 0 个」、活动被判 idle。现在改成按结构找图片按钮：
+     * 用 class / 尺寸 / 可见性定位，沿父链找整块任务卡片读名字与「已完成」状态，
+     * 文本只用来写日志和排除付费项，不用来定位按钮本身。
      */
     private static final String MIAO_FREE_ONE = """
             (function(){
@@ -310,37 +319,79 @@ final class MiaoTask {
                     return true;
                   }catch(x){return false}
                 }
-                var WORDS=['去浏览','去分享','去领取','去看看','去邀请','去关注'];
-                var PAY=/去订购|办理|会员|铂金|畅看|订购订单/;
-                var all=document.querySelectorAll('button,a,div,span,li,p,i');
-                var left=0, target=null, name='';
-                for(var i=0;i<all.length;i++){
-                  var e=all[i];
-                  if(!vis(e))continue;
-                  var t=(e.innerText||'').replace(/\\s+/g,'');
-                  var ok=false;
-                  for(var j=0;j<WORDS.length;j++){if(t===WORDS[j]){ok=true;break}}
-                  if(!ok)continue;
-                  var card=e,ct='';
-                  for(var d=0;d<4&&card;d++){
-                    var s=(card.innerText||'').replace(/\\s+/g,' ').trim();
-                    if(s.length>ct.length)ct=s;
-                    card=card.parentElement;
+                function txt(e){try{return (e.innerText||'').replace(/\\s+/g,' ').trim()}catch(x){return ''}}
+                // 图片按钮没有文字，按结构向上找整块任务卡片：.content-bg 只包图片，
+                // 再上一层 .comp-box 才带任务名。只有单块卡片才能判断「已完成」。
+                function cardOf(e){
+                  var cur=e,fallback=null;
+                  for(var d=0;d<5&&cur;d++){
+                    var c=String(cur.className||'');
+                    if(/comp-box|task-item|task-card|doTaskDiv/i.test(c))return cur;
+                    if(/content-bg/i.test(c)&&!fallback)fallback=cur;
+                    cur=cur.parentElement;
                   }
-                  var slice=ct.slice(0,60);
-                  if(PAY.test(slice))continue;
-                  if(/已完成/.test(slice))continue;
-                  left++;
-                  if(!target){target=e;name=slice.slice(0,40)}
+                  return fallback||e;
                 }
-                if(!target)return JSON.stringify({none:1,left:left});
-                var el=target;
-                fire(el);
-                for(var u=0;u<3&&el;u++){
-                  el=el.parentElement;
-                  if(el)fire(el);
+                function labelOf(card){
+                  var t=txt(card);
+                  if(t.length<4&&card.parentElement)t=txt(card.parentElement);
+                  return t.slice(0,60);
                 }
-                return JSON.stringify({name:name,left:left,url:String(location.href)});
+                var PAY=/去订购|办理|会员|铂金|畅看|订购订单/;
+                var DONE=/已完成|已领取|已浏览|已看过|已打卡|明天再来|已参与/;
+                var WORDS=['去浏览','去分享','去领取','去看看','去邀请','去关注','去完成','去参与'];
+                var cards=[],seen=[];
+                function add(el,card,name,kind){
+                  if(!card)card=el;
+                  for(var i=0;i<seen.length;i++){
+                    var s=seen[i];
+                    if(s===card)return;
+                    try{
+                      if(card.contains&&card.contains(s))return;
+                      if(s.contains&&s.contains(card))return;
+                    }catch(x){}
+                  }
+                  seen.push(card);
+                  cards.push({el:el,card:card,name:name.slice(0,40),kind:kind});
+                }
+                // ① 图片按钮（r16 新增）：豆苗三个浏览任务的按钮就是这张图。
+                var imgs=document.querySelectorAll('img,[class*=content-btn],[class*=task-btn]');
+                for(var i=0;i<imgs.length;i++){
+                  var e=imgs[i];
+                  if(!vis(e))continue;
+                  var tag=(e.tagName||'').toUpperCase();
+                  var cls=String(e.className||'');
+                  if(tag!=='IMG'&&!/content-btn|task-btn/i.test(cls))continue;
+                  var r=null;try{r=e.getBoundingClientRect()}catch(x){continue}
+                  if(!r||r.width<24||r.height<16)continue;
+                  var ratio=r.width/Math.max(r.height,1);
+                  if(r.height>160||ratio<0.6||ratio>12)continue;
+                  var card=cardOf(e),ct=labelOf(card);
+                  if(PAY.test(ct)||DONE.test(ct))continue;
+                  add(e,card,ct||'图片浏览任务','img');
+                }
+                // ② 文字按钮：老版本页面仍用「去浏览」这类纯文字按钮，保留兜底。
+                var all=document.querySelectorAll('button,a,div,span,li,p,i');
+                for(var j=0;j<all.length;j++){
+                  var n=all[j];
+                  if(!vis(n))continue;
+                  var t=txt(n).replace(/\\s/g,''),ok=false;
+                  for(var w=0;w<WORDS.length;w++){if(t===WORDS[w]){ok=true;break}}
+                  if(!ok)continue;
+                  var card2=cardOf(n),ct2=labelOf(card2);
+                  if(PAY.test(ct2)||DONE.test(ct2))continue;
+                  add(n,card2,ct2||t,'text');
+                }
+                if(!cards.length)return JSON.stringify({none:1,left:0});
+                var pick=cards[0];
+                fire(pick.el);
+                var up=pick.card;
+                for(var u=0;u<3&&up;u++){
+                  if(up!==pick.el)fire(up);
+                  up=up.parentElement;
+                }
+                return JSON.stringify({name:pick.name,left:cards.length,
+                                       kind:pick.kind,url:String(location.href)});
               }catch(err){return JSON.stringify({err:String(err&&err.message||err)})}
             })()
             """;

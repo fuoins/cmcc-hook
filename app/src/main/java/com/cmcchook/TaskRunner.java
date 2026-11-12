@@ -1087,8 +1087,13 @@ final class TaskRunner {
                 }
                 text.append(name).append("：")
                         .append(one.ok ? one.summary : "失败（" + one.summary + "）").append('\n');
-                brief.append(one.ok ? (one.idle ? "○" : "✓") : "✗").append(' ');
-                rows.add((one.ok ? (one.idle ? "○ " : "✓ ") : "✗ ") + name
+                // r16：统一四态展示口径。之前只要 Result.ok 就标 ✓，于是
+                // 「完成 0 个任务 · 还剩 1 个要真实操作」「做了 1 个任务但次数没到账」
+                // 也报 ✓；而「今日已签到，无需重复」又报 ✓、同样不用做的砸蛋报 ○。
+                // 这里只改展示标记，不动 markDone / markResult 的状态写入。
+                String mark = displayMark(one);
+                brief.append(mark).append(' ');
+                rows.add(mark + " " + name
                         + " · " + secs(t0) + " · " + one.summary);
                 if (one.ok) {
                     okCount++;
@@ -1152,8 +1157,23 @@ final class TaskRunner {
                             + "风控期继续撞 qwhdsso/login 只会把号送进去：请退出中国移动 App "
                             + "重新登录一次，静置几分钟，再单独点要跑的活动。");
         }
-        String summary = "过任务 " + okCount + "/" + cmds.length
-                + (idleCount > 0 ? "（其中 " + idleCount + " 项今天无需操作）" : "")
+        // r16：「过任务 10/12（其中 5 项今天无需操作）」容易读成「做了 10 个」，
+        // 实际是 5 个完成 + 5 个无需操作。直接按汇总表四态数出来写清楚。
+        int doneN = 0, idleN = 0, skipN = 0, failN = 0;
+        for (String r : rows) {
+            if (r.startsWith("✓")) {
+                doneN++;
+            } else if (r.startsWith("○")) {
+                idleN++;
+            } else if (r.startsWith("–")) {
+                skipN++;
+            } else {
+                failN++;
+            }
+        }
+        String summary = "完成 " + doneN + " 项 · 无需操作 " + idleN + " 项"
+                + " · 跳过/待办 " + skipN + " 项"
+                + (failN > 0 ? " · 失败 " + failN + " 项" : "")
                 + (aborted ? " · 登录态熔断，后续 " + (cmds.length - abortedAt) + " 项未跑" : "")
                 + " · " + brief.toString().trim();
 
@@ -1665,11 +1685,46 @@ final class TaskRunner {
         return label(cmd);
     }
 
+    /**
+     * r16：一键汇总表用的展示标记。
+     *
+     * <p>只影响日志/广播里那个符号，不改 markDone / markResult 的状态写入，
+     * 也不影响收尾复查名单，所以不会动到「今天已跑过」这类判据。
+     * 结果文案自己承认「还剩 / 没到账 / 未确认」的一律不标 ✓，
+     * 「无需重复 / 已领完 / 没有次数」统一标 ○。
+     */
+    private static String displayMark(Result one) {
+        if (one.skip) {
+            return "–";
+        }
+        if (!one.ok) {
+            return "✗";
+        }
+        if (one.idle) {
+            return "○";
+        }
+        String s = one.summary == null ? "" : one.summary;
+        if (s.contains("还剩") || s.contains("没到账") || s.contains("未确认")
+                || s.contains("完成 0 个任务") || s.contains("仍待做")
+                || s.contains("没找到可做的按钮")) {
+            return "–";
+        }
+        if (s.contains("无需重复") || s.contains("今天已经做过")
+                || s.contains("已领完") || s.contains("没有抽奖次数")
+                || s.contains("没有拆礼盒次数")) {
+            return "○";
+        }
+        return "✓";
+    }
+
     private static String dayMark(Context ctx, String cmd) {
         String result = resultToday(ctx, cmd);
         int times = attemptsToday(ctx, cmd);
         if (result != null && result.startsWith("OK")) {
-            return "✓";
+            // r16：r15 已经把 idle 单独存进 task_idle_，头部诊断摘要读它显示 ○；
+            // 但进度条和文件尾部「--- 今日 ---」走的还是这里，只要 OK 就画 ✓，
+            // 于是同一份日志出现两套口径。这里补上 idle 判定，三处统一。
+            return AppPrefs.getTaskIdle(ctx, cmd, dayKey()) ? "○" : "✓";
         }
         // 以前是 times > 1 才显示次数，失败 1 次时显示成 ○（没跑过），
         // 于是「跑过但失败」和「压根没跑」在界面上长得一样，排查时白绕。

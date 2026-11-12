@@ -139,6 +139,22 @@ final class WebPage {
             }
         } catch (Throwable ignored) {
         }
+        // r16：短链中转页（ssoJump / rr/dwz）的文档常常还没注入 JS，evalRaw 返回
+        // null，旧版就退回 nav.current —— 于是模块永远「看」不到页面已经跳到
+        // lyhVue，waitLanded 等满 16 秒后误报「跳转链没走完」。11-12 20:37 手动
+        // 日志实证同一个 dwzCode 1 秒内就跳到活动页，短链本身是好的。
+        // 这里补一条不依赖 JS 的路：直接读 WebView.getUrl()。
+        try {
+            if (webView != null) {
+                Object u = XposedHelpers.callMethod(webView, "getUrl");
+                String s = u == null ? "" : String.valueOf(u);
+                if (!s.isEmpty() && !"null".equals(s) && !"about:blank".equals(s)) {
+                    nav.current = s;
+                    return s;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         return nav.current;
     }
 

@@ -222,7 +222,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.10.0 已装载 · 短链换票 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
+        HookLog.log("GOOSE", "收鹅蛋脚本 v4.10.0-r16 已装载 · 短链中转页放行 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
@@ -255,7 +255,11 @@ final class GooseTask {
             WebSession.begin(key == null || key.isEmpty() ? "goose" : key,
                     entryUrl(), budget(overall, 12_000L));
             WebPage fresh = WebSession.current();
-            if (fresh == null || !pageAlive(fresh, detail, "GOOSE")) {
+            // r16：重建后 eval 仍可能暂时不通（空白文档 / JS 还没注入），
+            // 但页面其实正在从短链跳到活动页。再给一次「只看 URL 落地」的机会，
+            // 不等 JS 现场，避免又误杀一轮。
+            if (fresh == null || (!pageAlive(fresh, detail, "GOOSE")
+                    && !waitLanding(fresh, budget(overall, 8_000L)))) {
                 return TaskRunner.Result.skip("收鹅蛋：真页没起来（空白 / 被跳转顶掉）",
                         detail.toString(),
                         "证据链见「页面存活检查」日志。请在 App 里手动点一次「收鹅蛋换好礼」，"
@@ -520,6 +524,20 @@ final class GooseTask {
      * 把整套登录重试链跑满 74 秒，这里先把它挡掉。
      */
     static boolean pageAlive(WebPage page, StringBuilder detail, String tag) {
+        // r16：短链 / SSO 中转页天生没有正文、没有 Vue、没有业务请求，
+        // 旧版拿「活动页存活」的判据去卡它，必然判空白 → 重建一次 → 还是空白
+        // → 直接 skip。20:12 那轮就是在这一步被挡掉的，压根没进登录重试链。
+        // 中转页属于正常跳转链，放行给 ensureLogin / waitLogged 去等它落地。
+        String hop = page.url();
+        if (isLoginHop(hop)) {
+            HookLog.log(tag, "页面存活检查",
+                    "当前在登录/短链中转页，按跳转链放行（不按活动页判据杀）\n"
+                            + "URL: " + briefUrl(hop));
+            if (detail != null) {
+                detail.append("页面存活: 中转页放行 · URL=").append(briefUrl(hop)).append('\n');
+            }
+            return true;
+        }
         String cls = "";
         try {
             Object raw = page.raw();
@@ -572,6 +590,32 @@ final class GooseTask {
     static long budget(long deadline, long cap) {
         long left = deadline - System.currentTimeMillis();
         return Math.max(0L, Math.min(cap, left));
+    }
+
+    /**
+     * r16：只看 URL 判断短链有没有落到活动页，不依赖 eval。
+     *
+     * <p>短链中转页的 JS 上下文常常还没建立，{@code pageAlive()} 的 eval 会返回
+     * null；但 WebView 的 getUrl()（{@code WebPage.href()} 已在 r16 补了这条兜底）
+     * 能照常反映跳转。这里轮询地址，看到 lyhVue / bgIndex / actNo=goose 就认为
+     * 链路活着，交给 ensureLogin 继续，不再重建、不再 skip。
+     */
+    private static boolean waitLanding(WebPage page, long timeoutMs) {
+        if (page == null) {
+            return false;
+        }
+        long end = System.currentTimeMillis() + Math.max(0L, timeoutMs);
+        while (System.currentTimeMillis() < end) {
+            String u = page.url();
+            if (u != null && (u.contains("actNo=goose") || u.contains("bgIndex")
+                    || u.contains("lyhVue/index.html#/"))) {
+                HookLog.log("GOOSE", "中转页已落地", "URL: " + briefUrl(u)
+                        + "\n按 URL 判定链路存活，继续登录重试。");
+                return true;
+            }
+            sleep(500L);
+        }
+        return false;
     }
 
     private static boolean ensureLogin(WebPage page, StringBuilder detail, long deadline) {
@@ -765,13 +809,19 @@ final class GooseTask {
             return false;
         }
         String u = url.toLowerCase();
+        // r16：短链换票的中转页在 rr.ln139.cn（辽宁移动门户），既不是 10086.cn
+        // 也不是 lncmcc.com。旧版把它挡在门外，waitLogged 遇到 ssoJump 立刻
+        // return false，短链换票永远走不完；20:37 手动日志实证同一个
+        // dwzCode=0AnebE 约 1 秒就跳到 lyhVue，说明短链本身没过期。
         // 只认中国移动自己的域，别把外部广告域名误当登录页。
-        if (!u.contains("10086.cn") && !u.contains("lncmcc.com")) {
+        if (!u.contains("10086.cn") && !u.contains("lncmcc.com")
+                && !u.contains("ln139.cn")) {
             return false;
         }
         return u.contains("sso") || u.contains("login") || u.contains("token")
                 || u.contains("passport") || u.contains("oauth") || u.contains("auth")
-                || u.contains("accesstoken");
+                || u.contains("accesstoken") || u.contains("dwzcode")
+                || u.contains("ssojump") || u.contains("unitokenvalidate");
     }
 
     private static String briefUrl(String url) {
