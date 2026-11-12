@@ -144,6 +144,8 @@
     <string name="grab_idle">还没开始。提前进去会在页面上等，到点自动抢；已经过点就直接试着抢。</string>
     <string name="welfare_never">内置活动已全部列出。点「扫描福利专区」可以发现福利专区里新上架、内置表里还没有的活动。</string>
     <string name="welfare_at">上次采集：%1$s · 新发现 %2$d 个</string>
+    <string name="welfare_result_empty">今天还没有跑过任务。点右上「立即全部跑一次」开始，结果会显示在这里。</string>
+    <string name="welfare_result_hint">点此查看任务明细 ›</string>
     <string name="welfare_state_impl">已接入</string>
     <string name="welfare_state_pending">待接入</string>
     <string name="welfare_state_manual">仅手动</string>

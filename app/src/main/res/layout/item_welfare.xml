@@ -58,13 +58,25 @@
             android:maxLines="2"
             android:text="@string/welfare_summary_placeholder" />
 
+        <!-- v4.10.0-r7：今日四态 + 结果摘要/失败原因 + 时间，按状态着色。 -->
         <TextView
-            android:id="@+id/welfareTasks"
+            android:id="@+id/welfareState"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="3dp"
             android:ellipsize="end"
-            android:maxLines="1"
+            android:maxLines="2"
+            android:lineSpacingExtra="1dp"
+            android:textSize="12sp"
+            android:visibility="gone" />
+
+        <TextView
+            android:id="@+id/welfareTasks"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="2dp"
+            android:ellipsize="end"
+            android:maxLines="2"
             android:textColor="@color/primary"
             android:textSize="12sp"
             android:visibility="gone" />

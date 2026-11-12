@@ -77,13 +77,18 @@ final class AppPrefs {
 
     static void setTaskState(Context context, String cmd, String day,
                              boolean ok, String summary, int attempts) {
+        long now = System.currentTimeMillis();
         status(context).edit()
                 .putString(taskKey("task_state_", cmd, day, context),
                         (ok ? "OK " : "FAIL ") + (summary == null ? "" : summary))
                 .putInt(taskKey("task_attempt_", cmd, day, context), attempts)
+                // v4.10.0-r7：模块侧记一份「本次结果时间」，供福利页条目展示。
+                // 目标进程里那份 result_at_<cmd> 模块读不到，这里在收到 STATE 广播时
+                // 自己落一个，误差只有广播延迟，且完全不碰任务执行链路。
+                .putLong(taskKey("task_at_", cmd, day, context), now)
                 .putString("last_task_line", labelOf(cmd) + " " + (ok ? "完成" : "失败")
                         + " · " + (summary == null ? "" : summary))
-                .putLong("last_task_at", System.currentTimeMillis())
+                .putLong("last_task_at", now)
                 .apply();
     }
 
@@ -106,6 +111,16 @@ final class AppPrefs {
         return status(context).getString("last_task_line", "");
     }
 
+    /** v4.10.0-r7：最近一次任务结果的时间（模块侧），福利页顶部结果条用。 */
+    static long getLastTaskAt(Context context) {
+        return status(context).getLong("last_task_at", 0L);
+    }
+
+    /** v4.10.0-r7：某活动今天最近一次结果的时间，0 表示今天没结果。 */
+    static long getTaskAt(Context context, String cmd, String day) {
+        return status(context).getLong(taskKey("task_at_", cmd, day, context), 0L);
+    }
+
     /** 日志导出范围（0 精简 / 1 只看任务 / 2 完整），记住上次选择。 */
     static int getExportMode(Context context) {
         return status(context).getInt("export_mode", 0);
@@ -124,6 +139,45 @@ final class AppPrefs {
         }
         if ("goose".equals(cmd)) {
             return "收鹅蛋换好礼";
+        }
+        if ("soccer".equals(cmd)) {
+            return "球赛狂欢季";
+        }
+        if ("tearbox".equals(cmd)) {
+            return "拆一百元礼盒";
+        }
+        if ("saturday".equals(cmd)) {
+            return "周六游戏日";
+        }
+        if ("video".equals(cmd)) {
+            return "追剧";
+        }
+        if ("daily7".equals(cmd)) {
+            return "7 日打卡";
+        }
+        if ("miao".equals(cmd)) {
+            return "豆苗";
+        }
+        if ("recharge".equals(cmd)) {
+            return "充值领券";
+        }
+        if ("wed".equals(cmd)) {
+            return "周三充值日";
+        }
+        if ("seckill".equals(cmd)) {
+            return "12 点抢券";
+        }
+        if ("lucky3".equals(cmd)) {
+            return "三日签";
+        }
+        if ("weekly".equals(cmd)) {
+            return "周周有好礼";
+        }
+        if ("signlottery".equals(cmd)) {
+            return "签到抽奖赢好礼";
+        }
+        if ("quiz".equals(cmd)) {
+            return "乡友问答";
         }
         return cmd;
     }

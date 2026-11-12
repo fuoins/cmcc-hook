@@ -177,6 +177,10 @@ public final class MainActivity extends AppCompatActivity {
     private LinearLayout welfareList;
     private TextView welfareSummary;
     private TextView welfareAt;
+    /** v4.10.0-r7：福利页顶部「本轮结果」条，就地看结果，点一下才进日志明细。 */
+    private View welfareResult;
+    private TextView welfareResultLine;
+    private TextView welfareResultHint;
     /** v4.2.0：抢券卡的状态行（倒计时 / 抢到没有）。 */
     private TextView grabStatus;
     /** 本机记录的抢券状态，避免重复点同一条把等待取消掉。 */
@@ -218,7 +222,14 @@ public final class MainActivity extends AppCompatActivity {
     private android.app.Dialog couponCodeDialog;
 
     private int tab = TAB_HOME;
-    private int filter = FILTER_ALL;
+    // v4.10.0-r7：日志页默认只看「任务」，用户进来第一眼就是任务进展，
+    // 不用再从「全部」里翻。要看接口/H5/Cookie 再手动切 chip。
+    private int filter = FILTER_TASK;
+    /** v4.10.0-r7：本轮任务发起时间/名称，纯 UI 内存态，用于顶部结果条显示「进行中」。 */
+    private long runStartedAt;
+    private String runStartedLabel = "";
+    /** 上次见到过的任务结果时间，变化就重建福利列表（条目状态行跟着刷新）。 */
+    private long welfareTaskStamp;
     private List<LogEntry> allEntries = new ArrayList<>();
     private long[] lastStamp = new long[]{-1, -1, -1, -1};
     private boolean loading;
@@ -304,6 +315,11 @@ public final class MainActivity extends AppCompatActivity {
         welfareList = findViewById(R.id.welfareList);
         welfareSummary = findViewById(R.id.welfareSummary);
         welfareAt = findViewById(R.id.welfareAt);
+        welfareResult = findViewById(R.id.welfareResult);
+        welfareResultLine = findViewById(R.id.welfareResultLine);
+        welfareResultHint = findViewById(R.id.welfareResultHint);
+        // 点结果条才进日志（此时日志默认已是「任务」视图），不强制跳页。
+        welfareResult.setOnClickListener(v -> selectTab(TAB_LOG));
         grabStatus = findViewById(R.id.grabStatus);
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
@@ -615,10 +631,21 @@ public final class MainActivity extends AppCompatActivity {
         }
         homeTarget.setText("目标：" + targetVersion() + tickText);
         homeTasks.setText(todayTasks());
+        // v4.10.0-r7：状态栏每 3 秒刷新一次，顺带让福利页顶部结果条跟着 STATE 广播
+        // 落地的结果更新（进行中 → 完成/失败），不用切页、也不用重新进福利页。
+        refreshWelfareResult();
 
         // 盘点结果由目标进程广播回来，落在 prefs 里；这里按时间戳发现变化就重建列表。
+        // v4.10.0-r7：任务结果时间变了也要重建 —— 每个活动的状态行才不会停在旧的
+        // 「待跑」，跑完一轮后能逐项看到 ✓/✗/失败原因。
+        long taskAt = AppPrefs.getLastTaskAt(this);
+        boolean taskChanged = taskAt != welfareTaskStamp;
+        if (taskChanged) {
+            welfareTaskStamp = taskAt;
+        }
         if (tab == TAB_WELFARE
-                && (WelfareCatalog.liveAt(this) != welfareStamp
+                && (taskChanged
+                || WelfareCatalog.liveAt(this) != welfareStamp
                 || ProbeStore.at(this) != probeStamp
                 || ProbeStore.actsAt(this) != actStamp)) {
             buildWelfare();
@@ -643,7 +670,16 @@ public final class MainActivity extends AppCompatActivity {
                 {"周礼", TaskRunner.CMD_WEEKLY}, {"签抽", TaskRunner.CMD_SIGNLOTTERY},
                 {"问答", TaskRunner.CMD_QUIZ}
         };
-        StringBuilder sb = new StringBuilder("今日：");
+        // v4.10.0-r7：先给一行四态汇总（信息更全），再列逐项 ✓/✗/○。
+        int[] c = todayStats();
+        StringBuilder sb = new StringBuilder("今日：")
+                .append(c[ST_DONE]).append(" 完成 · ")
+                .append(c[ST_FAIL]).append(" 失败 · ")
+                .append(c[ST_PENDING]).append(" 待跑");
+        if (c[ST_OFF] > 0) {
+            sb.append(" · ").append(c[ST_OFF]).append(" 未启用");
+        }
+        sb.append('\n').append("　　　");
         for (int i = 0; i < all.length; i++) {
             if (i > 0) {
                 if (i % 4 == 0) {
@@ -668,6 +704,135 @@ public final class MainActivity extends AppCompatActivity {
             return name + " ✓";
         }
         return name + (times > 1 ? " ✗" + times : " ✗");
+    }
+
+    // ------------------------------------------- v4.10.0-r7 今日状态（纯展示层）
+    // 只读 AppPrefs.status（STATE 广播落地）与开关，不碰 TaskRunner / 广播 / 目标进程。
+    private static final int ST_DONE = 0, ST_FAIL = 1, ST_PENDING = 2, ST_OFF = 3;
+
+    /** 单活动今日四态：完成 / 失败 / 待跑 / 未启用。item 可为 null（首页紧凑总览）。 */
+    private int stateKind(String cmd, WelfareCatalog.Item item) {
+        String day = AppPrefs.today();
+        String result = AppPrefs.getTaskState(this, cmd, day);
+        int times = AppPrefs.getTaskAttempts(this, cmd, day);
+        if (result.startsWith("OK")) {
+            return ST_DONE;
+        }
+        if (result.startsWith("FAIL") || times > 0) {
+            return ST_FAIL;
+        }
+        if (item != null && !WelfareCatalog.enabled(this, item)) {
+            return ST_OFF;
+        }
+        return ST_PENDING;
+    }
+
+    private int stateColor(int kind) {
+        return kind == ST_DONE ? R.color.success
+                : kind == ST_FAIL ? R.color.error
+                : kind == ST_PENDING ? R.color.warning
+                : R.color.text_secondary;
+    }
+
+    /** 去掉 OK / FAIL 前缀，拿到成功说明或失败原因；截到 48 字。 */
+    private static String cleanState(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        String s = raw.trim();
+        if (s.startsWith("OK ")) {
+            s = s.substring(3).trim();
+        } else if (s.startsWith("FAIL ")) {
+            s = s.substring(5).trim();
+        }
+        return s.length() > 48 ? s.substring(0, 48) + "…" : s;
+    }
+
+    /** 活动条目第二行：今日状态 + 结果/失败原因 + 时间 + 尝试次数。 */
+    private String stateLine(String cmd, int kind) {
+        String day = AppPrefs.today();
+        String raw = AppPrefs.getTaskState(this, cmd, day);
+        int times = AppPrefs.getTaskAttempts(this, cmd, day);
+        long at = AppPrefs.getTaskAt(this, cmd, day);
+        String time = at > 0
+                ? new SimpleDateFormat("HH:mm", Locale.US).format(new Date(at)) : "";
+        String brief = cleanState(raw);
+        StringBuilder sb = new StringBuilder();
+        switch (kind) {
+            case ST_DONE:
+                sb.append("✓ 已完成");
+                if (!brief.isEmpty()) {
+                    sb.append(" · ").append(brief);
+                }
+                break;
+            case ST_FAIL:
+                sb.append("✗ 失败");
+                if (times > 1) {
+                    sb.append(" ×").append(times);
+                }
+                if (!brief.isEmpty()) {
+                    sb.append(" · ").append(brief);
+                }
+                break;
+            case ST_PENDING:
+                sb.append("○ 待跑 · 今天还没跑");
+                break;
+            default:
+                sb.append("– 未启用 · 开关关着，本轮不会跑");
+        }
+        if (!time.isEmpty() && (kind == ST_DONE || kind == ST_FAIL)) {
+            sb.append(" · ").append(time);
+        }
+        return sb.toString();
+    }
+
+    /** 今日四态计数，首页汇总与福利页顶部结果条共用。 */
+    private int[] todayStats() {
+        int[] c = new int[4];
+        for (WelfareCatalog.Item item : WelfareCatalog.items(this)) {
+            if (item.state == WelfareCatalog.STATE_IMPL && item.cmd != null) {
+                c[stateKind(item.cmd, item)]++;
+            }
+        }
+        return c;
+    }
+
+    /**
+     * 福利页顶部「本轮结果」条：今日四态汇总 + 最近一次任务 / 进行中。
+     * 点结果条才进日志明细 —— 一键跑完不再强制切页。
+     */
+    private void refreshWelfareResult() {
+        if (welfareResultLine == null) {
+            return;
+        }
+        int[] c = todayStats();
+        int total = c[0] + c[1] + c[2] + c[3];
+        long lastAt = AppPrefs.getLastTaskAt(this);
+        String last = AppPrefs.getLastTaskLine(this);
+        boolean running = runStartedAt > 0 && runStartedAt >= lastAt
+                && System.currentTimeMillis() - runStartedAt < 5 * 60 * 1000L;
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("今日 ").append(c[0]).append(" 完成 · ").append(c[1]).append(" 失败 · ")
+                .append(c[2]).append(" 待跑");
+        if (c[3] > 0) {
+            sb.append(" · ").append(c[3]).append(" 未启用");
+        }
+        sb.append("（共 ").append(total).append(" 项）");
+        if (running) {
+            sb.append('\n').append("● 正在执行")
+                    .append(runStartedLabel.isEmpty() ? "" : "「" + runStartedLabel + "」")
+                    .append("… 跑完结果会自动刷到本页");
+        } else if (lastAt > 0 && !last.isEmpty()) {
+            String time = new SimpleDateFormat("HH:mm", Locale.US).format(new Date(lastAt));
+            String lastBrief = cleanState(last)
+                    .replace("· OK ", "· ").replace("· FAIL ", "· ");
+            sb.append('\n').append("最近 ").append(time).append(" · ").append(lastBrief);
+        } else {
+            sb.append('\n').append(getString(R.string.welfare_result_empty));
+        }
+        welfareResultLine.setText(sb.toString());
+        welfareResultHint.setVisibility((running || lastAt > 0) ? View.VISIBLE : View.GONE);
     }
 
     // ------------------------------------------------------------ 福利中心
@@ -722,6 +887,7 @@ public final class MainActivity extends AppCompatActivity {
         welfareStamp = at;
         actStamp = ProbeStore.actsAt(this);
         refreshProbeSummary();
+        refreshWelfareResult();
     }
 
     /** 探路摘要：时间 + 页面/请求/入口数。 */
@@ -775,6 +941,7 @@ public final class MainActivity extends AppCompatActivity {
         TextView name = row.findViewById(R.id.welfareName);
         TextView desc = row.findViewById(R.id.welfareDesc);
         TextView tag = row.findViewById(R.id.welfareTag);
+        TextView state = row.findViewById(R.id.welfareState);
         TextView tasks = row.findViewById(R.id.welfareTasks);
         SwitchMaterial toggle = row.findViewById(R.id.welfareSwitch);
 
@@ -787,12 +954,17 @@ public final class MainActivity extends AppCompatActivity {
         }
         desc.setText(text);
 
-        // 任务功能挂在活动行下面：一行说清自动做什么 + 今日跑到哪一步。
+        // v4.10.0-r7：状态独立一行（四态 + 结果/失败原因 + 时间 + 次数，按态着色），
+        // 下面一行只留「这个活动能自动做什么」，不再把状态挤在同一行里。
         if (item.state == WelfareCatalog.STATE_IMPL && item.cmd != null) {
+            int kind = stateKind(item.cmd, item);
+            state.setVisibility(View.VISIBLE);
+            state.setText(stateLine(item.cmd, kind));
+            state.setTextColor(ContextCompat.getColor(this, stateColor(kind)));
             tasks.setVisibility(View.VISIBLE);
-            String mark = taskMark("", item.cmd).trim();
-            tasks.setText("任务：今日 " + mark + "　·　" + tasksOf(item.cmd));
+            tasks.setText("能做：" + tasksOf(item.cmd));
         } else {
+            state.setVisibility(View.GONE);
             tasks.setVisibility(View.GONE);
         }
 
@@ -1013,11 +1185,12 @@ public final class MainActivity extends AppCompatActivity {
         AppPrefs.triggerTask(this, item.cmd);
         boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
         if (alive && sendTaskBroadcast(item.cmd)) {
-            Toast.makeText(this, "正在执行「" + item.name + "」的自动任务，结果看日志页",
+            markRunStarted(item.name);
+            Toast.makeText(this, "正在执行「" + item.name + "」，结果看本页顶部",
                     Toast.LENGTH_LONG).show();
             return;
         }
-        launchTarget(item.cmd, "执行「" + item.name + "」任务");
+        launchTarget(item.cmd, "执行「" + item.name + "」任务", item.name);
     }
 
     /**
@@ -2033,13 +2206,20 @@ public final class MainActivity extends AppCompatActivity {
         boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
         if (alive && sendTaskBroadcast(cmd)) {
             String hint = TaskRunner.CMD_GOOSE.equals(cmd)
-                    ? "已发到后台；收鹅蛋要等页面注入，结果看日志页"
-                    : "已发到后台执行，" + label + "结果看日志页";
+                    ? "已发到后台；收鹅蛋要等页面注入，结果看本页顶部"
+                    : "已发到后台执行，" + label + "，结果看本页顶部";
             Toast.makeText(this, hint, Toast.LENGTH_LONG).show();
-            handler.postDelayed(() -> selectTab(TAB_LOG), 800);
+            markRunStarted(label);
             return;
         }
-        launchTarget(cmd, label);
+        launchTarget(cmd, label, label);
+    }
+
+    /** v4.10.0-r7：记下本轮发起，顶部结果条据此显示「进行中」，不再强制跳日志页。 */
+    private void markRunStarted(String label) {
+        runStartedAt = System.currentTimeMillis();
+        runStartedLabel = label == null ? "" : label;
+        refreshWelfareResult();
     }
 
     /** 目标 App 是否开着（90 秒内有心跳）。流量/券刷新统一用它决定「发不发命令」。 */
@@ -2097,7 +2277,12 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
+    /** 采集 / 引导类：不是跑任务，不记本轮发起态。 */
     private void launchTarget(String cmd, String label) {
+        launchTarget(cmd, label, "");
+    }
+
+    private void launchTarget(String cmd, String label, String runLabel) {
         Intent intent = getPackageManager().getLaunchIntentForPackage(AppPrefs.TARGET_PACKAGE);
         if (intent == null) {
             Toast.makeText(this, "没有找到中国移动 App", Toast.LENGTH_LONG).show();
@@ -2107,9 +2292,15 @@ public final class MainActivity extends AppCompatActivity {
                 | Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED);
         try {
             startActivity(intent);
-            Toast.makeText(this, "中国移动没在运行，已拉起，" + label + "结果看日志页",
+            boolean isTask = runLabel != null && !runLabel.isEmpty();
+            Toast.makeText(this, "中国移动没在运行，已拉起，" + label
+                            + (isTask ? "，结果看本页顶部" : "，结果看本页摘要"),
                     Toast.LENGTH_LONG).show();
-            handler.postDelayed(() -> selectTab(TAB_LOG), 1200);
+            // v4.10.0-r7：不再强制切到日志页。结果是就地看的：任务看顶部结果条，
+            // 采集看本页探路摘要；想看原始明细再点结果条 / 手动切日志。
+            if (isTask) {
+                markRunStarted(runLabel);
+            }
         } catch (Throwable e) {
             Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_LONG).show();
         }
@@ -2292,7 +2483,8 @@ public final class MainActivity extends AppCompatActivity {
         chipUi.setOnClickListener(v -> setFilter(FILTER_UI));
         chipCookie.setOnClickListener(v -> setFilter(FILTER_COOKIE));
         chipError.setOnClickListener(v -> setFilter(FILTER_ERROR));
-        setFilter(FILTER_ALL);
+        // v4.10.0-r7：默认「任务」，与字段初值一致（进页面第一眼就是任务进展）。
+        setFilter(FILTER_TASK);
     }
 
     private void setFilter(int value) {
@@ -2330,7 +2522,10 @@ public final class MainActivity extends AppCompatActivity {
                 }
                 allEntries = entries;
                 applyFilter();
-                if (adapter.size() > oldSize && wasAtBottom && filter == FILTER_ALL) {
+                // v4.10.0-r7：原来只在「全部」视图自动滚到底；默认改成「任务」后
+                // 新任务日志进来却停在顶部，看着像没进展。改成任何筛选下、只要用户
+                // 原本就在底部就跟着滚。
+                if (adapter.size() > oldSize && wasAtBottom) {
                     logList.scrollToPosition(adapter.size() - 1);
                 }
                 if (toast) {
