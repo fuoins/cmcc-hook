@@ -222,7 +222,7 @@ final class GooseTask {
         StringBuilder detail = new StringBuilder();
         // 宿主进程里真正跑的 dex 版本：日志出现这条才说明 LSPosed 已重载，
         // 日志头「模块版本」只是 App 侧 BuildConfig，证明不了注入的 dex 是新的。
-        HookLog.log("GOOSE", "收鹅蛋脚本 v4.10.0-r16 已装载 · 短链中转页放行 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
+        HookLog.log("GOOSE", "收鹅蛋脚本 " + FlowTask.BUILD + " 已装载 · 短链中转页放行 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
                         + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "

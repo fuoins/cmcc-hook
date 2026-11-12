@@ -230,7 +230,7 @@ final class MiaoTask {
      * 与卡片文案双重排除，只点免费的「去浏览/去分享/去领取/去看看/去邀请/去关注」。
      */
     private static int runFreeTasks(WebPage page, String entry, StringBuilder detail) {
-        detail.append("赚阳光值任务: r16 图片按钮(IMG.content-btn)按结构定位，不靠 innerText\n");
+        detail.append("赚阳光值任务: 图片按钮(IMG.content-btn)按结构定位，不靠 innerText\n");
         int done = 0;
         int lastLeft = -1;
         int stall = 0;
