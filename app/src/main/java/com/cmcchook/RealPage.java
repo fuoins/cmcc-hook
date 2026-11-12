@@ -237,6 +237,7 @@ final class RealPage {
         long now = System.currentTimeMillis();
         Object best = null;
         long bestAt = 0;
+        int bestScore = Integer.MIN_VALUE;
         synchronized (VIEWS) {
             for (int i = 0; i < SLOTS; i++) {
                 Object v = VIEWS[i];
@@ -263,7 +264,15 @@ final class RealPage {
                         && !sameBase(URLS[i], key)) {
                     continue;
                 }
-                if (AT[i] > bestAt) {
+                // r17：先打分再比时间。X5 内部类 WebView$a 也登记在表里，按时间选会
+                // 选中一个 JS 不回调的实例，重建后仍「复用」它。
+                int sc = score(v);
+                if (sc == Integer.MIN_VALUE) {
+                    continue;
+                }
+                if (best == null || sc > bestScore
+                        || (sc == bestScore && AT[i] > bestAt)) {
+                    bestScore = sc;
                     bestAt = AT[i];
                     best = v;
                 }
@@ -293,6 +302,61 @@ final class RealPage {
             return false;
         }
         return true;
+    }
+
+    /**
+     * r17：给登记表里的实例打分，取代「谁最后 loadUrl 谁入选」。
+     *
+     * <p>鹅蛋短链页上会同时登记两个实例：App 自己的 {@code WebViewEx} 和 X5 内核内部的
+     * {@code com.tencent.smtt.sdk.WebView$a}。后者 getUrl() 正常、evaluateJavascript
+     * 却永不回调（日志里「eval 返回 null」），但它同样参与 loadUrl，所以按时间选经常
+     * 选中它，导致「重建一次」后仍是一个死实例。这里按「是不是 App 的可见容器」打分：
+     * X5 内部类直接判负，WebViewEx / 前台 Activity / 可见有尺寸依次加分。
+     */
+    private static int score(Object view) {
+        if (view == null) {
+            return Integer.MIN_VALUE;
+        }
+        String cls;
+        try {
+            cls = view.getClass().getName();
+        } catch (Throwable e) {
+            return Integer.MIN_VALUE;
+        }
+        // X5 内核内部类（WebView$a / WebView$b …）不是 App 的显示容器，JS 不可用。
+        if (cls.startsWith("com.tencent.smtt.sdk.WebView$")) {
+            return Integer.MIN_VALUE;
+        }
+        int s = 0;
+        if (cls.contains("WebViewEx")) {
+            s += 100;
+        }
+        try {
+            Activity act = activityOf(view);
+            if (act != null && !act.isFinishing() && act == ActivityHooks.current()) {
+                s += 50;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            android.view.View v = (android.view.View) view;
+            if (v.isShown()) {
+                s += 30;
+            }
+            if (v.getWidth() > 0 && v.getHeight() > 0) {
+                s += 20;
+            }
+        } catch (Throwable ignored) {
+        }
+        return s;
+    }
+
+    /** r17：把实例从「前台真页」指针上摘掉，不动 Activity，也不销毁页面。 */
+    static void dropSession(Object view) {
+        if (view != null && sessionView == view) {
+            sessionView = null;
+            sessionUrl = "";
+        }
     }
 
     /** 把某个 WebView 从登记表里摘掉（关页/探活失败时调用，别留僵尸）。 */
@@ -878,12 +942,22 @@ final class RealPage {
                             + "现象: 登记表里有这一页，但 JS 已经不响应了（通常是上一轮自己关掉的页面）。\n"
                             + "做法: 摘掉这条登记，重新用 App 容器打开一页。");
             forget(view);
+            // r17：如果失联的正好是「前台真页」指针，一并摘掉，否则下面 sessionView
+            // 分支会把同一个死实例又取回来，日志照样写「复用真页」。
+            if (view == sessionView) {
+                sessionView = null;
+                sessionUrl = "";
+            }
             view = null;
         }
         boolean reused = view != null;
 
         if (view == null) {
             Object sv = sessionView;
+            // r17：前台真页指针也可能是 X5 内部类，先按同一把尺子筛掉。
+            if (sv != null && score(sv) == Integer.MIN_VALUE) {
+                sv = null;
+            }
             // 只在同一个域里复用。跨域（wx.10086.cn → lyh.lncmcc.com）必须新开一个真页：
             // 11-10 22:07 日志实证，同一个 WebView 跨域导航后，页面里的广告位把整页
             // 顶到了 transferDownload 下载引导页（标题「中国移动客户端」），鹅蛋脚本
@@ -894,8 +968,11 @@ final class RealPage {
                 // 正在看的券页抢走，下次刷新券又要重开。只有「当前确实还停在目标页」才复用，
                 // 否则另开一页，谁都不打扰。
                 String cur = lastUrlOf(sv);
-                boolean samePage = cur == null || cur.isEmpty()
-                        || samePath(cur, pathKey(url));
+                // r17：cur 为空说明这一页刚被 forget（探活失败/刚重建），不是「停在
+                // 目标页」。以前空串被当成 samePage=true，于是 end() 之后 begin()
+                // 又把同一个 WebView$a 取回来，日志写「复用真页 · WebView$a」。
+                boolean samePage = cur != null && !cur.isEmpty()
+                        && samePath(cur, pathKey(url));
                 if (samePage) {
                     view = sv;
                     reused = true;

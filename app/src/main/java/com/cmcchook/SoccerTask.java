@@ -142,10 +142,16 @@ final class SoccerTask {
             }
             page = fresh;
         }
-        // 没有 pc/pk 就没有登录态：这一轮不算失败，也不进当天失败次数。
-        if (!entry.contains("pc=")) {
+        // r17：pc/pk 只是「入口是 SSO 落地页」的旁证，不是脚本必需 —— 脚本只用 actNo，
+        // 登录态由页面自己带。本轮日志里真页 WebViewEx 已 ready、Vue 已挂、业务请求
+        // 245 条，却因为 entry 是裸地址被判「没拿到 pc/pk」整轮跳过。改为以落地页为准。
+        String landedUrl = page == null || page.url() == null ? "" : page.url();
+        boolean landedOk = landedUrl.contains("actNo=") || landedUrl.contains("pc=")
+                || entry.contains("pc=");
+        if (!landedOk) {
             return TaskRunner.Result.skip("球赛狂欢季：没拿到带 pc/pk 的落地页",
-                    detail.toString(),
+                    detail.append("落地页: ").append(landedUrl.isEmpty() ? "(空)" : landedUrl)
+                            .append('\n').toString(),
                     "真页还没走到门户 SSO 签发的落地地址。在 App 里手动点一次「球赛狂欢季」，"
                             + "模块会把带 pc/pk 的入口记下来，之后就能自动跑。");
         }

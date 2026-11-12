@@ -491,6 +491,17 @@ public final class MainActivity extends AppCompatActivity {
     }
 
     @Override
+    protected void onStop() {
+        // r17：模块界面退到后台时记一笔，方便和「模块又关了」的时间点对照。
+        // 任务期间有前台服务保活；没任务时被回收属正常，下次打开会重新读盘。
+        if (TaskRunner.isRunning()) {
+            HookLog.log("APP", "模块界面退到后台 · 任务仍在跑（前台服务保活）",
+                    "本轮有 KeepAliveService 常驻通知；如果任务仍中断，把这份日志发我。");
+        }
+        super.onStop();
+    }
+
+    @Override
     protected void onDestroy() {
         handler.removeCallbacks(statusTick);
         handler.removeCallbacks(logTick);

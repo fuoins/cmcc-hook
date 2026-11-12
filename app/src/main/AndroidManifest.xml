@@ -11,6 +11,11 @@
          这些与 Xposed hook 无关，是 flow-assistant 搬过来的独立原生功能。 -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- r17：一键任务期间的前台服务。模块只有一个 Activity，把中国移动拉到前台后
+         自己退到后台，HyperOS 会把没有前台服务的进程当缓存进程回收（用户实测一轮掉两次）。
+         只申请前台服务权限，不申请电池白名单，也不做常驻。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+
     <!-- 券核销短信验证码自动读取：静态广播收实时短信，短信库做兜底。
          两者都是运行时权限，模块界面里会按需申请；不授权就退回手动输入。 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
@@ -66,6 +71,12 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- r17：任务期间抬优先级，任务结束立即停。 -->
+        <service
+            android:name=".KeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
         <receiver
             android:name=".LogReceiver"

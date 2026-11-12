@@ -22,6 +22,14 @@ final class LogStore {
     private static final int MAX_DETAIL_CHARS = 320_000;
     private static final int MAX_SUMMARY_CHARS = 1_200;
 
+    /** r17：文件没变就不再全量解析。界面每 2.5 秒刷一次日志，任务结束后文件不动，
+     *  以前每次都把最多 20MB 的两份文件重新按行 JSON.parse 一遍，白耗 CPU 与堆。 */
+    private static long[] cacheStamp;
+    private static List<LogEntry> cacheList;
+    private static int cacheMax = -1;
+    private static long[] countStamp;
+    private static int countValue = -1;
+
     private LogStore() {
     }
 
@@ -66,14 +74,22 @@ final class LogStore {
         }
     }
 
-    static List<LogEntry> read(Context context, int maxEntries) {
+    static synchronized List<LogEntry> read(Context context, int maxEntries) {
+        long[] st = stamp(context);
+        if (cacheList != null && cacheMax == maxEntries
+                && java.util.Arrays.equals(st, cacheStamp)) {
+            return new ArrayList<>(cacheList);
+        }
         List<LogEntry> current = new ArrayList<>();
         Deque<LogEntry> tail = new ArrayDeque<>();
         File dir = context.getFilesDir();
         readFile(new File(dir, BACKUP_NAME), maxEntries, tail);
         readFile(new File(dir, FILE_NAME), maxEntries, tail);
         current.addAll(tail);
-        return current;
+        cacheStamp = st;
+        cacheList = current;
+        cacheMax = maxEntries;
+        return new ArrayList<>(current);
     }
 
     private static void readFile(File file, int maxEntries, Deque<LogEntry> out) {
@@ -103,7 +119,11 @@ final class LogStore {
         }
     }
 
-    static int count(Context context) {
+    static synchronized int count(Context context) {
+        long[] st = stamp(context);
+        if (countValue >= 0 && java.util.Arrays.equals(st, countStamp)) {
+            return countValue;
+        }
         int count = 0;
         File dir = context.getFilesDir();
         for (String name : new String[]{BACKUP_NAME, FILE_NAME}) {
@@ -123,6 +143,8 @@ final class LogStore {
                 // Ignore unreadable files.
             }
         }
+        countStamp = st;
+        countValue = count;
         return count;
     }
 

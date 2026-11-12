@@ -37,6 +37,10 @@ public final class LogReceiver extends BroadcastReceiver {
     /** r8 常驻采集：目标进程旁路送来的一条原始请求 / 响应。 */
     static final String ACTION_RAW_CAPTURE = RawCapture.ACTION;
 
+    /** r17：日志接收在主线程，每条都写一次 prefs 会产生 790 次全量序列化（一次一键
+     *  实测 790 条日志）。心跳只要秒级精度，节流到 5 秒一次，界面显示不受影响。 */
+    private static long lastHeartbeatAt;
+
     /** 优惠券页开着时，收到广播立刻刷新；关着就只落盘。 */
     interface CouponWatcher {
         void onCoupon(String action, Intent intent);
@@ -435,12 +439,16 @@ public final class LogReceiver extends BroadcastReceiver {
             summary = "[" + shortProcess(process) + "] " + summary;
         }
 
-        AppPrefs.setHeartbeat(
-                context,
-                now,
-                intent.getStringExtra("process"),
-                intent.getStringExtra("module_version"),
-                intent.getStringExtra("target_version"));
+        long hbAt = System.currentTimeMillis();
+        if (hbAt - lastHeartbeatAt >= 5_000L) {
+            lastHeartbeatAt = hbAt;
+            AppPrefs.setHeartbeat(
+                    context,
+                    now,
+                    intent.getStringExtra("process"),
+                    intent.getStringExtra("module_version"),
+                    intent.getStringExtra("target_version"));
+        }
         AppPrefs.setAccount(context, intent.getStringExtra("uid"),
                 intent.getStringExtra("phone"));
         LogStore.append(context, new LogEntry(ts, tag, summary, detail));

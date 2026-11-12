@@ -525,6 +525,19 @@ final class WebViewHooks {
         if (first == null) {
             return new ConsoleText("", "", "", 0);
         }
+        // r17：先读 sourceId。埋点 SDK 每次 DOM 变化都刷同一条消息（实测一轮 14416 条），
+        // 来源恒为 psie；认出后不再反射 message/messageLevel/lineNumber，省掉 3/4 的
+        // 反射调用。psie 的消息不可能是 SSO 回执，text 置空不影响 SsoLogin.onConsole。
+        try {
+            Object value = XposedHelpers.callMethod(first, "sourceId");
+            if (value != null) {
+                source = value.toString();
+            }
+        } catch (Throwable ignored) {
+        }
+        if (source.toLowerCase(Locale.US).contains("psie")) {
+            return new ConsoleText("", source, level, 0);
+        }
         try {
             Object value = XposedHelpers.callMethod(first, "message");
             if (value != null) {
@@ -536,13 +549,6 @@ final class WebViewHooks {
             Object value = XposedHelpers.callMethod(first, "messageLevel");
             if (value != null) {
                 level = value.toString();
-            }
-        } catch (Throwable ignored) {
-        }
-        try {
-            Object value = XposedHelpers.callMethod(first, "sourceId");
-            if (value != null) {
-                source = value.toString();
             }
         } catch (Throwable ignored) {
         }

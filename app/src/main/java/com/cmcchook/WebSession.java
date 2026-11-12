@@ -474,7 +474,14 @@ final class WebSession {
         current = null;
         currentKey = "";
         if (page != null) {
+            Object raw = page.raw();
             page.close();
+            // r17：非 owned 的真页 close() 只是「保留不销毁」，登记表和 sessionView
+            // 都还指着它；重建时 find/sessionView 又把同一个实例取回来，日志里
+            // 「重建一次」后仍写「复用真页 · WebView$a」就是这么来的。这里显式摘掉，
+            // 让 begin() 必须重新等一个可用的容器。
+            RealPage.forget(raw);
+            RealPage.dropSession(raw);
         }
     }
 

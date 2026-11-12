@@ -104,6 +104,11 @@ final class TaskRunner {
 
     private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
     private static final AtomicBoolean RUNNING = new AtomicBoolean(false);
+
+    /** r17：给界面生命周期埋点用 —— 退后台时判断任务是否还在跑。 */
+    static boolean isRunning() {
+        return RUNNING.get();
+    }
     private static volatile long lastForegroundCheck;
     /** 「今天没什么可跑」「还在等下一轮」这类检查日志按时间戳去重，避免刷屏。 */
     private static volatile long lastIdleLog;
@@ -476,6 +481,9 @@ final class TaskRunner {
                         + skipLine(HookLog.context(), cmd) + "\n"
                         + "入口: " + entry(resolveEntry(cmd))
                         + "\nCookie: " + CookieStore.summary());
+        // r17：把模块进程抬到前台服务优先级。一键要跑两三分钟，广播的 goAsync 只能
+        // 多留几十秒，期间模块界面退后台就会被 HyperOS 当缓存进程回收。
+        KeepAliveService.start(activity);
         POOL.execute(new Runnable() {
             @Override
             public void run() {
@@ -516,6 +524,8 @@ final class TaskRunner {
                     HookLog.logcat("task finish failed: " + e);
                 } finally {
                     // 不管 finish 出什么问题，锁都要放掉，否则后面所有任务都被跳过。
+                    // r17：任务结束立刻降级，不留常驻通知。
+                    KeepAliveService.stop(activity);
                     RUNNING.set(false);
                     String next = PENDING_PROBE.getAndSet(null);
                     if (next != null) {

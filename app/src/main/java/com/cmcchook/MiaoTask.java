@@ -145,7 +145,17 @@ final class MiaoTask {
         }
         // v4.10.0：赚阳光值免费任务已经逐个点了（跳出去停 5 秒再拉回来），
         // 即使页面内主脚本这一轮没读到新的 2xx，也不能判成「没做成」。
+        // r17：但「点过」不等于「做成」—— 本轮实测点了 3 个、回执 0 次、阳光值
+        // 160 没动，却报了 ✓。现在要求阳光值确实上涨才算完成，否则标无需操作，
+        // 让下一轮复查时再补，避免把白点记成战果。
         if (freeTasks > 0) {
+            if (sun0 >= 0 && sun1 >= 0 && sun1 <= sun0) {
+                String summary = "豆苗养成记 · 点了 " + freeTasks + " 个任务，阳光值 "
+                        + sun0 + "→" + sun1 + " 未变";
+                return TaskRunner.Result.idle(summary,
+                        detail.append("判定(r17): 点击后阳光值没有上涨，可能延迟到账，本轮不记完成。\n")
+                                .toString(), summary);
+            }
             String summary = "豆苗养成记 · 完成 " + freeTasks + " 个赚阳光值任务";
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
         }

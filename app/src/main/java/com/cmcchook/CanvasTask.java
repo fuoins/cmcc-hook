@@ -854,21 +854,29 @@ final class CanvasTask {
         JSONArray list = weeklyTasks(page);
         if (list != null) {
             detail.append("任务清单: 组件读到 ").append(list.length()).append(" 条\n");
-            if (list.length() == 0) {
-                detail.append("浏览任务: 清单为空（接口层面无待办），不点\n");
-                return;
-            }
         } else {
             detail.append("任务清单: 组件里没找到 taskList，退回按卡片数\n");
         }
+        // r17：组件 taskList 经常是空数组 —— 服务端只下发 filterList1 配置，真正的
+        // 待做卡片由页面渲染在 DOM 里（实测 (0/1) 去逛逛 × 3，taskList 却是 []）。
+        // r14 拿空数组直接判「清单为空」把整轮跳过，周周因此连续失败。现在以 DOM
+        // 卡片数为准，组件空数组只在 DOM 也读不到时作为「确实没待办」的旁证。
         int left = weeklyTodo(page);
         if (left == 0) {
             detail.append("浏览任务: 没有待做（都已完成）\n");
             return;
         }
         if (left < 0) {
-            detail.append("浏览任务: 页面上读不到「去逛逛」卡片，跳过\n");
+            if (list != null && list.length() == 0) {
+                detail.append("浏览任务: 组件与 DOM 都没读到待做，不点\n");
+            } else {
+                detail.append("浏览任务: 页面上读不到「去逛逛」卡片，跳过\n");
+            }
             return;
+        }
+        if (list != null && list.length() == 0) {
+            detail.append("浏览任务: 组件清单为空但 DOM 有 ").append(left)
+                    .append(" 张卡片，按 DOM 继续\n");
         }
         detail.append("浏览任务: 待做 ").append(left)
                 .append(" 个，点「去逛逛」后停留 ").append(WEEKLY_STAY_MS / 1000).append(" 秒\n");
