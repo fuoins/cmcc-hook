@@ -180,7 +180,7 @@ final class WisdomTask {
      * 选现场页：优先 App 前台真页，否则退回离屏 WebView。
      * 返回的 WebPage 只用于 eval / await，调用方不要 close 前台真页。
      */
-    private static WebPage pickPage(String cmd, StringBuilder detail) {
+    private static WebPage pickPage(String cmd, String entry, StringBuilder detail) {
         String route = routeOf(cmd);
         Object live = WisdomPage.get();
         if (!route.isEmpty() && live != null && WisdomPage.ready(route)) {
@@ -201,11 +201,32 @@ final class WisdomTask {
                 return front;
             }
         }
-        detail.append("现场: 离屏兜底（没登记到可用的 App 前台真页）\n");
-        HookLog.log("TASK", "签到页现场 · 离屏兜底",
-                WisdomPage.status() + "\n"
-                        + "说明: 没找到可用的前台真页，退回离屏 WebView；该环境缺来源/布局，"
-                        + "登录可能被服务端拒绝。去福利专区点开一次签到页并保持打开即可。\n");
+        // v4.10.0-r5：没有活着的前台真页时，直接用 App 容器新开一页真页（地址是刚领到票的
+        // 那一条），不再退回 WebSession.current() —— 那可能正是上一轮被关掉、JS 已不响应的
+        // 僵尸页（11-12 08:18 日志：脚本第一秒有回报，之后心跳全丢、重注入 3 次无效）。
+        if (entry != null && !entry.isEmpty()) {
+            String key = route.isEmpty() ? RealPage.pathKey(entry) : route;
+            WebPage opened = RealPage.open(entry, key, 28_000L);
+            if (opened != null && opened.raw() != null) {
+                detail.append("现场: 真页新开（没有可用的前台真页）\n");
+                HookLog.log("TASK", "签到页现场 · 真页新开",
+                        "地址: " + brief(entry) + "\n"
+                                + "说明: 没找到还活着的前台签到页（上一页可能已被关掉），"
+                                + "改用 App 自己的 H5 容器新开一页真页执行，不退回离屏 WebView。\n");
+                return opened;
+            }
+            detail.append("现场: 真页没开起来，退回会话页\n");
+            HookLog.log("TASK", "签到页现场 · 真页没开起来",
+                    "地址: " + brief(entry) + "\n"
+                            + "说明: App 容器这次没起来，只能尝试会话页；"
+                            + "若随后脚本无回报，请重新打开一次签到页再执行。\n");
+        } else {
+            detail.append("现场: 离屏兜底（没登记到可用的 App 前台真页）\n");
+            HookLog.log("TASK", "签到页现场 · 离屏兜底",
+                    WisdomPage.status() + "\n"
+                            + "说明: 没找到可用的前台真页，退回离屏 WebView；该环境缺来源/布局，"
+                            + "登录可能被服务端拒绝。去福利专区点开一次签到页并保持打开即可。\n");
+        }
         WebPage off = WebSession.current();
         // 离屏页保留 v3.79 的登录回执复判：它可能拿着过期票反复空点，早停是对的。
         if (off != null) {
@@ -257,7 +278,7 @@ final class WisdomTask {
         }
         // v3.82：先选现场页（复用前台真页时会清掉离屏页残留的 403 记录），
         // 再写票据/登录回执摘要，日志开头就不会再挂上一轮离屏页的旧账。
-        WebPage page = pickPage(TaskRunner.CMD_QUIZ, detail);
+        WebPage page = pickPage(TaskRunner.CMD_QUIZ, entry, detail);
         // v3.80：13:36 日志实证 —— 失败时日志只有「页面拿不到 ssoId」一句，
         // 看不出用的是哪张票、服务端到底回过什么。固定把票据来源和页面加载期
         // 的登录回执写进来，下次日志能直接自证，不用再靠猜。
@@ -315,7 +336,7 @@ final class WisdomTask {
         StringBuilder detail = new StringBuilder("入口: ").append(brief(entry)).append('\n');
         // v3.82：先选现场页（复用前台真页时会清掉离屏页残留的 403 记录），
         // 再写票据/登录回执摘要，日志开头就不会再挂上一轮离屏页的旧账。
-        WebPage page = pickPage(TaskRunner.CMD_SIGNLOTTERY, detail);
+        WebPage page = pickPage(TaskRunner.CMD_SIGNLOTTERY, entry, detail);
         // v3.80：13:36 日志实证 —— 失败时日志只有「页面拿不到 ssoId」一句，
         // 看不出用的是哪张票、服务端到底回过什么。固定把票据来源和页面加载期
         // 的登录回执写进来，下次日志能直接自证，不用再靠猜。
@@ -324,15 +345,37 @@ final class WisdomTask {
             return TaskRunner.Result.fail("签到抽奖 · 活动页没起来", detail.toString(),
                     "前台真页和离屏 WebView 都没能加载活动页。去福利专区点开一次签到页再试。");
         }
-        tagAccount(page);
         // v4.10.0：清掉上一轮回报和心跳，再注入。签抽页加载后会抹掉 h5token
         // 并 reload 一次，一次性注入的脚本上下文会被冲掉，旧 await 死等 120 秒
         // 零回报 → FAIL。改用 awaitSign（心跳 + 幂等重注入）。
-        page.eval("(function(){try{delete window.__cmcc_sign}catch(e){}"
-                + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0;"
-                + "window.__cmcc_sign_lg=[];window.__cmcc_sign_stage=''}catch(e){}})()", 3_000L);
-        page.eval(SIGN_JS, 8_000L);
-        JSONObject out = awaitSign(page, detail);
+        // v4.10.0-r5：如果跑到一半页面被关掉（Activity finish，WebView 变僵尸），
+        // 立刻换一页真页重跑一次 —— SIGN_JS 幂等（已签到跳过、任务按钮去重、
+        // 抽奖按回执计数），不会重复消耗次数。只重试一次，别再让用户空等。
+        JSONObject out = null;
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            tagAccount(page);
+            page.eval("(function(){try{delete window.__cmcc_sign}catch(e){}"
+                    + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0;"
+                    + "window.__cmcc_sign_lg=[];window.__cmcc_sign_stage=''}catch(e){}})()", 3_000L);
+            page.eval(SIGN_JS, 8_000L);
+            out = awaitSign(page, detail);
+            if (out != null || attempt == 2) {
+                break;
+            }
+            if (RealPage.alive(page.raw())) {
+                // 页面还活着，是脚本自己的问题（比如服务端拒票），换页没用。
+                break;
+            }
+            detail.append("这一页已关闭/失联，换一页真页重跑一次\n");
+            HookLog.log("TASK", "签到抽奖 · 换页重跑",
+                    "上一页在脚本跑完前被关掉，改用 App 容器新开一页继续。");
+            WebPage again = pickPage(TaskRunner.CMD_SIGNLOTTERY, entry, detail);
+            if (again == null || again.raw() == null || again.raw() == page.raw()) {
+                detail.append("没能换到新的真页\n");
+                break;
+            }
+            page = again;
+        }
         if (out == null) {
             // 超时也要说清楚卡在哪一段，否则只剩一句「没回报」，下一轮还得靠猜。
             String st = signStage == null || signStage.isEmpty() ? "未知" : signStage;
@@ -389,8 +432,18 @@ final class WisdomTask {
         long lastHb = System.currentTimeMillis();
         int reinject = 0;
         int shown = 0;
+        int deadProbe = 0;
         signStage = "";
         while (System.currentTimeMillis() < deadline) {
+            // v4.10.0-r5：承载页面的 Activity 一旦被关，WebView 就是僵尸 —— eval 全部
+            // 超时、心跳永远不回来。以前这里只会「重注入 3 次」然后干等到 240 秒，
+            // 日志里连着三条「心跳丢失」却一步没动。结构信号能查就直接判定失联。
+            if (!RealPage.alive(page.raw())) {
+                detail.append("承载页面的 Activity 已关闭，脚本上下文失效（页面被关掉了）\n");
+                HookLog.log("TASK", "签到抽奖 · 页面被关掉",
+                        "脚本还没跑完，承载它的真页已经 finish，本次无法继续。");
+                return null;
+            }
             String v = page.eval("(function(){try{return JSON.stringify({"
                     + "r:(window.__cmcc_sign?String(window.__cmcc_sign):''),"
                     + "h:Number(window.__cmcc_sign_hb||0)||0,"
@@ -435,7 +488,22 @@ final class WisdomTask {
                 detail.append("页面重载/脚本掉线（心跳停 ").append(quiet / 1000)
                         .append(" 秒），重注入签到脚本 第 ").append(reinject).append(" 次\n");
                 HookLog.log("TASK", "签到抽奖 · 脚本心跳丢失，重注入", "第 " + reinject + " 次");
+                // 重注入前先做一次最轻的 JS 探活：返回空 = evaluateJavascript 根本没回调，
+                // 这一页已经不能用了（重注入本身不保证有返回值，不能拿它当判据）。
+                String alive = page.eval("(function(){try{return 'ok'}catch(e){return ''}})()", 3_000L);
                 page.eval(SIGN_JS, 8_000L);
+                if (alive == null || alive.isEmpty()) {
+                    deadProbe++;
+                    detail.append("重注入无返回（第 ").append(deadProbe).append(" 次）：页面 JS 不响应\n");
+                    if (deadProbe >= 2) {
+                        detail.append("这一页已不可用，放弃等待（不再干等到 240 秒）\n");
+                        HookLog.log("TASK", "签到抽奖 · 页面 JS 已不响应",
+                                "连续两次重注入都没有回调，判定这一页失联，结束本次等待。");
+                        return null;
+                    }
+                } else {
+                    deadProbe = 0;
+                }
                 shown = 0;
                 lastHb = System.currentTimeMillis();
             }

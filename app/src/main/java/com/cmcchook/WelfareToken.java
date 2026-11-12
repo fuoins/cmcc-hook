@@ -63,6 +63,18 @@ final class WelfareToken {
         // 而福利专区是 uni-app 壳，卡片文本读不到，点 20 秒也是空手。
         String minted = viaShortLink(log);
         if (minted.isEmpty()) {
+            // v4.10.0-r5：短链这一跳落地时，页面自己就把带票地址登记进缓存了
+            // （11-12 08:18 日志：08:18:31 连学 5 条「签到页票据已刷新」，
+            // 08:18:51 这里却还说没票，于是又开了一页去裸入口领 —— 用户看到
+            // 「签到页打开又退回首页」就是这么来的）。先复查一次缓存，有票就直接用。
+            String again = RealEntry.wisdomLatest();
+            String t2 = RealEntry.tokenIn(again);
+            if (!t2.isEmpty()) {
+                log.append("  短链落地后从现场学到票 ").append(head(t2)).append('\n');
+                minted = t2;
+            }
+        }
+        if (minted.isEmpty()) {
             minted = mint(log);
         }
         if (!minted.isEmpty()) {
@@ -145,16 +157,33 @@ final class WelfareToken {
     private static String viaShortLink(StringBuilder log) {
         log.append("  改走 SSO 短链: ").append(SHORT_LINK).append('\n');
         WebPage page = null;
+        // v4.10.0-r5：这一页落地到签到页后不能关 —— 它就是任务要跑的那一页。
+        // 以前 finally 无条件 closeQuiet，把刚跳到签到页的真页收掉，用户看到
+        // 「真页打开 → 退回首页」，任务随后只能拿着已销毁的 WebView 空跑。
+        boolean keep = false;
         try {
             page = RealPage.open(SHORT_LINK, "rr/lnwd/ssoJump", 25_000L);
             if (page == null) {
                 log.append("  短链没打开（App 容器没起来）\n");
                 return viaBareEntry(log);
             }
-            String t = waitToken(20_000L);
-            if (!t.isEmpty()) {
-                log.append("  短链落地后拿到票 ").append(head(t)).append('\n');
-                return t;
+            // 边等票边看落地：一旦落到签到/答题路由，票已经在地址上被登记进缓存了，
+            // 不用再等满 20 秒，也不用再开第二页去裸入口。
+            long until = System.currentTimeMillis() + 20_000L;
+            while (System.currentTimeMillis() < until) {
+                String t = tokenOfRegistered();
+                if (!t.isEmpty()) {
+                    log.append("  短链落地后拿到票 ").append(head(t)).append('\n');
+                    keep = true;
+                    return t;
+                }
+                String landed = RealPage.lastUrlOf(page.raw());
+                if (onTaskPage(landed)) {
+                    log.append("  短链已落地签到页，票由页面自己登记: ").append(brief(landed)).append('\n');
+                    keep = true;
+                    return "";
+                }
+                sleep(500L);
             }
             log.append("  短链打开后没等到带票页面（落地 ").append(brief(page.url())).append("）\n");
             return viaBareEntry(log);
@@ -162,7 +191,9 @@ final class WelfareToken {
             log.append("  短链异常: ").append(e).append('\n');
             return "";
         } finally {
-            closeQuiet(page);
+            if (!keep) {
+                closeQuiet(page);
+            }
         }
     }
 
@@ -170,6 +201,8 @@ final class WelfareToken {
     private static String viaBareEntry(StringBuilder log) {
         log.append("  再试裸入口: ").append(SIGN_ENTRY).append('\n');
         WebPage page = null;
+        // 拿到票的这一页就是任务页，留给任务复用，别在领票阶段把它关掉。
+        boolean keep = false;
         try {
             page = RealPage.open(SIGN_ENTRY, "signInLottery", 20_000L);
             if (page == null) {
@@ -179,6 +212,7 @@ final class WelfareToken {
             String t = waitToken(15_000L);
             if (!t.isEmpty()) {
                 log.append("  裸入口拿到票 ").append(head(t)).append('\n');
+                keep = onTaskPage(RealPage.lastUrlOf(page.raw()));
                 return t;
             }
             log.append("  裸入口没拿到票（落地 ").append(brief(page.url())).append("）\n");
@@ -187,8 +221,19 @@ final class WelfareToken {
             log.append("  裸入口异常: ").append(e).append('\n');
             return "";
         } finally {
-            closeQuiet(page);
+            if (!keep) {
+                closeQuiet(page);
+            }
         }
+    }
+
+    /** 这一页是不是已经在签到 / 答题路由上（可以被任务直接接手）。 */
+    private static boolean onTaskPage(String url) {
+        if (url == null) {
+            return false;
+        }
+        String u = url.toLowerCase(java.util.Locale.US);
+        return u.contains("signinlottery") || u.contains("answerquestions");
     }
 
     private static String waitToken(long ms) {

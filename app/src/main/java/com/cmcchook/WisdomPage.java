@@ -108,6 +108,15 @@ final class WisdomPage {
         if (v == null) {
             return false;
         }
+        // v4.10.0-r5：登记过 ≠ 还活着。11-12 08:18 日志实证 —— 领票流程把这个
+        // WebView 的 Activity 关掉了，这里仍判「有前台真页」，任务于是拿着一个
+        // Activity 已 finish 的 WebView 注入脚本：第一秒还能跑，之后 JS 引擎不再调度，
+        // evaluateJavascript 永不回调，表现就是「心跳丢失 → 重注入 3 次 → 全无进度」。
+        // Activity 一旦 finish 就当场摘掉，让上层去开一页新的真页。
+        if (!RealPage.alive(v)) {
+            detach(v);
+            return false;
+        }
         String logged = String.valueOf(viewUrl).toLowerCase(java.util.Locale.US);
         if (!logged.contains("wisdom-h5")) {
             // 没登记 URL（老数据 / 异常路径）：退回运行时判据，只要求还在 wisdom-h5 域，
@@ -167,6 +176,8 @@ final class WisdomPage {
         String ago = age < 1000 ? (age + "ms") : ((age / 1000) + "s");
         String front = loggedRoute();
         return "登记: 有（" + ago + " 前）\n类: " + viewClass + "\n地址: " + viewUrl
+                + "\n存活: " + (RealPage.alive(v) ? "是（Activity 未 finish）"
+                : "否（承载它的 Activity 已关闭，脚本不会再有回报）")
                 + "\n进入判定(v3.95): 登记路由=" + (front.isEmpty() ? "未识别" : front)
                 + "；问答只复用问答页、签抽只复用签抽页/未识别页（避免串页切走前台页）";
     }
