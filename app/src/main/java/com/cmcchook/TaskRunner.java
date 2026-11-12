@@ -721,7 +721,23 @@ final class TaskRunner {
         return "";
     }
 
+    /**
+     * r14：给这一项任务打上 trace，采集记录会带上它。
+     *
+     * <p>活动归属是按 URL 猜的，猜不中只能落「未归属」。trace 是确定的：
+     * 这一秒模块在跑哪个活动，模块自己知道。两条线一对，报告里就能按任务窗口
+     * 切出真实请求序列，也能看出「某个活动到底发了几个请求」。
+     */
     private static Result runOne(String cmd) {
+        RawCapture.beginTrace(cmd);
+        try {
+            return runOneInner(cmd);
+        } finally {
+            RawCapture.endTrace();
+        }
+    }
+
+    private static Result runOneInner(String cmd) {
         // r8 快路径：先试「页面上下文纯请求编排」，命中就直接收工；
         // 未注册 / 失败 / 超时 / 异常一律返回 null，下面原样走现有真页链路。
         // 旧代码一行不删，某个活动的快路径在你机器上不被服务端认也不会漏做。
@@ -1022,6 +1038,10 @@ final class TaskRunner {
         StringBuilder detail = new StringBuilder();
         StringBuilder text = new StringBuilder();
         StringBuilder brief = new StringBuilder();
+        // r14：一键汇总表。以前只有一行 brief + 一堆「活动结束」散日志，
+        // 要看「哪几个白跑了」得自己数。这里逐项记一行四态（完成/无需操作/失败/跳过），
+        // 跑完一次性写进日志和结果详情，耗时也带上 —— 一眼看出时间花在哪。
+        java.util.List<String> rows = new ArrayList<>();
         int okCount = 0;
         int idleCount = 0;
         // v3.79：12:48 日志实证 —— 换号后 App 登录态全掉，一键过全部还是把
@@ -1033,9 +1053,11 @@ final class TaskRunner {
         for (int idx = 0; idx < cmds.length; idx++) {
             String cmd = cmds[idx];
             String name = label(cmd);
+            long t0 = System.currentTimeMillis();
             if (aborted) {
                 brief.append(name).append("– ");
                 text.append(name).append("：未执行（登录态熔断后停止）\n");
+                rows.add("– " + name + " · 0s · 未执行（登录态熔断）");
                 continue;
             }
             brief.append(name).append(' ');
@@ -1053,12 +1075,15 @@ final class TaskRunner {
                     // 环境没准备好，不算这一天跑过，也不计失败次数。
                     text.append(name).append("：跳过（").append(one.summary).append("）\n");
                     brief.append("– ");
+                    rows.add("– " + name + " · " + secs(t0) + " · " + one.summary);
                     HookLog.log("TASK", "活动跳过 · " + name, one.summary);
                     continue;
                 }
                 text.append(name).append("：")
                         .append(one.ok ? one.summary : "失败（" + one.summary + "）").append('\n');
                 brief.append(one.ok ? (one.idle ? "○" : "✓") : "✗").append(' ');
+                rows.add((one.ok ? (one.idle ? "○ " : "✓ ") : "✗ ") + name
+                        + " · " + secs(t0) + " · " + one.summary);
                 if (one.ok) {
                     okCount++;
                     if (one.idle) {
@@ -1090,9 +1115,20 @@ final class TaskRunner {
             } catch (Throwable e) {
                 markAttempt(HookLog.context(), cmd);
                 brief.append("✗ ");
+                rows.add("✗ " + name + " · " + secs(t0) + " · 异常 " + e);
                 detail.append("=== ").append(name).append(" ===\n异常: ").append(e).append('\n');
                 text.append(name).append("：异常 ").append(e).append('\n');
             }
+        }
+        // r14：一键汇总表 —— 一行一个活动，四态 + 耗时 + 一句话。
+        if (!rows.isEmpty()) {
+            StringBuilder table = new StringBuilder("=== 一键汇总 ===\n");
+            table.append("✓ 完成　○ 无需操作　✗ 失败　– 跳过\n");
+            for (String r : rows) {
+                table.append(r).append('\n');
+            }
+            detail.insert(0, table);
+            HookLog.log("TASK", "一键汇总", table.toString());
         }
         // 最后一项的页面也关掉，跑完不留窗口。
         RealPage.closeOwned();
@@ -1376,6 +1412,15 @@ final class TaskRunner {
     private static boolean isCanvas(String cmd) {
         return CMD_DAILY7.equals(cmd) || CMD_MIAO.equals(cmd)
                 || CMD_LUCKY3.equals(cmd) || CMD_WEEKLY.equals(cmd);
+    }
+
+    /** 一键汇总表用的耗时：1 秒内给毫秒，其余给一位小数秒。 */
+    private static String secs(long t0) {
+        long d = System.currentTimeMillis() - t0;
+        if (d < 1000L) {
+            return d + "ms";
+        }
+        return String.format(Locale.US, "%.1fs", d / 1000.0);
     }
 
     static String label(String cmd) {

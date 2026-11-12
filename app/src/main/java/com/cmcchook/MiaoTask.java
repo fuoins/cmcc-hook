@@ -48,19 +48,43 @@ final class MiaoTask {
 
         page.eval(MIAO_SCRIPT, 8_000L);
         String raw = null;
-        long deadline = System.currentTimeMillis() + 95_000L;
+        String lastBeat = "";
+        // r14：95 秒 → 45 秒。这条链路绝大多数在 20 秒内出结果，剩下的一直在等
+        // 「页面没动作」，白占一键总时长。到点就判失败，用户再单独点一次即可。
+        long deadline = System.currentTimeMillis() + 45_000L;
         while (System.currentTimeMillis() < deadline) {
             String value = page.eval(
                     "(function(){var v=window.__cmcc_miao;return v?String(v):'';})()", 6_000L);
             if (value != null && !value.isEmpty()) {
-                raw = value;
-                break;
+                boolean beat = false;
+                try {
+                    JSONObject one = new JSONObject(value);
+                    beat = one.optInt("beat", 0) == 1;
+                    if (beat) {
+                        String last = one.optString("last", "");
+                        if (!last.isEmpty() && !last.equals(lastBeat)) {
+                            lastBeat = last;
+                            detail.append("阶段: ").append(brief(last)).append('\n');
+                        }
+                    }
+                } catch (Throwable ignored) {
+                    // 不是 JSON 就当最终回报处理
+                }
+                if (!beat) {
+                    raw = value;
+                    break;
+                }
             }
             sleep(600L);
         }
         if (raw == null) {
+            detail.append("脚本 45 秒没有回报");
+            if (!lastBeat.isEmpty()) {
+                detail.append("，最后阶段: ").append(brief(lastBeat));
+            }
+            detail.append('\n');
             return TaskRunner.Result.fail("豆苗养成记 · 页面脚本超时",
-                    detail.append("脚本 95 秒没有回报\n").toString(),
+                    detail.toString(),
                     "页面能打开但脚本没回报。把完整日志发我。");
         }
 
@@ -341,7 +365,9 @@ final class MiaoTask {
               var ID='__cmcc_miao';
               window[ID]='';
               var L=[], NET=[];
-              function line(s){ L.push(String(s)) }
+              // r14：阶段心跳。脚本跑起来后每写一行明细就更新一次 window 值，
+              // 外层轮询能看到「走到哪一步了」，不用等 45 秒才知道卡在哪。
+              function line(s){ L.push(String(s)); try{ window[ID]=JSON.stringify({beat:1,last:String(s),n:L.length}) }catch(e){} }
               function cut(s,n){ s=String(s==null?'':s); return s.length>n?s.slice(0,n)+'…':s }
               function isFn(x){ return typeof x==='function' }
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }

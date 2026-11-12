@@ -203,8 +203,40 @@ final class CanvasTask {
                         "在 App 里手动打开一次这个活动，再回来执行任务。");
             }
             if (rendered) {
+                // r14：按文本找不到打卡按钮时，先试一次「第 N 天」卡片的坐标点击。
+                // 有回执才判成功；没回执一律 idle —— 这个页面本来就是「进页即打卡」
+                // 或画布热区，判失败只会把一键汇总染红，也不该计失败次数。
+                if (kind == KIND_DAILY7 && domTry == 0) {
+                    String tapBefore = text0;
+                    String tap = page.eval(DAILY7_TAP, 6_000L);
+                    detail.append("坐标点击: ").append(brief(tap)).append('\n');
+                    if (tap != null && tap.contains("\"ok\":1")) {
+                        sleep(2_800L);
+                        String after = page.eval(BODY_TEXT, 4_000L);
+                        if (after != null && !after.isEmpty() && !after.equals(tapBefore)) {
+                            detail.append("点击后: ").append(brief(after)).append('\n');
+                        }
+                        if (after != null && (after.contains("已打卡") || after.contains("已领取")
+                                || after.contains("明天再来") || after.contains("已签到")
+                                || daily7Paid(after))) {
+                            String summary = name + " · 坐标点击后已打卡";
+                            return TaskRunner.Result.ok(summary, detail.toString(), summary);
+                        }
+                        detail.append("坐标点击: 点到了卡片，但文案没变（不伪造提交）\n");
+                    } else if (tap != null && tap.contains("\"none\":1")) {
+                        detail.append("坐标点击: 页面上没有「第 N 天」卡片，跳过\n");
+                    }
+                }
                 // 页面是好的，只是没挂载 Vue 组件 / 没抓到可提交的打卡按钮。
                 // 如实报「没找到入口」：不猜坐标、不伪造提交、也不冒充完成。
+                if (kind == KIND_DAILY7) {
+                    String summary = name + " · 未确认打卡（页面无按钮/热区，本轮零提交）";
+                    return TaskRunner.Result.idle(summary,
+                            detail.append("判定(v4.14): 活动页已渲染，但没有任何可确认的打卡入口。\n")
+                                    .append("这类页面按「进页即打卡」处理，未确认就不报成功；\n")
+                                    .append("下一轮进页会重新记一次，不影响当天次数。\n").toString(),
+                            summary);
+                }
                 return TaskRunner.Result.fail(name + " · 页面已渲染但没找到打卡入口",
                         detail.append("判定(v4.0.5): 首屏已是活动页，不是登录页（")
                                 .append(brief(text0)).append("）\n")
@@ -497,6 +529,116 @@ final class CanvasTask {
             """;
 
     /**
+     * r14：先读页面组件里的任务清单，判断「还要不要点」。
+     *
+     * <p>以前直接数 DOM 卡片：卡片没渲染出来（骨架/懒加载）就判「读不到」，
+     * 有一半时间白跑一轮点击脚本。这里从 Vue 实例里找 taskList/tasks 数组，
+     * 空数组就是真的没待办，能省掉整轮点击；读不到（返回空串）才退回 DOM 计数。
+     *
+     * <p>只读，不调任何方法 —— 判空和点击分开，避免「判空顺便把任务点了」。
+     */
+    private static final String WEEKLY_TASKS = """
+            (function(){
+              try{
+                var out=[],seen=0;
+                function walk(v,d){
+                  if(!v||d>12||seen>500)return; seen++;
+                  var keys=['taskList','taskListArr','taskArr','tasks'];
+                  for(var ki=0;ki<keys.length;ki++){
+                    var a=v[keys[ki]];
+                    if(!a||!a.length)continue;
+                    for(var i=0;i<a.length&&i<40;i++){
+                      var it=a[i];
+                      if(!it||typeof it!=='object')continue;
+                      var id=it.taskId||it.taskID||it.id||'';
+                      if(!id)continue;
+                      var nm=it.taskName||it.taskTitle||it.name||it.title||'';
+                      var st=it.status!=null?it.status:(it.state!=null?it.state:(it.finish!=null?it.finish:''));
+                      out.push({id:String(id),name:String(nm).slice(0,40),status:String(st)});
+                    }
+                  }
+                  var cs=v.$children||[];
+                  for(var q=0;q<cs.length;q++)walk(cs[q],d+1);
+                }
+                var root=document.querySelector('#app')||document.querySelector('#root')||document.body;
+                var rv=root&&(root.__vue__||(root.__vue_app__&&root.__vue_app__._instance));
+                walk(rv,0);
+                if(!out.length)return '[]';
+                return JSON.stringify(out.slice(0,40));
+              }catch(e){return ''}
+            })()
+            """;
+
+    /**
+     * r14：7 日打卡的坐标点击兜底。
+     *
+     * <p>这个 coc web6 页面不用 Vue，打卡键有时是画布热区/图片，按文本找按钮
+     * 一定落空（v4.0.5 起一直报「页面已渲染但没找到打卡入口」）。这里按
+     * 「第 N 天」卡片找落点：优先当天卡片（class 带 today/active），点它的
+     * 中心，再读文案变化。没变化就什么都不算 —— 不伪造提交。
+     */
+    private static final String DAILY7_TAP = """
+            (function(){
+              try{
+                function ownText(e){
+                  var s='';try{for(var k=0;k<e.childNodes.length;k++){
+                    var n=e.childNodes[k];if(n.nodeType===3)s+=n.nodeValue}}catch(x){}
+                  return s.replace(/\\s+/g,'');
+                }
+                var all=document.querySelectorAll('div,li,section,article,span,img,button,p');
+                var best=null,bestScore=-1,i;
+                for(i=0;i<all.length;i++){
+                  var e=all[i],t=ownText(e);
+                  if(!/第\\s*[1-7]\\s*天/.test(t))continue;
+                  var r={width:0,height:0};try{r=e.getBoundingClientRect()}catch(x){continue}
+                  if(r.width<40||r.height<30)continue;
+                  if(r.top<0||r.top>window.innerHeight)continue;
+                  var cls=String(e.className||'');
+                  var score=(/today|current|active|now|cur|选中/i.test(cls)?10:0)
+                    + r.width*r.height/10000;
+                  if(score>bestScore){bestScore=score;best=e}
+                }
+                if(!best)return JSON.stringify({none:1});
+                var rr=best.getBoundingClientRect();
+                var x=rr.left+rr.width/2,y=rr.top+rr.height/2;
+                var tgt=best;
+                try{
+                  var f=document.elementFromPoint(x,y);
+                  if(f&&(f===best||best.contains(f)))tgt=f;
+                }catch(x){}
+                function fire(el){
+                  try{
+                    var tch=new Touch({identifier:1,target:el,clientX:x,clientY:y,
+                      pageX:x+window.scrollX,pageY:y+window.scrollY,screenX:x,screenY:y,
+                      radiusX:1,radiusY:1,rotationAngle:0,force:1});
+                    el.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,
+                      view:window,touches:[tch],targetTouches:[tch],changedTouches:[tch]}));
+                    el.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,
+                      view:window,touches:[],targetTouches:[],changedTouches:[tch]}));
+                  }catch(e){}
+                  var ps=['pointerdown','mousedown','pointerup','mouseup'];
+                  for(var m=0;m<ps.length;m++){
+                    try{
+                      var ev=ps[m].indexOf('pointer')===0
+                        ? new PointerEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y})
+                        : new MouseEvent(ps[m],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y});
+                      el.dispatchEvent(ev);
+                    }catch(e){}
+                  }
+                  try{if(typeof el.click==='function')el.click()}catch(e){}
+                }
+                fire(tgt);
+                return JSON.stringify({ok:1,x:Math.round(x),y:Math.round(y),
+                  tag:String(tgt.tagName||''),cls:String(tgt.className||'').slice(0,30)});
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    private static final String BODY_TEXT = """
+            (function(){try{return (document.body?document.body.innerText:'').replace(/\\s+/g,' ').trim().slice(0,240)}catch(e){return ''}})()
+            """;
+
+    /**
      * 点第 __SKIP__ 张待做卡片上的按钮。点完立刻返回，不等跳转 —— 跳转会销毁脚本上下文。
      *
      * <p>v4.10.0-r4 修两处：
@@ -593,6 +735,57 @@ final class CanvasTask {
                   }
                   try{if(typeof el.click==='function')el.click()}catch(e){}
                 }
+                // r14：点击前先调页面组件自己的 sendTaskVisit(taskId)。
+                // 点击要跳走、等渲染、再回来复查，一轮 13 秒；方法调用是页面自己的
+                // 上报入口，能成就不必跳。调不到 / 报错都只记一笔，后面照旧点击，
+                // 功能不回退。taskNames 原来只声明不调用，这次真接上。
+                var visit='';
+                function findTaskId(v,want,d){
+                  if(!v||d>8)return '';
+                  var ks=['taskList','taskListArr','tasks','taskArr'];
+                  for(var ki=0;ki<ks.length;ki++){
+                    var arr=v[ks[ki]];
+                    if(!arr||!arr.length)continue;
+                    for(var ai=0;ai<arr.length&&ai<40;ai++){
+                      var it=arr[ai];
+                      if(!it||typeof it!=='object')continue;
+                      var nm=String(it.taskName||it.taskTitle||it.name||it.title||'');
+                      if(want&&nm&&nm.indexOf(want)<0&&want.indexOf(nm)<0)continue;
+                      var id=it.taskId||it.taskID||it.id||'';
+                      if(id)return id;
+                    }
+                  }
+                  var cq=v.$children||[];
+                  for(var qi=0;qi<cq.length;qi++){
+                    var got=findTaskId(cq[qi],want,d+1);
+                    if(got)return got;
+                  }
+                  return '';
+                }
+                function visitWalk(v,d){
+                  if(!v||d>12||visit)return;
+                  if(typeof v.sendTaskVisit==='function'){
+                    var id=findTaskId(v,wantTaskId,0)||'';
+                    if(id){
+                      try{ v.sendTaskVisit(id); visit='sent:'+id }
+                      catch(e){ visit='err:'+String(e&&e.message||e).slice(0,30) }
+                    }
+                  }
+                  var cs=v.$children||[];
+                  for(var q=0;q<cs.length;q++)visitWalk(cs[q],d+1);
+                }
+                // 卡片名去掉动作词和 (0/1)，只留标题前 10 字去对任务名 ——
+                // 直接拿整段卡片文本去 indexOf 一定匹配不上（任务名里没有「去逛逛」）。
+                var wantTaskId=(function(){
+                  var t=norm(tx(card));
+                  for(var wi=0;wi<WORDS.length;wi++){ t=t.split(WORDS[wi]).join('') }
+                  return t.replace(/\\(0\\/1\\)/g,'').replace(/（0\\/1）/g,'').slice(0,10);
+                })();
+                try{
+                  var rootEl=document.querySelector('#app')||document.querySelector('#root')||document.body;
+                  var vueRoot=rootEl&&(rootEl.__vue__||(rootEl.__vue_app__&&rootEl.__vue_app__._instance));
+                  visitWalk(vueRoot,0);
+                }catch(e){ visit='scan:'+String(e&&e.message||e).slice(0,30) }
                 fire(tgt);
                 // 兜底：1 秒后还在活动页，说明第一下落点没命中，按卡片中心补一次。
                 try{
@@ -611,7 +804,7 @@ final class CanvasTask {
                 var cls='';
                 try{cls=String(tgt.className||'').slice(0,36)}catch(e){}
                 return JSON.stringify({name:name,idx:at,total:cards.length,
-                  tag:String(tgt.tagName||''),cls:cls});
+                  tag:String(tgt.tagName||''),cls:cls,visit:visit});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
             })()
             """;
@@ -632,6 +825,19 @@ final class CanvasTask {
         }
     }
 
+    /** 页面组件里的任务清单；读不到返回 null（退回 DOM 计数）。 */
+    private static JSONArray weeklyTasks(WebPage page) {
+        String v = page.eval(WEEKLY_TASKS, 4_000L);
+        if (v == null || v.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return new JSONArray(v.trim());
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
     /**
      * 逐个点「去逛逛」：点 → 页面自己跳 → 停留 6 秒（门槛 5 秒）→ 回活动页 → 复查剩余数。
      *
@@ -641,6 +847,18 @@ final class CanvasTask {
      */
     private static void runWeeklyTasks(WebPage page, String entry, StringBuilder detail) {
         sleep(1_500L);
+        // r14：先看页面组件里的任务清单。清单明确为空就不再点 —— 以前 DOM 数到
+        // 卡片就点，卡片虚影/懒加载时白跑一轮 13 秒。
+        JSONArray list = weeklyTasks(page);
+        if (list != null) {
+            detail.append("任务清单: 组件读到 ").append(list.length()).append(" 条\n");
+            if (list.length() == 0) {
+                detail.append("浏览任务: 清单为空（接口层面无待办），不点\n");
+                return;
+            }
+        } else {
+            detail.append("任务清单: 组件里没找到 taskList，退回按卡片数\n");
+        }
         int left = weeklyTodo(page);
         if (left == 0) {
             detail.append("浏览任务: 没有待做（都已完成）\n");
@@ -684,6 +902,12 @@ final class CanvasTask {
                     .append(" 落点 ").append(o.optString("tag", "?"))
                     .append(o.optString("cls", "").isEmpty() ? "" : "." + o.optString("cls"))
                     .append('\n');
+            String visit = o.optString("visit", "");
+            if (!visit.isEmpty()) {
+                detail.append("浏览任务: 点击前调 sendTaskVisit → ").append(visit).append('\n');
+            } else {
+                detail.append("浏览任务: 组件上没有可调的 sendTaskVisit，只走点击\n");
+            }
             // 脚本里 0.9 秒还有一次「卡片中心」补点，这里多留 0.5 秒再判断跳没跳。
             sleep(2_000L);
             String landed = page.url();

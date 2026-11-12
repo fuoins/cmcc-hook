@@ -66,6 +66,39 @@ final class RawCapture {
     private static Handler handler;
     private static volatile boolean selfChecked;
 
+    /**
+     * r14：当前正在跑的任务，形如 {@code goose@16:31:07}。
+     *
+     * <p>为什么需要它：活动归属只能靠 URL 猜（{@link WelfareCatalog#actOf}），
+     * 猜不中的请求就掉进「未归属」；而按任务切窗口是确定的 —— 模块知道这一秒在跑
+     * 哪个活动。两条线一对，报告里每个活动就都能拿到「这段时间内它真正发了哪些请求」，
+     * 不再受接口名/域名干扰。
+     *
+     * <p>同进程静态变量，不走 prefs：{@link TaskRunner} 与这里的采集都在目标进程，
+     * 跨进程读文件反而在 Android 15 上读不到。超过 3 分钟自动过期，任务异常中断
+     * 也不会一直挂着一个假 trace。
+     */
+    private static volatile String trace = "";
+    private static volatile long traceAt;
+
+    static void beginTrace(String name) {
+        trace = name == null ? "" : name;
+        traceAt = System.currentTimeMillis();
+    }
+
+    static void endTrace() {
+        trace = "";
+        traceAt = 0L;
+    }
+
+    static String trace() {
+        long at = traceAt;
+        if (at <= 0 || System.currentTimeMillis() - at > 180_000L) {
+            return "";
+        }
+        return trace;
+    }
+
     /** 本次进程启动算一个会话，导出时按会话归档。 */
     private static final String SESSION =
             Long.toString(System.currentTimeMillis(), 36);
@@ -133,11 +166,17 @@ final class RawCapture {
             o.put("url", url);
             String act = "";
             try {
-                act = WelfareCatalog.idOf(url);
+                // r14：只认内置表里真实存在的活动；认不出就留空，报告里归「未归属」。
+                // 以前用 idOf 会把 collect/websocket 这类接口名当成活动。
+                act = WelfareCatalog.actOf(url);
             } catch (Throwable ignored) {
                 // 归属解析失败只影响分类，不能因此丢掉整条记录。
             }
             o.put("act", act == null ? "" : act);
+            String tr = trace();
+            if (!tr.isEmpty()) {
+                o.put("trace", tr);
+            }
             Iterator<String> keys = payload.keys();
             while (keys.hasNext()) {
                 String k = keys.next();

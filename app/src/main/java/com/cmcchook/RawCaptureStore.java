@@ -33,6 +33,8 @@ final class RawCaptureStore {
 
     private static final String FILE = "raw-capture.jsonl";
     private static final long MAX_FILE = 24L * 1024 * 1024;
+    /** r14：报告里单条响应体保留上限，超出的部分在 jsonl 原始流里。 */
+    private static final int RESP_KEEP = 8192;
 
     /** 服务端下发的参数：加活动时要从这里取值，不能硬编码。 */
     private static final String[] PARAMS = {
@@ -161,6 +163,10 @@ final class RawCaptureStore {
         Map<String, String> valueIndex = new HashMap<>();
         Map<String, Integer> sessions = new HashMap<>();
         JSONObject byAct = new JSONObject();
+        /** r14：认不出活动的请求按域名归堆，不再混进 byAct。 */
+        JSONObject byHost = new JSONObject();
+        /** r14：按任务窗口（模块自己写的 trace）归堆，活动归属的兜底证据。 */
+        JSONObject byTrace = new JSONObject();
         int encrypted = 0;
         int unassigned = 0;
         JSONArray probes = new JSONArray();
@@ -180,6 +186,16 @@ final class RawCaptureStore {
                 }
                 String url = o.optString("url", "");
                 String act = o.optString("act", "");
+                // r14：旧记录里的 act 可能是接口名（collect/websocket/getappkey）。
+                // 只有内置表里真有的活动才允许进 byAct，其余一律按未归属处理。
+                if (!WelfareCatalog.isKnownAct(act)) {
+                    act = "";
+                } else {
+                    try {
+                        o.put("act", act);
+                    } catch (Throwable ignored) {
+                    }
+                }
                 int seq = o.optInt("seq", records.length() + 1);
                 boolean cipher = cipherDomain(url, o);
 
@@ -237,6 +253,16 @@ final class RawCaptureStore {
                     bucket(byAct, act).optJSONArray("steps").put(step(o, seq, cipher, req));
                     bucket(byAct, act).optJSONObject("script").optJSONArray("steps")
                             .put(scriptStep(o, seq, cipher, req, valueIndex));
+                } else {
+                    // r14：认不出活动的请求不再丢，按域名单独归一堆。
+                    // 以前 idOf 会把接口名（collect/websocket/getappkey）当活动，
+                    // byAct 里全是假活动；现在真活动只进 byAct，其余在这里按域看。
+                    bucketHost(byHost, hostOf(url), o, seq);
+                }
+                // r14：按任务窗口归档 —— 比 URL 猜活动准得多。
+                String tr = o.optString("trace", "");
+                if (!tr.isEmpty()) {
+                    traceBucket(byTrace, tr, o, seq, act);
                 }
                 String sid = o.optString("session", "");
                 if (!sid.isEmpty()) {
@@ -255,6 +281,15 @@ final class RawCaptureStore {
                 if ("selfcheck".equals(o.optString("source", ""))) {
                     probes.put(o);
                 }
+                // r14：响应体分层 —— 报告里只留可读的那截 + 摘要，全量仍在 jsonl 原始流里。
+                JSONObject briefResp = respBrief(o);
+                if (briefResp != null) {
+                    try {
+                        o.put("resp", briefResp);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                slimResp(o);
                 records.put(o);
             }
         }
@@ -296,6 +331,30 @@ final class RawCaptureStore {
                     pl.put(p);
                 }
                 b.put("paths", pl);
+                // r14：脚本草稿封口 —— 截到 40 步（再长也不是人工能核的），
+                // 末尾补一条 result，粘进 FastScripts 就是一份完整脚本。
+                JSONObject script = b.optJSONObject("script");
+                if (script != null) {
+                    JSONArray st = script.optJSONArray("steps");
+                    if (st != null && st.length() > 40) {
+                        JSONArray cut = new JSONArray();
+                        for (int i = 0; i < 40; i++) {
+                            cut.put(st.opt(i));
+                        }
+                        script.put("steps", cut);
+                        script.put("truncated", st.length() - 40);
+                    }
+                    JSONArray now = script.optJSONArray("steps");
+                    if (now != null) {
+                        JSONObject end = new JSONObject();
+                        JSONObject r = new JSONObject();
+                        r.put("kind", "ok");
+                        r.put("text", "采集回放完成：" + k);
+                        end.put("result", r);
+                        now.put(end);
+                    }
+                    b.put("scriptJson", script.toString());
+                }
             } catch (Throwable ignored) {
             }
         }
@@ -303,11 +362,14 @@ final class RawCaptureStore {
         JSONObject report = new JSONObject();
         try {
             report.put("generated", System.currentTimeMillis());
-            report.put("schema", "cmcc-raw-capture/2");
+            report.put("schema", "cmcc-raw-capture/3");
             report.put("count", records.length());
-            report.put("note", "原始流全量保留在 records[]；byAct 按活动压成请求序列"
-                    + "（method/path/签名头名/参数名），并附可直接粘进 FastScripts 的"
-                    + " scriptDraft（服务端活值已换成 {参数名} 占位）；"
+            report.put("note", "records[] 是分层后的原始流（响应体超过 8KB 只留前 8KB，"
+                    + "全量在 jsonl 文件里）；byAct 只收内置表里真实存在的活动，"
+                    + "认不出的按域名归 byHost，按任务窗口归 byTrace（trace 由模块跑任务时写入，"
+                    + "比 URL 猜活动准）；每个活动附 scriptJson：GET 带 query、body 用现场活值、"
+                    + "末尾有 result，可直接粘进 FastScripts 跑一次；"
+                    + "bodyTpl 是参数化参考（把活值换成 {参数名}，需人工补 set）。"
                     + "encrypted 域为密文+每次现算签名头，离线重放不可行，"
                     + "只能用页面上下文直发或保留点击兜底。");
             JSONArray ss = new JSONArray();
@@ -323,6 +385,8 @@ final class RawCaptureStore {
             sum.put("encrypted", encrypted);
             sum.put("unassigned", unassigned);
             sum.put("acts", byAct.length());
+            sum.put("hosts", byHost.length());
+            sum.put("traces", byTrace.length());
             JSONArray params = new JSONArray();
             for (String p : PARAMS) {
                 params.put(p);
@@ -360,6 +424,8 @@ final class RawCaptureStore {
             }
             report.put("selfcheck", sc);
             report.put("byAct", byAct);
+            report.put("byHost", byHost);
+            report.put("byTrace", byTrace);
             report.put("records", records);
         } catch (Throwable e) {
             HookLog.logcat("raw capture report failed: " + e);
@@ -384,9 +450,172 @@ final class RawCaptureStore {
         return b;
     }
 
+    /**
+     * r14：认不出活动的请求按域名归堆。
+     *
+     * <p>这些多半是登录、探活、埋点、第三方 SDK 的请求，本来就是噪音；但直接丢掉
+     * 又看不出「这个域到底在干什么」。按 host 留一份接口清单，既不影响 byAct，
+     * 也能在接新活动时快速看出该域值不值得接。
+     */
+    private static void bucketHost(JSONObject byHost, String host, JSONObject o, int seq) {
+        if (host == null || host.isEmpty()) {
+            return;
+        }
+        try {
+            JSONObject b = byHost.optJSONObject(host);
+            if (b == null) {
+                b = new JSONObject();
+                b.put("count", 0);
+                b.put("paths", new JSONArray());
+                b.put("steps", new JSONArray());
+                byHost.put(host, b);
+            }
+            b.put("count", b.optInt("count") + 1);
+            String p = pathOf(o.optString("url", ""));
+            if (!p.isEmpty()) {
+                addOnce(b.optJSONArray("paths"), p, 40);
+            }
+            JSONObject s = new JSONObject();
+            s.put("seq", seq);
+            s.put("method", o.optString("method", "GET"));
+            s.put("path", p);
+            s.put("status", o.optInt("status", 0));
+            b.optJSONArray("steps").put(s);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * r14：按任务窗口归档。
+     *
+     * <p>trace 是模块跑某一项任务时自己写的（{@code goose@16:31:07}），不靠 URL 猜。
+     * 活动归属猜错时，这里仍是准的 —— 这段窗口内目标进程发的请求，就是这个活动
+     * 真正需要的请求。
+     */
+    private static void traceBucket(JSONObject byTrace, String trace, JSONObject o,
+                                    int seq, String act) {
+        try {
+            JSONObject b = byTrace.optJSONObject(trace);
+            if (b == null) {
+                b = new JSONObject();
+                b.put("count", 0);
+                b.put("acts", new JSONArray());
+                b.put("hosts", new JSONArray());
+                b.put("steps", new JSONArray());
+                b.put("firstAt", o.optLong("ts", 0));
+                byTrace.put(trace, b);
+            }
+            b.put("count", b.optInt("count") + 1);
+            b.put("lastAt", o.optLong("ts", 0));
+            if (!act.isEmpty()) {
+                addOnce(b.optJSONArray("acts"), act, 12);
+            }
+            addOnce(b.optJSONArray("hosts"), hostOf(o.optString("url", "")), 12);
+            JSONObject s = new JSONObject();
+            s.put("seq", seq);
+            s.put("method", o.optString("method", "GET"));
+            s.put("path", pathOf(o.optString("url", "")));
+            s.put("act", act);
+            s.put("enc", cipherDomain(o.optString("url", ""), o));
+            b.optJSONArray("steps").put(s);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void addOnce(JSONArray arr, String v, int max) {
+        if (arr == null || v == null || v.isEmpty() || arr.length() >= max) {
+            return;
+        }
+        for (int i = 0; i < arr.length(); i++) {
+            if (v.equals(arr.optString(i, ""))) {
+                return;
+            }
+        }
+        arr.put(v);
+    }
+
+    private static String hostOf(String url) {
+        if (url == null || url.isEmpty()) {
+            return "";
+        }
+        try {
+            int s = url.indexOf("://");
+            if (s < 0) {
+                return "";
+            }
+            int e = url.indexOf('/', s + 3);
+            String h = e < 0 ? url.substring(s + 3) : url.substring(s + 3, e);
+            int q = h.indexOf('?');
+            if (q > 0) {
+                h = h.substring(0, q);
+            }
+            return h.toLowerCase(Locale.US);
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    /** 响应体分层：只留 code/msg/顶层键 + 字节数，报告一眼能看出成败。 */
+    private static JSONObject respBrief(JSONObject o) {
+        try {
+            String body = o.optString("respBody", "");
+            if (body.isEmpty()) {
+                return null;
+            }
+            JSONObject b = new JSONObject();
+            b.put("bytes", body.length());
+            JSONObject j = tryJson(body);
+            if (j != null) {
+                JSONArray keys = new JSONArray();
+                java.util.Iterator<String> it = j.keys();
+                int n = 0;
+                while (it.hasNext() && n++ < 20) {
+                    keys.put(it.next());
+                }
+                b.put("keys", keys);
+                String code = firstOf(j, "code", "retCode", "rtnCode", "resultCode", "status");
+                String msg = firstOf(j, "msg", "message", "desc", "retMsg", "resultDesc");
+                if (!code.isEmpty()) {
+                    b.put("code", code);
+                }
+                if (!msg.isEmpty()) {
+                    b.put("msg", msg.length() > 120 ? msg.substring(0, 120) + "…" : msg);
+                }
+            } else {
+                b.put("text", body.length() > 160 ? body.substring(0, 160) + "…" : body);
+            }
+            return b;
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    private static String firstOf(JSONObject o, String... keys) {
+        for (String k : keys) {
+            String v = o.optString(k, "");
+            if (!v.isEmpty()) {
+                return v;
+            }
+        }
+        return "";
+    }
+
+    /** 报告里的响应体只留 8KB，超出部分标注清楚；全量在 jsonl 原始流。 */
+    private static void slimResp(JSONObject o) {
+        try {
+            String body = o.optString("respBody", "");
+            if (body.length() > RESP_KEEP) {
+                int cut = body.length() - RESP_KEEP;
+                o.put("respCut", cut);
+                o.put("respBody", body.substring(0, RESP_KEEP)
+                        + "…[+" + cut + " 字符，全量在 jsonl 原始流]");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 一步请求的「结构」：只留方法/路径/状态/签名头名/参数名，不留值。 */
-    private static JSONObject step(JSONObject o, int seq, boolean cipher, JSONObject req) {
-        JSONObject s = new JSONObject();
+    private static JSONObject step(JSONObject o, int seq, boolean cipher, JSONObject req) {        JSONObject s = new JSONObject();
         try {
             s.put("seq", seq);
             s.put("source", o.optString("source", ""));
@@ -411,28 +640,68 @@ final class RawCaptureStore {
         return s;
     }
 
-    /** 可直接粘进 {@code FastScripts} 的一步：{@code {"req":{id,method,path,body}}}。 */
+    /**
+     * 可直接粘进 {@code FastScripts} 的一步。
+     *
+     * <p>r14 起按「能跑」而不是「能看」来生成：
+     * <ul>
+     *   <li>GET 必须带 query —— 以前统一砍掉 query，GET 类接口（lottery/remain、
+     *       user/info、task/list）粘进脚本必然缺参，跑不通；</li>
+     *   <li>body 保留**现场活值**（不换成 {@code {占位}}）。占位要人工补 set 才能跑，
+     *       活值虽然会过期，但粘上去就能立刻验证一次链路，这比「语法正确但一跑就空参」
+     *       有用；另附 {@code bodyTpl} 作为参数化参考。</li>
+     *   <li>密文域不生成 req（离线重放必失败），改生成一条 log，避免脚本一跑就
+     *       拿密文白撞一次接口。</li>
+     * </ul>
+     */
     private static JSONObject scriptStep(JSONObject o, int seq, boolean cipher,
                                          JSONObject req, Map<String, String> idx) {
+        String method = o.optString("method", "GET").toUpperCase(Locale.US);
+        String full = o.optString("url", "");
+        JSONObject step = new JSONObject();
+        if (cipher) {
+            try {
+                step.put("log", "密文域（seq " + seq + "）：" + pathOf(full)
+                        + " 需页面上下文/点击，不生成 req");
+            } catch (Throwable ignored) {
+            }
+            return step;
+        }
         JSONObject reqNode = new JSONObject();
         try {
             reqNode.put("id", "s" + seq);
-            reqNode.put("method", o.optString("method", "GET"));
-            reqNode.put("path", pathOf(o.optString("url", "")));
-            if (cipher) {
-                reqNode.put("body", "<encrypted>");
-                reqNode.put("note", "密文域：离线重放不可行，需页面上下文或保留点击");
-            } else if (req != null) {
-                reqNode.put("body", substitute(o.optString("reqBody", ""), idx));
+            reqNode.put("method", method);
+            // GET/带 query 的接口：完整 path 含 query，ScriptEngine 会 BASE+path。
+            reqNode.put("path", pathWithQuery(full));
+            String body = o.optString("reqBody", "");
+            if (req != null && !body.isEmpty()) {
+                reqNode.put("body", body);
+                String tpl = substitute(body, idx);
+                if (!tpl.equals(body)) {
+                    reqNode.put("bodyTpl", tpl);
+                }
+            } else if (!body.isEmpty()) {
+                reqNode.put("body", body);
             }
         } catch (Throwable ignored) {
         }
-        JSONObject step = new JSONObject();
         try {
             step.put("req", reqNode);
         } catch (Throwable ignored) {
         }
         return step;
+    }
+
+    /** 脚本用的 path：BASE 内用相对路径，BASE 外用完整 URL；query 一律保留。 */
+    private static String pathWithQuery(String url) {
+        if (url == null || url.isEmpty()) {
+            return "";
+        }
+        if (url.startsWith(TaskNet.BASE)) {
+            String p = url.substring(TaskNet.BASE.length());
+            return p.isEmpty() ? "/" : p;
+        }
+        return url;
     }
 
     /** 去掉 BASE 前缀，脚本里用相对 path 更不容易写错。 */
@@ -510,6 +779,7 @@ final class RawCaptureStore {
                     .append(" 条 · 活动 ").append(sum == null ? 0 : sum.optInt("acts"))
                     .append(" 个 · 密文 ").append(sum == null ? 0 : sum.optInt("encrypted"))
                     .append(" 条 · 未归属 ").append(sum == null ? 0 : sum.optInt("unassigned"))
+                    .append("（").append(sum == null ? 0 : sum.optInt("hosts")).append(" 个域）")
                     .append('\n');
             if (sc != null) {
                 long f = sc.optLong("firstAt", 0);
@@ -552,6 +822,35 @@ final class RawCaptureStore {
                         }
                         sb.append('\n');
                     }
+                    n++;
+                }
+            }
+            // r14：按任务窗口。活动归属是按 URL 猜的，这一段不猜 —— 模块知道
+            // 这一分钟在跑哪个活动，窗口内的请求就是这个活动真正发的。
+            JSONObject byTrace = r.optJSONObject("byTrace");
+            if (byTrace != null && byTrace.length() > 0) {
+                sb.append("按任务窗口:\n");
+                java.util.Iterator<String> it = byTrace.keys();
+                int n = 0;
+                while (it.hasNext() && n < 20) {
+                    String k = it.next();
+                    JSONObject b = byTrace.optJSONObject(k);
+                    if (b == null) {
+                        continue;
+                    }
+                    JSONArray hosts = b.optJSONArray("hosts");
+                    sb.append("  ").append(k).append(": ")
+                            .append(b.optInt("count")).append(" 条");
+                    if (hosts != null && hosts.length() > 0) {
+                        sb.append(" · 域 ");
+                        for (int i = 0; i < hosts.length() && i < 4; i++) {
+                            if (i > 0) {
+                                sb.append("/");
+                            }
+                            sb.append(hosts.optString(i, ""));
+                        }
+                    }
+                    sb.append('\n');
                     n++;
                 }
             }

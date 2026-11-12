@@ -194,6 +194,28 @@ final class GooseTask {
         }
     }
 
+    /** 缓存里 3 小时内、带 pc/pk 的入口；没有就返回空串。只作备用入口。 */
+    private static String cachedEntry() {
+        Context ctx = HookLog.context();
+        if (ctx == null) {
+            return "";
+        }
+        try {
+            SharedPreferences p = AccountScope.prefs(ctx, PREFS);
+            String url = p.getString(KEY_ENTRY, "");
+            long at = p.getLong(KEY_ENTRY_AT, 0L);
+            if (url.isEmpty() || !url.contains("pc=") || !url.contains("pk=")) {
+                return "";
+            }
+            if (System.currentTimeMillis() - at > 3 * 3600_000L) {
+                return "";
+            }
+            return url;
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
     // --------------------------------------------------------------- 执行
 
     static TaskRunner.Result run() {
@@ -536,6 +558,35 @@ final class GooseTask {
             detail.append("登录: 短链换票后仍未登录\n");
         }
 
+        // r14 备用入口 1：缓存里带 pc/pk 的地址（只当备胎，不当首选）。
+        // 短链换票是首选，因为 pc/pk 是门户按登录态现签的；但短链偶尔会被
+        // dwz 限流/换码，这时 3 小时内的缓存地址往往还能用一次，比直接判失败强。
+        String cached = cachedEntry();
+        String here = page.url();
+        if (!cached.isEmpty() && !cached.equals(here)) {
+            detail.append("登录: 备用入口 · 缓存 pc/pk\n");
+            if (page.navigate(cached, 15_000L) && waitLogged(page, 12_000L)) {
+                detail.append("登录: 备用入口登录成功\n");
+                return true;
+            }
+            detail.append("登录: 备用入口仍未登录\n");
+        }
+
+        // r14 备用入口 2：裸地址。页面自己会走一遍门户 SSO（sso_token → 带 pc/pk 回来），
+        // 短链和缓存都不行时这条路仍有一半机会，且不消耗活动次数。
+        if (!isGoosePage(page.url())) {
+            detail.append("登录: 备用入口 · 裸地址走门户 SSO\n");
+            if (page.navigate(TaskApi.ACT_GOOSE, 18_000L) && waitLogged(page, 14_000L)) {
+                String landed = page.url();
+                if (landed != null && landed.contains("pc=")) {
+                    rememberEntry(landed);
+                }
+                detail.append("登录: 裸地址登录成功\n");
+                return true;
+            }
+            detail.append("登录: 裸地址仍未登录\n");
+        }
+
         // 最后一招：页面自己存的 accesstoken。用户之前在 App 里打开过活动，
         // localStorage 里就有；把它拼回 URL 能让页面跳过 pc/pk 直接认票。
         String token = page.eval("(function(){try{"
@@ -573,6 +624,13 @@ final class GooseTask {
     /** 轮询等页面把登录数据跑出来。 */
     private static boolean waitLogged(WebPage page, long timeoutMs) {
         long deadline = System.currentTimeMillis() + timeoutMs;
+        // r14：8 秒无进展就判失败，不再干等到 16~20 秒。
+        // 11-12 实测：页面被判未登录时，多数是短链换票没成，页面停在骨架/中转页
+        // 一动不动；这时候多等 10 秒只是把一键总时长拉长。只要 URL、文档状态、
+        // 正文长度这三样在 8 秒内一次都没变，就认为这条入口废了，直接交给
+        // 备用入口（缓存 pc/pk → 裸地址 → accesstoken）去试。
+        String sig = "";
+        long lastMove = System.currentTimeMillis();
         while (System.currentTimeMillis() < deadline) {
             if (pageLogged(page)) {
                 return true;
@@ -586,14 +644,37 @@ final class GooseTask {
                 // 直接打断 → 稳定误报「收鹅蛋页面未登录」。登录中转是正常链路，继续等；
                 // 只有真正的外部跳转（下载引导 / 广告位）才提前放弃。
                 if (isLoginHop(now)) {
+                    lastMove = System.currentTimeMillis();
                     sleep(700L);
                     continue;
                 }
                 return false;
             }
+            String s = progressSig(page);
+            long at = System.currentTimeMillis();
+            if (!s.equals(sig)) {
+                sig = s;
+                lastMove = at;
+            } else if (at - lastMove > 8_000L) {
+                HookLog.logcat("goose: 8s 无进展，判未登录 · " + briefUrl(now));
+                return false;
+            }
             sleep(700L);
         }
         return false;
+    }
+
+    /** 轻量的「页面有没有在动」信号：路由 + 文档状态 + 正文长度。 */
+    private static String progressSig(WebPage page) {
+        try {
+            String v = page.eval("(function(){try{"
+                    + "return location.href.slice(0,120)+'|'+document.readyState+'|'"
+                    + "+(document.body?document.body.innerText.length:0)"
+                    + "}catch(e){return ''}})()", 1_500L);
+            return v == null ? "" : v;
+        } catch (Throwable e) {
+            return "";
+        }
     }
 
     /** 门户 SSO 登录中转页：URL 不含 actNo=goose，但确实是登录链路的一环。 */

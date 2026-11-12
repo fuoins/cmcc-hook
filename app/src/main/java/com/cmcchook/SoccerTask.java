@@ -131,6 +131,20 @@ final class SoccerTask {
                             + "之后就能自动跑。");
         }
 
+        // r14：先看页面是不是「本省不支持」。球赛是辽宁 lyh 域的活动，外省号
+        // 进去看到的是一张「活动未开放」的空页，脚本只会报「组件没挂载」，
+        // 既看不出原因，还会被当成失败拉低一键成功率。这类明确的地域限制
+        // 应报 skip（不算失败、不计次数），并在日志里写清楚。
+        String pageText = page.eval(
+                "(function(){try{return (document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,600)}catch(e){return ''}})()",
+                4_000L);
+        if (provinceBlocked(pageText)) {
+            detail.append("页面: ").append(brief(pageText)).append('\n');
+            return TaskRunner.Result.skip("球赛狂欢季 · 本省不支持",
+                    detail.append("判定: 页面文案命中地域限制（本省/地区 + 不支持/未开放）\n").toString(),
+                    "这是辽宁域的活动，当前号码所在省份没开放。换辽宁号再做，或忽略这项。");
+        }
+
         page.eval(SOCCER_SCRIPT, 8_000L);
         String raw = null;
         int drifted = 0;
@@ -320,6 +334,23 @@ final class SoccerTask {
             return "";
         }
         return text.length() <= 180 ? text : text.substring(0, 180) + "…";
+    }
+
+    /**
+     * 页面文案是否明确写了「本省/本地区不支持」。
+     *
+     * <p>必须同时出现「地域词」和「限制词」，避免活动规则里单独一句
+     * 「不支持退换」把正常页面误判成地域限制。
+     */
+    private static boolean provinceBlocked(String text) {
+        if (text == null || text.isEmpty()) {
+            return false;
+        }
+        boolean geo = text.contains("本省") || text.contains("省份") || text.contains("本地区")
+                || text.contains("地区") || text.contains("区域") || text.contains("归属地");
+        boolean deny = text.contains("不支持") || text.contains("未开放") || text.contains("暂未")
+                || text.contains("不在活动范围") || text.contains("非活动") || text.contains("敬请期待");
+        return geo && deny;
     }
 
     private static void sleep(long ms) {

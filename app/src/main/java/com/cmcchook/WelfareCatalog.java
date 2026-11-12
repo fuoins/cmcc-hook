@@ -488,6 +488,62 @@ final class WelfareCatalog {
         return "";
     }
 
+    /**
+     * r14：把地址归到**已知活动**，认不出就返回空串。
+     *
+     * <p>为什么不能用 {@link #idOf(String)} 直接当活动名：它对任何地址都会取路径最后
+     * 一段，于是采集报告里的 byAct 长出一堆 {@code collect} / {@code websocket} /
+     * {@code getappkey} —— 那是接口名，不是活动。活动归错，报告就没法按活动看请求
+     * 序列，也没法生成脚本草稿。
+     *
+     * <p>规则只有一条：地址里必须真的出现内置表某个活动号/路径标识（或已知别名），
+     * 否则一律不算活动，由调用方归到「未归属」。宁可少认，不可乱认。
+     */
+    static String actOf(String url) {
+        if (url == null || url.isEmpty()) {
+            return "";
+        }
+        String lower = url.toLowerCase(Locale.US);
+        String best = "";
+        for (Item one : BUILT_IN) {
+            String frag = one.frag == null ? "" : one.frag.toLowerCase(Locale.US);
+            // 太短标识（seckill）容易在任意 URL 里误撞，只认 5 个字符以上的。
+            if (frag.length() < 5) {
+                continue;
+            }
+            if (lower.contains(frag) && frag.length() > best.length()) {
+                best = one.frag;
+            }
+        }
+        if (!best.isEmpty()) {
+            return best;
+        }
+        // 同一活动在地址上的别写法。
+        if (lower.contains("greensoccer")) {
+            return "footballguess";
+        }
+        // 鹅蛋的 lyh 页地址不带 raisegoose，只带 lyhVue + actNo。球赛地址同样在
+        // lyhVue 上，所以必须先让 footballguess 命中上面的分支，这里才不会被抢。
+        if (lower.contains("lyhvue") && lower.contains("goose")) {
+            return "raisegoose";
+        }
+        return "";
+    }
+
+    /** 这个 id 是不是内置表里的真实活动（报告里用来挡住接口名混进 byAct）。 */
+    static boolean isKnownAct(String id) {
+        if (id == null || id.isEmpty()) {
+            return false;
+        }
+        String want = id.toLowerCase(Locale.US);
+        for (Item one : BUILT_IN) {
+            if (one.frag.toLowerCase(Locale.US).equals(want)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     /** 把地址归一到活动号：coc3 取最后一段，act-wedrecharge 取固定标识。 */
     static String idOf(String url) {
         if (url == null) {
