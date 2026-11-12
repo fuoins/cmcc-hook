@@ -354,6 +354,18 @@ final class WisdomTask {
         JSONObject out = null;
         for (int attempt = 1; attempt <= 2; attempt++) {
             tagAccount(page);
+            // v4.10.0-r6：先等这一页真的渲染出来再注入。08:56 那次是任务抢在
+            // onPageFinished 前 1 秒注入，脚本读到的还是 Vue 过渡态（innerText 空、
+            // 按钮全 0x0），直接被判成「登录被拒绝」，其实 ssoId 早就就绪了。
+            try {
+                long t0 = System.currentTimeMillis();
+                waitLaidOut(page, 20_000L);
+                long dt = System.currentTimeMillis() - t0;
+                if (dt > 1_500L) {
+                    detail.append("注入前等页面渲染: ").append(dt / 1000).append(" 秒\n");
+                }
+            } catch (Throwable ignored) {
+            }
             page.eval("(function(){try{delete window.__cmcc_sign}catch(e){}"
                     + "try{window.__cmcc_sign='';window.__cmcc_sign_hb=0;"
                     + "window.__cmcc_sign_lg=[];window.__cmcc_sign_stage=''}catch(e){}})()", 3_000L);
@@ -512,6 +524,34 @@ final class WisdomTask {
         return null;
     }
 
+    /**
+     * v4.10.0-r6：注入脚本前先等页面真的渲染出来。
+     * 08:56 日志实证：任务在 onPageFinished 前 1 秒就注入，脚本进去时 innerText 还是空、
+     * 按钮全 0x0（Vue 过渡态），旧逻辑据此判「登录被拒绝」，可 ssoId 明明已就绪。
+     * 这里只做「等」，不做判定：最多 timeoutMs，innerText 非空或出现几何可见元素就返回。
+     */
+    private static void waitLaidOut(WebPage page, long timeoutMs) {
+        long deadline = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < deadline) {
+            String v = page.eval("(function(){try{"
+                    + "var t=String((document.body&&document.body.innerText)||'').trim();"
+                    + "var all=document.querySelectorAll('button,a,div,span,uni-button,uni-view,[role=button]');"
+                    + "var n=0;for(var i=0;i<all.length&&i<400;i++){var r=all[i].getBoundingClientRect();"
+                    + "if(r.width>8&&r.height>8)n++}"
+                    + "return JSON.stringify({t:t.length,n:n})}catch(e){return ''}})()", 5_000L);
+            if (v != null && !v.isEmpty()) {
+                try {
+                    JSONObject o = new JSONObject(v);
+                    if (o.optInt("t", 0) > 0 || o.optInt("n", 0) > 0) {
+                        return;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            sleep(600L);
+        }
+    }
+
     private static TaskRunner.Result judge(String tag, JSONObject out, StringBuilder detail) {
         String stage = out.optString("stage", "");
         String msg = out.optString("msg", "");
@@ -525,6 +565,18 @@ final class WisdomTask {
             return TaskRunner.Result.skip(tag + " · 页面没进对",
                     detail.append("URL 不是 wisdom-h5 的活动页\n").toString(),
                     "入口地址可能过期了，去福利专区点一次这个活动，让模块重新采集地址。");
+        }
+        if ("not-laid-out".equals(stage)) {
+            // v4.10.0-r6：这不是登录问题，是页面还没渲染完（Vue 过渡态）。
+            // 08:56 日志里脚本判失败时，ssoId 其实已经就绪，只是 innerText 空、按钮全 0x0。
+            detail.append(msg).append('\n')
+                    .append("说明: 这一页已经打开且登录态就绪（脚本日志有「ssoId 已就绪」），"
+                            + "只是页面一直没渲染出可点的界面，脚本没有点任何按钮，次数没有消耗。\n");
+            return TaskRunner.Result.fail(tag + " · 页面没渲染出来",
+                    detail.toString(),
+                    "页面打开后一直停留在未渲染状态（只有 Vue 弹窗模板、按钮全 0x0），"
+                            + "脚本没点任何东西，今天的次数没动。等 App 里这一页真的显示出签到天数 / 转盘，"
+                            + "或者退出重进一次活动页，再单独重跑「" + tag + "」。");
         }
         if ("need-login".equals(stage) || "need-token".equals(stage)) {
             // v3.99：12:44 日志实证 —— 票是「App 现场打开活动页（福利专区下发）」
@@ -556,8 +608,15 @@ final class WisdomTask {
                         + "签到天数或转盘，让这个页面一直开着，回到模块单独重跑一次（别用一键过全部）。";
             }
             detail.append(msg).append('\n')
-                    .append("现场判定: ").append(scene).append('\n')
-                    .append("页面拿不到 ssoId：h5token 换不回来，缓存里也没有可用登录态。\n");
+                    .append("现场判定: ").append(scene).append('\n');
+            // v4.10.0-r6：脚本明明打了「ssoId 已就绪」还写「页面拿不到 ssoId」，
+            // 08:56 那份日志就是自相矛盾的（ssoId 8f24134d… 已取到）。按事实分流。
+            if (detail.indexOf("ssoId 已就绪") >= 0) {
+                detail.append("ssoId 已取到（日志有「ssoId 已就绪」），不是拿不到登录态；"
+                        + "是拿到之后页面/接口仍然判未登录。\n");
+            } else {
+                detail.append("页面拿不到 ssoId：h5token 换不回来，缓存里也没有可用登录态。\n");
+            }
             if ("need-login".equals(stage)) {
                 return TaskRunner.Result.fail(tag + " · 页面登录被拒绝", detail.toString(), advice);
             }
@@ -1946,6 +2005,10 @@ final class WisdomTask {
                   for(var w=0;w<60;w++){
                     var b0=bodyText();
                     if(!b0){ await wait(500); continue; }
+                    // v4.10.0-r6：b0 可能全部来自模板堆（textContent 兜底，全 0x0），
+                    // 页面上一个几何可见的元素都没有时不能算就绪 —— 08:56 那次就是
+                    // 拿模板文字判了「按钮已出现」，随后又判「页面未布局」，自相矛盾。
+                    if(visBtn()===0){ await wait(600); continue; }
                     // 弹窗盖在上面的时候底下按钮点不到，先关掉再说。
                     if(tips<4&&closeTip()){ tips++; await wait(700); continue; }
                     // v3.78：不再拿「签到成功」四个字当就绪 —— 规则文案里也可能有，
@@ -1978,6 +2041,22 @@ final class WisdomTask {
                     for(var mi=0;mi<MARKS.length;mi++) if(b.indexOf(MARKS[mi])>=0) n++;
                     return n;
                   }
+                  // v4.10.0-r6：页面到底有没有真的渲染出来。模板堆里的元素
+                  // display 是 block/flex、文字也在，但全 0x0 —— 只有几何尺寸
+                  // 是硬证据。这里数「宽高都大于 8px 且样式没隐藏」的元素。
+                  function visBtn(){
+                    try{
+                      var all=document.querySelectorAll('button,a,div,span,uni-button,uni-view,uni-text,img,[role=button]');
+                      var n=0;
+                      for(var i=0;i<all.length&&i<600;i++){
+                        var e=all[i];
+                        if(!shown(e)) continue;
+                        var r=e.getBoundingClientRect();
+                        if(r.width>8&&r.height>8) n++;
+                      }
+                      return n;
+                    }catch(e){return 0}
+                  }
                   function signedNow(){
                     var b=bodyText();
                     // 模板堆里这些词全是假状态，一律不许当「已签」证据。
@@ -2006,17 +2085,33 @@ final class WisdomTask {
                     return false;
                   }
                   // 12:48 探针：候选按钮全是 0x0、display 却 block/flex 混合，
-                  // 说明离屏 WebView 没有真正布局 —— innerText 恒为空，脚本只能
+                  // 说明 WebView 还没有真正布局 —— innerText 恒为空，脚本只能
                   // 退回 textContent，于是把 9 个互斥弹窗模板一次全读进正文。
-                  // 只有「正文走了 textContent 兜底」+「模板堆」同时成立，才是
-                  // 页面没渲染；正常可见页 innerText 非空，不会误伤。
+                  // v4.10.0-r6：这里以前是「读到就立刻判 need-login」。08:56 日志实证
+                  // 这个判据会把「还没渲染完」当成「登录被拒」：任务 08:56:01.5 注入，
+                  // 页面 08:56:02.6 才 onPageFinished，08:56:03.6 就 innerText 空、
+                  // 按钮全 0x0（Vue 还在渲染），而脚本同一份日志里早就打了
+                  // 「ssoId 已就绪: 8f24134d…」。给最多 25 秒等渲染，能渲染就继续。
                   var laidOut=(function(){ try{ return String(document.body.innerText||'').trim().length>0 }catch(e){ return false } })();
                   if(!laidOut && pileCount()>=3){
-                    line('页面未布局: innerText 为空 / 模板堆 '+pileCount()+' 个 / 探针见下行');
-                    line('探针: ' + probe());
-                    done('need-login','离屏页没有布局（按钮全 0x0、innerText 为空），只读到 Vue 弹窗模板；'
-                         + '登录态也未被服务端确认，没有点任何按钮');
-                    return;
+                    line('页面未布局: innerText 为空 / 模板堆 '+pileCount()+' 个，等渲染（最多 25 秒）');
+                    stage('wait-layout');
+                    var layoutWait=0;
+                    while(layoutWait<25000){
+                      await wait(700); layoutWait+=700;
+                      laidOut=(function(){ try{ return String(document.body.innerText||'').trim().length>0 }catch(e){ return false } })();
+                      if(laidOut) break;
+                      if(visBtn()>0){ laidOut=true; break }
+                    }
+                    if(!laidOut){
+                      line('探针: ' + probe());
+                      done('not-laid-out','页面 25 秒内一直没有渲染（innerText 为空、按钮全 0x0），'
+                           + '只读到 Vue 弹窗模板；没有点任何按钮');
+                      return;
+                    }
+                    line('页面已渲染（等了 '+Math.round(layoutWait/1000)+' 秒，可见元素 '+visBtn()+' 个），继续');
+                    body=bodyText();
+                    stage('ready');
                   }
                   var signedAlready=signedNow();
                   if(signedAlready) line('页面文案: 今天已经签到过了');
