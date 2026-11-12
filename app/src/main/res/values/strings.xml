@@ -141,7 +141,16 @@
     <string name="grab_noon">12 点话费券</string>
     <string name="grab_noon_desc">每周一次 · 12:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
     <string name="grab_lingxi">灵犀 · 周二/周四 10 点券</string>
-    <string name="grab_lingxi_desc">每周二、周四 10:00 开抢 · 先手动进到灵犀的券页，再点「进入等待」；到点就在这一页自动点</string>
+    <string name="grab_lingxi_desc">每周二、周四 10:00 开抢 · 先手动进到灵犀的券页，再点「进入等待」；没有券入口的号用下面的口令兜底</string>
+    <string name="lingxi_cmd_none">口令: 未捕获 · 在带按钮的号上点一次，模块会自动记下</string>
+    <string name="lingxi_cmd_state">口令: %1$s · %2$s 捕获（%3$s）</string>
+    <string name="lingxi_cmd_title">灵犀发口令</string>
+    <string name="lingxi_cmd_desc">口令每次活动不同。带按钮的号点一次按钮，模块会自动记下；也可以在这里手动填写。发送前请先在 App 里打开灵犀、停在聊天页。</string>
+    <string name="lingxi_cmd_hint">活动口令</string>
+    <string name="lingxi_cmd_clear">清空</string>
+    <string name="lingxi_send">发口令</string>
+    <string name="lingxi_send_empty">先填口令</string>
+    <string name="lingxi_send_fail">指令发送失败，请重试</string>
     <string name="grab_enter">进入等待</string>
     <string name="grab_idle">还没开始。提前进去会在页面上等，到点自动抢；已经过点就直接试着抢。</string>
     <string name="welfare_never">内置活动已全部列出。点「扫描福利专区」可以发现福利专区里新上架、内置表里还没有的活动。</string>

@@ -342,7 +342,9 @@ final class LogExporter {
                 // v3.44：收鹅蛋离屏登录现场诊断（SSO 中转 / pc/pk / 页面文本）。
                 || tag.equals("GOOSE") || tag.startsWith("GOOSE-")
                 // r12：常驻采集摘要。精简模式下也保留，否则「到底录没录到」又看不见。
-                || tag.equals("CAPTURE") || tag.equals("RAW");
+                || tag.equals("CAPTURE") || tag.equals("RAW")
+                // r13：灵犀口令的捕获线索。这条是「换号还能不能发」的唯一依据。
+                || tag.equals("CMD") || tag.equals("WS");
         if (core || tag.contains("ERROR") || tag.contains("FAIL")) {
             return true;
         }

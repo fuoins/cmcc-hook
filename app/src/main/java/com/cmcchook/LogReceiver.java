@@ -443,6 +443,10 @@ public final class LogReceiver extends BroadcastReceiver {
         AppPrefs.setAccount(context, intent.getStringExtra("uid"),
                 intent.getStringExtra("phone"));
         LogStore.append(context, new LogEntry(ts, tag, summary, detail));
+        // r13：口令候选随日志一起回来，落进模块设置，换号时不用再问用户。
+        if ("CMD".equals(tag)) {
+            LingxiCmd.accept(context, detail);
+        }
     }
 
     private static String safe(String value) {

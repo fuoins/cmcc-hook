@@ -324,6 +324,11 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
         findViewById(R.id.btnGrabLingxi).setOnClickListener(v -> grabStart("lingxi"));
+        findViewById(R.id.btnLingxiSend).setOnClickListener(v -> askLingxiCmd());
+        View cmdState = findViewById(R.id.lingxiCmdState);
+        if (cmdState != null) {
+            cmdState.setOnClickListener(v -> askLingxiCmd());
+        }
         // v4.10.0-r2：福利页顶部改成「立即全部跑一次」；原来的「刷新（重读清单）」
         // 按用户要求删掉，CMD_WELFARE 命令本身保留，供探路 / 采集自己用。
         findViewById(R.id.btnWelfareRunAll).setOnClickListener(
@@ -457,6 +462,7 @@ public final class MainActivity extends AppCompatActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        refreshLingxiCmd();
         updateStatus();
         updateLogCount();
         handler.removeCallbacks(statusTick);
@@ -1349,7 +1355,8 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         boolean same = kind.equals(grabRunningKind);
-        if (!sendTaskBroadcast(GrabTask.CMD + kind)) {
+        String cmdText = "lingxi".equals(kind) ? LingxiCmd.text(this) : "";
+        if (!sendTaskBroadcast(GrabTask.CMD + kind, "text", cmdText, true)) {
             Toast.makeText(this, "指令发送失败，请重试", Toast.LENGTH_SHORT).show();
             return;
         }
@@ -1402,7 +1409,82 @@ public final class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** r8：导出常驻采集的结构化报告（原始流 + deps[] 参数来源 + 密文域标注）。 */
+    /** r13：显示最近捕获到的灵犀口令，换号后不用再问用户。 */
+    private void refreshLingxiCmd() {
+        TextView tv = findViewById(R.id.lingxiCmdState);
+        if (tv == null) {
+            return;
+        }
+        String text = LingxiCmd.text(this);
+        if (text.isEmpty()) {
+            tv.setText(R.string.lingxi_cmd_none);
+            return;
+        }
+        long at = LingxiCmd.at(this);
+        String when = at > 0
+                ? new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(at)) : "刚刚";
+        String source = LingxiCmd.source(this);
+        if ("ws".equals(source)) {
+            source = "帧";
+        } else if ("input".equals(source)) {
+            source = "输入框";
+        } else if ("bubble".equals(source)) {
+            source = "气泡";
+        } else if (source.isEmpty()) {
+            source = "手动";
+        }
+        tv.setText(getString(R.string.lingxi_cmd_state, text, when, source));
+    }
+
+    /**
+     * r13：手动发口令。
+     *
+     * <p>口令每次活动不同，所以不预置默认值：带按钮的号点一次按钮，模块会把候选
+     * 记进设置；这里预填最近一次的值，用户确认或改写后发给没有按钮的号。
+     */
+    private void askLingxiCmd() {
+        String saved = LingxiCmd.text(this);
+        EditText input = new EditText(this);
+        input.setSingleLine(true);
+        input.setHint(R.string.lingxi_cmd_hint);
+        if (!saved.isEmpty()) {
+            input.setText(saved);
+            input.setSelection(saved.length());
+        }
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        box.setPadding(pad, pad / 2, pad, 0);
+        box.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.lingxi_cmd_title)
+                .setMessage(R.string.lingxi_cmd_desc)
+                .setView(box)
+                .setPositiveButton(R.string.lingxi_send, (dialog, which) -> {
+                    String text = input.getText().toString().trim();
+                    if (text.isEmpty()) {
+                        Toast.makeText(this, R.string.lingxi_send_empty, Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    LingxiCmd.save(this, text, "manual", "");
+                    refreshLingxiCmd();
+                    if (grabStatus != null) {
+                        grabStatus.setText("· 正在发送口令…");
+                    }
+                    if (!sendTaskBroadcast(LingxiGrab.CMD_SEND, "text", text, true)) {
+                        Toast.makeText(this, R.string.lingxi_send_fail, Toast.LENGTH_SHORT).show();
+                    }
+                })
+                .setNeutralButton(R.string.lingxi_cmd_clear, (dialog, which) -> {
+                    LingxiCmd.clear(this);
+                    refreshLingxiCmd();
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
     /**
      * r10：采集状态一行字。
      *
@@ -2323,6 +2405,11 @@ public final class MainActivity extends AppCompatActivity {
      * 用 H5 容器新开一屏真页读数据。
      */
     private boolean sendTaskBroadcast(String cmd, boolean bringToFront) {
+        return sendTaskBroadcast(cmd, null, null, bringToFront);
+    }
+
+    /** r13：带一个字符串参数（灵犀口令）的命令通道。 */
+    private boolean sendTaskBroadcast(String cmd, String key, String value, boolean bringToFront) {
         try {
             if (bringToFront) {
                 // 模块界面此刻在前台，这里 startActivity 不受后台启动限制。
@@ -2331,6 +2418,9 @@ public final class MainActivity extends AppCompatActivity {
             Intent intent = new Intent(TaskReceiver.ACTION_RUN);
             intent.setPackage(AppPrefs.TARGET_PACKAGE);
             intent.putExtra("cmd", cmd);
+            if (key != null && !key.isEmpty() && value != null) {
+                intent.putExtra(key, value);
+            }
             sendBroadcast(intent);
             return true;
         } catch (Throwable e) {
@@ -2649,7 +2739,10 @@ public final class MainActivity extends AppCompatActivity {
         switch (filter) {
             case FILTER_TASK:
                 return tag.startsWith("TASK") || tag.equals("SYSTEM")
-                        || tag.equals("APP-START") || tag.startsWith("PROBE");
+                        || tag.equals("APP-START") || tag.startsWith("PROBE")
+                        // r13：口令捕获是「换号能不能发」的关键线索，放在任务视图里，
+                        // 不用切到「全部」去翻。
+                        || tag.equals("CMD");
             case FILTER_API:
                 return tag.startsWith("API");
             case FILTER_HTTP:

@@ -335,6 +335,192 @@ final class JsInjector {
                 } catch (e) {}
                 return out;
               }
+
+              // ---------------- r13：口令点击窗口 / WS 帧 ----------------
+              var CMD_WINDOW = 6000;
+              var cmdAt = 0, cmdClick = '', cmdBase = null, cmdFrames = 0;
+              function flat(s) {
+                return String(s === null || s === undefined ? '' : s)
+                  .replace(/[\\r\\n\\t ]+/g, ' ').replace(/^\\s+|\\s+$/g, '');
+              }
+              function vis(e) {
+                try {
+                  var r = e.getBoundingClientRect();
+                  if (r.width < 2 || r.height < 2) return false;
+                  var cs = getComputedStyle(e);
+                  return cs.visibility !== 'hidden' && cs.display !== 'none'
+                    && parseFloat(cs.opacity || '1') > 0.05;
+                } catch (x) { return false; }
+              }
+              function textSnapshot() {
+                var m = {}, n = 0;
+                try {
+                  var nodes = document.querySelectorAll('div,span,p,li,a,button,em,strong');
+                  for (var i = 0; i < nodes.length && i < 2500 && n < 240; i++) {
+                    var e = nodes[i];
+                    if (!vis(e)) continue;
+                    // 父容器会把子节点文本拼在一起（「你好抢红包」），当候选就错了。
+                    // 只收叶子节点：有带文本的子元素就跳过。
+                    var kidText = false;
+                    try {
+                      for (var c = e.firstElementChild; c; c = c.nextElementSibling) {
+                        if (flat(c.innerText || c.textContent || '')) { kidText = true; break; }
+                      }
+                    } catch (x) {}
+                    if (kidText) continue;
+                    var s = flat(e.innerText || e.textContent || '');
+                    if (!s || s.length > 40) continue;
+                    var r = e.getBoundingClientRect();
+                    if (r.width < 8 || r.height < 8) continue;
+                    m[s] = 1; n++;
+                  }
+                } catch (e) {}
+                return m;
+              }
+              function inputsNow() {
+                var out = [];
+                try {
+                  var nodes = document.querySelectorAll('input,textarea,[contenteditable="true"]');
+                  for (var i = 0; i < nodes.length && out.length < 6; i++) {
+                    var e = nodes[i];
+                    if (!vis(e)) continue;
+                    var t = String(e.tagName || '').toLowerCase();
+                    if (t === 'input' && /button|submit|checkbox|radio|file|hidden/i.test(e.type || '')) continue;
+                    var v = '';
+                    try {
+                      v = (t === 'input' || t === 'textarea')
+                        ? String(e.value || '') : String(e.innerText || e.textContent || '');
+                    } catch (x) {}
+                    if (!v) continue;
+                    out.push({
+                      tag: e.tagName || '', id: cut(e.id || '', 80),
+                      cls: cut(String(e.className || ''), 120), value: cut(flat(v), 200)
+                    });
+                  }
+                } catch (e) {}
+                return out;
+              }
+              function cmdStart(text) {
+                cmdAt = Date.now(); cmdClick = text || ''; cmdBase = textSnapshot(); cmdFrames = 0;
+                setTimeout(function() { cmdReport('900ms'); }, 900);
+                setTimeout(function() { cmdReport('2000ms'); }, 2000);
+              }
+              function cmdReport(stage) {
+                if (!cmdAt) return;
+                try {
+                  var now = textSnapshot(), fresh = [], k;
+                  for (k in now) { if (!cmdBase || !cmdBase[k]) fresh.push(k); }
+                  send('cmd', {
+                    stage: stage, click: cmdClick, inputs: inputsNow(),
+                    fresh: fresh.slice(0, 12), url: location.href
+                  });
+                } catch (e) {}
+              }
+              function cmdTag() {
+                if (!cmdAt || Date.now() - cmdAt > CMD_WINDOW) return false;
+                cmdFrames++;
+                return cmdFrames <= 8;
+              }
+              var WS_SEEN = 0, WS_MAX = 240;
+              function bytes64(u8) {
+                var s = '', i = 0;
+                var CH = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+                for (; i < u8.length; i += 3) {
+                  var a = u8[i], b = i + 1 < u8.length ? u8[i + 1] : 0;
+                  var c = i + 2 < u8.length ? u8[i + 2] : 0;
+                  s += CH[a >> 2] + CH[((a & 3) << 4) | (b >> 4)]
+                    + (i + 1 < u8.length ? CH[((b & 15) << 2) | (c >> 6)] : '=')
+                    + (i + 2 < u8.length ? CH[c & 63] : '=');
+                }
+                return s;
+              }
+              function frameText(d) {
+                try {
+                  if (typeof d === 'string') return cut(d, 4000);
+                  if (typeof ArrayBuffer !== 'undefined' && d instanceof ArrayBuffer) {
+                    var u = new Uint8Array(d);
+                    return '[ArrayBuffer ' + u.length + 'B] ' + bytes64(u.subarray(0, 256));
+                  }
+                  if (typeof Blob !== 'undefined' && d instanceof Blob) {
+                    return '[Blob ' + (d.size || 0) + 'B]';
+                  }
+                  return cut(String(d), 4000);
+                } catch (e) { return '[unreadable frame]'; }
+              }
+              function wsFrame(ws, dir, d) {
+                try {
+                  var s = frameText(d);
+                  if (!s) return;
+                  var t = s.replace(/\\s+/g, '');
+                  if (t === '{}' || t === '[]' || t === 'ping' || t === 'pong' || t.length < 2) return;
+                  if (WS_SEEN >= WS_MAX) return;
+                  WS_SEEN++;
+                  send('ws', {
+                    url: String(ws && ws.url || ''), dir: dir, data: s,
+                    // 只给「发出去」的帧打口令标记：入站心跳会把 8 帧额度耗光，
+                    // 还会把服务端的系统通知误当成口令候选。
+                    len: s.length, cmd: dir === 'out' ? cmdTag() : false,
+                    click: cmdClick
+                  });
+                } catch (e) {}
+              }
+              function hookWS() {
+                try {
+                  var W = window.WebSocket;
+                  if (!W || !W.prototype || W.prototype.__cmcc_ws_hook) return;
+                  try {
+                    Object.defineProperty(W.prototype, '__cmcc_ws_hook',
+                      { value: 1, configurable: true });
+                  } catch (e) { W.prototype.__cmcc_ws_hook = 1; }
+                  var S = W.prototype.send;
+                  W.prototype.send = function(d) {
+                    try { wsFrame(this, 'out', d); } catch (e) {}
+                    return S.apply(this, arguments);
+                  };
+                  var A = W.prototype.addEventListener;
+                  W.prototype.addEventListener = function(t, f, o) {
+                    try {
+                      if (t === 'message' && !this.__cmcc_msg_hook) {
+                        this.__cmcc_msg_hook = 1;
+                        var self = this;
+                        A.call(this, 'message', function(ev) { wsFrame(self, 'in', ev && ev.data); });
+                      }
+                    } catch (e) {}
+                    return A.apply(this, arguments);
+                  };
+                  try {
+                    var d = Object.getOwnPropertyDescriptor(W.prototype, 'onmessage');
+                    if (d && d.set) {
+                      Object.defineProperty(W.prototype, 'onmessage', {
+                        configurable: true, get: d.get,
+                        set: function(f) {
+                          var self = this;
+                          d.set.call(this, function(ev) {
+                            wsFrame(self, 'in', ev && ev.data);
+                            if (typeof f === 'function') return f.call(this, ev);
+                          });
+                        }
+                      });
+                    }
+                  } catch (e) {}
+                } catch (e) {}
+              }
+              hookWS();
+              try {
+                var PM = 0;
+                window.addEventListener('message', function(e) {
+                  try {
+                    if (PM++ >= 120) return;
+                    var d = e && e.data;
+                    send('post', {
+                      origin: String(e && e.origin || ''),
+                      data: cut(typeof d === 'string' ? d : JSON.stringify(d), 3000),
+                      cmd: cmdTag(), click: cmdClick
+                    });
+                  } catch (x) {}
+                }, true);
+              } catch (e) {}
+
               function collectControls() {
                 var out = [];
                 var seen = {};
@@ -403,6 +589,7 @@ final class JsInjector {
                 };
                 XMLHttpRequest.prototype.send = function(b) {
                   var x = this;
+                  var cf = cmdTag(), cc = cmdClick;
                   try { if (x.__cmcc_req) x.__cmcc_req.b = bodyOf(b); } catch (e) {}
                   try {
                     x.addEventListener('loadend', function() {
@@ -425,7 +612,8 @@ final class JsInjector {
                         reqHeaders: q.h || {},
                         reqBody: q.b || '',
                         respHeaders: rh,
-                        respBody: resp
+                        respBody: resp,
+                        cmd: cf, click: cc
                       });
                     });
                   } catch (e) {}
@@ -447,6 +635,7 @@ final class JsInjector {
                       for (var k in ih) reqHeaders[k] = ih[k];
                     } catch (e) {}
                     var reqBody = bodyOf(init && init.body);
+                    var cf = cmdTag(), cc = cmdClick;
                     var start = Date.now();
                     var promise = F.apply(this, arguments);
                     if (promise && typeof promise.then === 'function') {
@@ -464,14 +653,16 @@ final class JsInjector {
                               url: url, method: method, status: resp.status,
                               statusText: resp.statusText, duration: Date.now() - start,
                               reqHeaders: reqHeaders, reqBody: reqBody,
-                              respHeaders: respHeaders, respBody: cut(text, MAX)
+                              respHeaders: respHeaders, respBody: cut(text, MAX),
+                              cmd: cf, click: cc
                             });
                           }).catch(function() {
                             send('fetch', {
                               url: url, method: method, status: resp.status,
                               statusText: resp.statusText, duration: Date.now() - start,
                               reqHeaders: reqHeaders, reqBody: reqBody,
-                              respHeaders: respHeaders, respBody: '[unreadable response]'
+                              respHeaders: respHeaders, respBody: '[unreadable response]',
+                              cmd: cf, click: cc
                             });
                           });
                         } catch (e) {}
@@ -481,7 +672,8 @@ final class JsInjector {
                           url: url, method: method, status: 0,
                           statusText: cut(err, 2000), duration: Date.now() - start,
                           reqHeaders: reqHeaders, reqBody: reqBody,
-                          respHeaders: {}, respBody: ''
+                          respHeaders: {}, respBody: '',
+                          cmd: cf, click: cc
                         });
                         throw err;
                       });
@@ -521,19 +713,46 @@ final class JsInjector {
 
               document.addEventListener('click', function(e) {
                 try {
-                  var el = e.target;
-                  for (var i = 0; el && i < 6; i++) {
-                    var tag = el.tagName;
-                    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || el.getAttribute('role') === 'button') break;
-                    el = el.parentElement;
+                  // 灵犀的 chip 是 div/span，不是 button。原来一路往上找到 body，
+                  // 于是整屏文案（含口令入口）都成了「点击文本」，既定位不到按钮，
+                  // 也判断不出点的是哪一条。这里改成取最近的、文本够短的祖先。
+                  var target = e.target, pick = null;
+                  for (var i = 0; target && i < 8; i++) {
+                    var st = flat(target.innerText || target.textContent || target.value || '');
+                    if (st && st.length <= 40) { pick = target; break; }
+                    target = target.parentElement;
                   }
+                  var el = pick || e.target;
                   if (!el) return;
-                  var text = (el.innerText || el.textContent || el.value || el.getAttribute('aria-label') || el.title || '').replace(/[\\r\\n\\t ]+/g, ' ').replace(/^\\s+|\\s+$/g, '');
-                  if (!text) return;
+                  var text = flat(el.innerText || el.textContent || el.value
+                    || el.getAttribute('aria-label') || el.title || '');
+                  if (!text) text = (el.tagName || '') + (el.id ? '#' + el.id : '');
+                  var attrs = {};
+                  try {
+                    var at = el.attributes || [];
+                    for (var a = 0; a < at.length && a < 12; a++) {
+                      var nm = at[a].name;
+                      if (/^data-|^id$|^class$|^aria-label$|^title$/.test(nm)) {
+                        attrs[nm] = cut(at[a].value, 200);
+                      }
+                    }
+                  } catch (x) {}
+                  var chain = [];
+                  try {
+                    var p = el;
+                    for (var c = 0; p && c < 3; c++) {
+                      chain.push((p.tagName || '') + (p.id ? '#' + p.id : '')
+                        + (p.className ? '.' + String(p.className).split(' ')[0] : ''));
+                      p = p.parentElement;
+                    }
+                  } catch (x) {}
+                  var isCmd = /口令|红包|福利|领券|领取|抢券|礼包|拆/.test(text);
+                  if (isCmd) cmdStart(text);
                   send('click', {
                     text: cut(text, 300), tag: el.tagName || '',
                     id: cut(el.id || '', 100), cls: cut(String(el.className || ''), 300),
-                    href: cut(el.href || '', 1000)
+                    href: cut(el.href || '', 1000), attrs: attrs, chain: chain,
+                    cmd: isCmd
                   });
                 } catch (e) {}
               }, true);

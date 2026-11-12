@@ -27,7 +27,21 @@ final class LingxiGrab {
     /** 单轮上限，防止脚本卡住时把整个窗口耗在等 JS 上。 */
     private static final int MAX_ROUNDS = 260;
 
+    /** r13：立即发口令（不进抢券等待），由模块页的「灵犀发口令」按钮触发。 */
+    static final String CMD_SEND = "lingxi:send";
+
+    /** 模块随命令带过来的口令。目标进程读不到模块设置，只能走广播 extra。 */
+    private static volatile String pendingText = "";
+
     private LingxiGrab() {
+    }
+
+    static void text(String value) {
+        pendingText = value == null ? "" : value.trim();
+    }
+
+    static String text() {
+        return pendingText;
     }
 
     /** 等待期间抓住的这一页：到点就在同一页上点，不再重新找（可能已经切走）。 */
@@ -80,6 +94,7 @@ final class LingxiGrab {
     /** 到点以后：在这个页面上反复点，直到抢到 / 抢光 / 超时。 */
     static TaskRunner.Result run() {
         StringBuilder d = new StringBuilder();
+        String cmd = pendingText;
         WebPage page = prepared;
         if (page == null || page.raw() == null) {
             page = live();
@@ -90,17 +105,22 @@ final class LingxiGrab {
                     "先手动打开灵犀、进到抢券那一页，再点「进入等待」。");
         }
         d.append("页面: ").append(shortUrl(page.url())).append('\n');
+        if (!cmd.isEmpty()) {
+            d.append("备用口令: ").append(cmd).append('\n');
+        }
+        HookLog.log("GRAB", "灵犀抢券 · 开始", d.toString());
         try {
-            return loop(page, d);
+            return loop(page, d, cmd);
         } finally {
             prepared = null;
         }
     }
 
-    private static TaskRunner.Result loop(WebPage page, StringBuilder d) {
+    private static TaskRunner.Result loop(WebPage page, StringBuilder d, String cmd) {
         long end = System.currentTimeMillis() + WINDOW_MS;
         int round = 0;
         int hits = 0;
+        boolean triedTyping = false;
         String last = "";
         while (System.currentTimeMillis() < end && round < MAX_ROUNDS) {
             round++;
@@ -131,18 +151,36 @@ final class LingxiGrab {
                 d.append("第 ").append(round).append(" 轮: 出现「")
                         .append(o.optString("txt")).append("」\n");
                 String text = "灵犀抢券 · " + o.optString("txt", "已领取");
+                HookLog.log("GRAB", text, d.toString());
                 return TaskRunner.Result.ok(text, d.toString(), text);
             }
             if (o.has("full")) {
                 d.append("第 ").append(round).append(" 轮: 「")
                         .append(o.optString("txt")).append("」\n");
                 String text = "灵犀抢券 · 已经没了（" + o.optString("txt") + "）";
+                HookLog.log("GRAB", text, d.toString());
                 return TaskRunner.Result.idle(text, d.toString(), text);
             }
             String txt = o.optString("txt", "");
             if (txt.isEmpty()) {
+                if (!triedTyping && !cmd.isEmpty() && round >= 2) {
+                    // r13：有些号根本没有那个 chip（服务端按号码下发）。这里不空等，
+                    // 把上一个号捕获到的口令直接打进输入框发出去，成不成看回执。
+                    triedTyping = true;
+                    d.append("第 ").append(round).append(" 轮: 没有可点入口，改用输入框发口令\n");
+                    HookLog.log("GRAB", "灵犀 · 没有入口，改用输入框发口令",
+                            "口令: " + cmd + "\n页面: " + page.url());
+                    JSONObject sr = sendOnce(page, cmd, d);
+                    if (sr != null && sr.has("err")) {
+                        d.append("发送脚本异常: ").append(sr.optString("err")).append('\n');
+                    }
+                    WebPage.sleep(2500L);
+                    continue;
+                }
                 if (round <= 3 || round % 40 == 0) {
                     d.append("第 ").append(round).append(" 轮: 页面上没找到可点的抢券入口，继续等\n");
+                    HookLog.log("GRAB", "灵犀第 " + round + " 轮 · 没有可点入口",
+                            "页面: " + page.url());
                 }
                 WebPage.sleep(700L);
                 continue;
@@ -156,11 +194,162 @@ final class LingxiGrab {
                 d.append("第 ").append(round).append(" 轮: 点「").append(txt).append("」\n");
                 WebPage.sleep(420L);
             }
+            if (hits <= 10 || hits % 20 == 0) {
+                HookLog.log("GRAB", "灵犀第 " + round + " 轮 · 点「" + txt + "」",
+                        "页面: " + page.url() + "\n命中: " + hits);
+            }
         }
         d.append("共 ").append(round).append(" 轮，命中 ").append(hits).append(" 次\n");
         d.append("最后点: ").append(last.isEmpty() ? "无" : last).append('\n');
         String text = "灵犀抢券 · 没抢到（" + (last.isEmpty() ? "页面上没找到入口" : last) + "）";
+        HookLog.log("GRAB", text, d.toString());
         return TaskRunner.Result.idle(text, d.toString(), text);
+    }
+
+    /**
+     * r13：立即把口令发出去（不等到 10 点）。
+     *
+     * <p>带按钮的号点 chip 走原路；没有 chip 的号走输入框。两条路都在日志里写清楚，
+     * 失败时要能区分「没输入框 / 没发送键 / 发了没回执」。
+     */
+    static TaskRunner.Result send(String value) {
+        StringBuilder d = new StringBuilder();
+        String cmd = value == null ? "" : value.trim();
+        if (cmd.isEmpty()) {
+            return TaskRunner.Result.skip("灵犀发口令 · 没有口令", "",
+                    "先在带按钮的号上点一次按钮，让模块记下口令，或在这里手动填写。");
+        }
+        WebPage page = prepared;
+        if (page == null || page.raw() == null) {
+            page = live();
+        }
+        if (page == null || page.raw() == null) {
+            page = prepare(d);
+        }
+        if (page == null || page.raw() == null) {
+            return TaskRunner.Result.skip("灵犀发口令 · 没有页面", d.toString(),
+                    "先手动打开灵犀，再点「灵犀发口令」。");
+        }
+        d.append("页面: ").append(shortUrl(page.url())).append('\n');
+        d.append("口令: ").append(cmd).append('\n');
+        HookLog.log("GRAB", "灵犀发口令 · 开始", d.toString());
+        HookLog.progress("grab", "· 正在发送口令…");
+
+        JSONObject r = sendOnce(page, cmd, d);
+        if (r == null) {
+            String text = "灵犀发口令 · 页面没有回报";
+            HookLog.log("GRAB", text, d.toString());
+            HookLog.progress("grab", "· " + text);
+            return TaskRunner.Result.idle(text, d.toString(), text);
+        }
+        if (r.has("err")) {
+            String text = "灵犀发口令 · 脚本异常";
+            d.append("异常: ").append(r.optString("err")).append('\n');
+            HookLog.log("GRAB", text, d.toString());
+            HookLog.progress("grab", "· " + text);
+            return TaskRunner.Result.idle(text, d.toString(), text);
+        }
+        if (r.has("none")) {
+            String text = "灵犀发口令 · 页面上没有输入框";
+            d.append("iframe: ").append(r.optString("frames", "")).append('\n');
+            HookLog.log("GRAB", text, d.toString());
+            HookLog.progress("grab", "· " + text);
+            return TaskRunner.Result.idle(text, d.toString(),
+                    "灵犀页没有找到可输入的聊天框，可能页面还没加载完，稍后重试。");
+        }
+        String how = r.has("chip") ? "点 chip「" + r.optString("chip", "") + "」"
+                : r.has("button") ? "填输入框 + 点「" + r.optString("button", "") + "」"
+                : r.has("icon") ? "填输入框 + 点右侧发送图标"
+                : r.has("enter") ? "填输入框 + 回车"
+                : r.has("noSend") ? "填了输入框，但没找到发送键"
+                : "填了输入框，发送结果未知";
+        HookLog.log("GRAB", "灵犀发口令 · " + how, d.toString());
+
+        WebPage.sleep(4_000L);
+        JSONObject rd = read(page, d);
+        String all = rd == null ? "" : rd.optString("tail", "") + "\n" + join(rd.optJSONArray("bubbles"));
+        if (all.contains("领取成功") || all.contains("已领取") || all.contains("抢券成功")
+                || all.contains("恭喜获得") || all.contains("已到账")) {
+            String text = "灵犀发口令 · 回执成功";
+            d.append("回执: 成功\n");
+            HookLog.log("GRAB", text, d.toString());
+            HookLog.progress("grab", "✓ " + text);
+            return TaskRunner.Result.ok(text, d.toString(), text);
+        }
+        if (all.contains("已抢光") || all.contains("已领完") || all.contains("活动结束")
+                || all.contains("未开始") || all.contains("不符合") || all.contains("无资格")
+                || all.contains("稍后再试") || all.contains("系统繁忙") || all.contains("已参与")) {
+            String text = "灵犀发口令 · 回执未通过";
+            d.append("回执: 未通过\n").append(tailOf(all)).append('\n');
+            HookLog.log("GRAB", text, d.toString());
+            HookLog.progress("grab", "· " + text);
+            return TaskRunner.Result.idle(text, d.toString(),
+                    "口令发出去了，但服务端回执不通过 —— 可能是号码资格或活动已结束。");
+        }
+        String text = "灵犀发口令 · 已发送，未见回执";
+        d.append("回执: 未见关键词\n").append(tailOf(all)).append('\n');
+        HookLog.log("GRAB", text, d.toString());
+        HookLog.progress("grab", "· " + text);
+        return TaskRunner.Result.idle(text, d.toString(), "口令已发出，页面没有明确回执。");
+    }
+
+    private static JSONObject sendOnce(WebPage page, String cmd, StringBuilder d) {
+        String js = SEND_JS.replace("__CMD__", JSONObject.quote(cmd));
+        JSONObject r = evalJson(page, js, 12_000L, d, "发送脚本");
+        if (r == null || !r.has("filled")) {
+            return r;
+        }
+        // 受控输入框在 input 事件后要一帧才启用发送键，等 600ms 再点。
+        WebPage.sleep(600L);
+        JSONObject t = evalJson(page, TAP_SEND_JS, 8_000L, d, "点发送");
+        if (t != null) {
+            java.util.Iterator<String> it = t.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                try {
+                    r.put(k, t.get(k));
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return r;
+    }
+
+    private static JSONObject read(WebPage page, StringBuilder d) {
+        return evalJson(page, READ_JS, 8_000L, d, "回执读取");
+    }
+
+    private static JSONObject evalJson(WebPage page, String js, long ms,
+                                       StringBuilder d, String label) {
+        String raw = page.eval(js, ms);
+        if (raw == null || raw.isEmpty()) {
+            d.append(label).append(": 没有回报\n");
+            return null;
+        }
+        try {
+            JSONObject o = new JSONObject(unquote(raw));
+            d.append(label).append(": ").append(brief(raw)).append('\n');
+            return o;
+        } catch (Throwable e) {
+            d.append(label).append(": 解析失败 ").append(brief(raw)).append('\n');
+            return null;
+        }
+    }
+
+    private static String join(org.json.JSONArray arr) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; arr != null && i < arr.length(); i++) {
+            sb.append(arr.optString(i, "")).append('\n');
+        }
+        return sb.toString();
+    }
+
+    private static String tailOf(String value) {
+        if (value == null) {
+            return "";
+        }
+        String s = value.replace('\n', ' ').trim();
+        return s.length() <= 400 ? s : s.substring(s.length() - 400);
     }
 
     private static String shortUrl(String url) {
@@ -286,6 +475,231 @@ final class LingxiGrab {
                 var out={txt:t.s,url:String(location.href)};
                 out[kind]=1;
                 return JSON.stringify(out);
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    /**
+     * r13：把口令填进灵犀的聊天输入框。
+     *
+     * <p>分两步：这一脚本只负责「点 chip」或「填值」，发送交给 {@link #TAP_SEND_JS}。
+     * 原因是 React/Vue 受控输入框在 input 事件后要一帧才启用发送键，同一个同步脚本里
+     * 立刻找按钮经常扑空。填完等 600ms 再点，成功率高得多。
+     *
+     * <p>写值必须用原型上的原生 setter：直接 {@code el.value=} 只改 DOM，不改组件
+     * 状态，页面会认为输入框还是空的。
+     */
+    private static final String SEND_JS = """
+            (function(){
+              try{
+                var CMD = __CMD__;
+                function txt(e){var s=e.innerText||e.textContent||e.value||'';return String(s).replace(/\\s+/g,' ').replace(/^\\s+|\\s+$/g,'')}
+                function vis(e){
+                  try{
+                    var r=e.getBoundingClientRect();
+                    if(r.width<8||r.height<8)return false;
+                    var cs=getComputedStyle(e);
+                    return cs.visibility!=='hidden'&&cs.display!=='none'&&parseFloat(cs.opacity||'1')>0.05;
+                  }catch(x){return false}
+                }
+                function fire(t){
+                  if(!t)return;
+                  var r;
+                  try{r=t.getBoundingClientRect()}catch(x){r={left:0,top:0,width:0,height:0}}
+                  var x=r.left+r.width/2,y=r.top+r.height/2;
+                  try{
+                    var o={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y,pointerType:'touch',isPrimary:true};
+                    t.dispatchEvent(new PointerEvent('pointerdown',o));
+                    t.dispatchEvent(new PointerEvent('pointerup',o));
+                  }catch(e){}
+                  try{
+                    var ts=new Touch({identifier:1,target:t,clientX:x,clientY:y,pageX:x,pageY:y});
+                    t.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,touches:[ts],targetTouches:[ts],changedTouches:[ts]}));
+                    t.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[ts]}));
+                  }catch(e){}
+                  var ns=['mousedown','mouseup','click'];
+                  for(var i=0;i<ns.length;i++){
+                    try{t.dispatchEvent(new MouseEvent(ns[i],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y}))}catch(e){}
+                  }
+                  try{if(typeof t.click==='function')t.click()}catch(e){}
+                }
+                var body=String(document.body?document.body.innerText:'');
+                if(/领取成功|已领取|抢券成功|恭喜获得|已到账/.test(body))return JSON.stringify({done:1});
+                var nodes=document.querySelectorAll('div,span,a,button,li,p');
+                var chip=null,chipS='';
+                for(var i=0;i<nodes.length;i++){
+                  var e=nodes[i];
+                  if(!vis(e))continue;
+                  var s=txt(e).replace(/\\s+/g,'');
+                  if(!s||s.length>24)continue;
+                  if(s===CMD||(/口令/.test(s)&&/红包|领|抢/.test(s))){chip=e;chipS=s;break}
+                }
+                if(chip){fire(chip);return JSON.stringify({chip:chipS})}
+                var ins=document.querySelectorAll('textarea,input,[contenteditable="true"]');
+                var input=null,best=-1;
+                for(var j=0;j<ins.length;j++){
+                  var q=ins[j];
+                  if(!vis(q))continue;
+                  var tag=String(q.tagName||'').toLowerCase();
+                  if(tag==='input'&&/button|submit|checkbox|radio|file|hidden/i.test(q.type||''))continue;
+                  var r=q.getBoundingClientRect();
+                  var hint=/咨询|输入|说|问|message|chat|send|input/i
+                    .test(String(q.placeholder||'')+String(q.className||'')+String(q.id||''));
+                  var score=r.bottom+(hint?10000:0)+r.width/1000;
+                  if(score>best){best=score;input=q}
+                }
+                if(!input){
+                  var fs=document.querySelectorAll('iframe');
+                  var srcs=[];
+                  for(var f=0;f<fs.length&&f<3;f++){srcs.push(String(fs[f].src||'').slice(0,120))}
+                  return JSON.stringify({none:'input',frames:srcs.join(' | '),url:String(location.href)})
+                }
+                try{input.scrollIntoView({block:'center'})}catch(x){}
+                try{input.focus()}catch(x){}
+                try{
+                  var low=String(input.tagName||'').toLowerCase();
+                  if(low==='textarea'){
+                    var st=Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value').set;
+                    st.call(input,CMD);
+                  }else if(low==='input'){
+                    var si=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
+                    si.call(input,CMD);
+                  }else{
+                    input.textContent=CMD;
+                  }
+                }catch(x){try{input.value=CMD}catch(y){}}
+                try{
+                  var iev=null;
+                  try{iev=new InputEvent('input',{bubbles:true,inputType:'insertText',data:CMD})}catch(x){}
+                  if(!iev)iev=new Event('input',{bubbles:true});
+                  input.dispatchEvent(iev);
+                  input.dispatchEvent(new Event('change',{bubbles:true}));
+                }catch(x){}
+                window.__cmcc_cmd_input=input;
+                return JSON.stringify({
+                  filled:1, tag:String(input.tagName||''),
+                  id:String(input.id||''), cls:String(input.className||'').slice(0,80)
+                });
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    /**
+     * r13：点发送。先找文字按钮（发送/send），再找输入框右侧 96px 内的图标，
+     * 最后才回车 —— 移动端很多聊天框的 Enter 是换行，不是发送，不能当首选。
+     */
+    private static final String TAP_SEND_JS = """
+            (function(){
+              try{
+                function txt(e){var s=e.innerText||e.textContent||e.value||'';return String(s).replace(/\\s+/g,' ').replace(/^\\s+|\\s+$/g,'')}
+                function vis(e){
+                  try{
+                    var r=e.getBoundingClientRect();
+                    if(r.width<8||r.height<8)return false;
+                    var cs=getComputedStyle(e);
+                    return cs.visibility!=='hidden'&&cs.display!=='none'&&parseFloat(cs.opacity||'1')>0.05;
+                  }catch(x){return false}
+                }
+                function fire(t){
+                  if(!t)return;
+                  var r;
+                  try{r=t.getBoundingClientRect()}catch(x){r={left:0,top:0,width:0,height:0}}
+                  var x=r.left+r.width/2,y=r.top+r.height/2;
+                  try{
+                    var o={bubbles:true,cancelable:true,view:window,clientX:x,clientY:y,pointerType:'touch',isPrimary:true};
+                    t.dispatchEvent(new PointerEvent('pointerdown',o));
+                    t.dispatchEvent(new PointerEvent('pointerup',o));
+                  }catch(e){}
+                  try{
+                    var ts=new Touch({identifier:1,target:t,clientX:x,clientY:y,pageX:x,pageY:y});
+                    t.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,touches:[ts],targetTouches:[ts],changedTouches:[ts]}));
+                    t.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,touches:[],targetTouches:[],changedTouches:[ts]}));
+                  }catch(e){}
+                  var ns=['mousedown','mouseup','click'];
+                  for(var i=0;i<ns.length;i++){
+                    try{t.dispatchEvent(new MouseEvent(ns[i],{bubbles:true,cancelable:true,view:window,clientX:x,clientY:y}))}catch(e){}
+                  }
+                  try{if(typeof t.click==='function')t.click()}catch(e){}
+                }
+                var btn=null,label='';
+                var all=document.querySelectorAll('button,[role="button"],div,span,a');
+                for(var i=0;i<all.length;i++){
+                  var b=all[i];
+                  if(!vis(b))continue;
+                  var s=txt(b).replace(/\\s+/g,'');
+                  if(!s||s.length>8)continue;
+                  if(s==='发送'||s==='发送消息'||/^send$/i.test(s)){btn=b;label=s;break}
+                }
+                if(btn){fire(btn);return JSON.stringify({button:label})}
+                var input=window.__cmcc_cmd_input;
+                if(!input||!document.contains(input)){
+                  var ins=document.querySelectorAll('textarea,input,[contenteditable="true"]');
+                  var best=-1;
+                  for(var j=0;j<ins.length;j++){
+                    var q=ins[j];
+                    if(!vis(q))continue;
+                    var tag=String(q.tagName||'').toLowerCase();
+                    if(tag==='input'&&/button|submit|checkbox|radio|file|hidden/i.test(q.type||''))continue;
+                    var qr=q.getBoundingClientRect();
+                    var hint=/咨询|输入|说|问|message|chat|send|input/i
+                      .test(String(q.placeholder||'')+String(q.className||'')+String(q.id||''));
+                    var score=qr.bottom+(hint?10000:0);
+                    if(score>best){best=score;input=q}
+                  }
+                }
+                if(input){
+                  try{
+                    var ir=input.getBoundingClientRect();
+                    var near=null,nearHint=null,nearD=1e9,hintD=1e9;
+                    var cs=document.querySelectorAll('button,div,span,img,svg,i,a');
+                    for(var m=0;m<cs.length;m++){
+                      var c=cs[m];
+                      if(!vis(c))continue;
+                      var cr=c.getBoundingClientRect();
+                      if(cr.width<18||cr.height<18||cr.width>96||cr.height>96)continue;
+                      if(cr.left<ir.right-16)continue;
+                      if(cr.top+cr.height<ir.top-16||cr.top>ir.bottom+24)continue;
+                      var d=Math.abs(cr.left-ir.right)+Math.abs((cr.top+cr.height/2)-(ir.top+ir.height/2));
+                      var hint=/send|submit|arrow|paper|plane|发送/i.test(String(c.id||'')+String(c.className||'')+String(c.getAttribute('aria-label')||''));
+                      if(hint&&d<hintD){hintD=d;nearHint=c}
+                      if(d<nearD){nearD=d;near=c}
+                    }
+                    if(nearHint){fire(nearHint);return JSON.stringify({icon:1,hint:1})}
+                    if(near){fire(near);return JSON.stringify({icon:1,d:Math.round(nearD)})}
+                  }catch(x){}
+                  try{
+                    var o={bubbles:true,cancelable:true,key:'Enter',code:'Enter',keyCode:13,which:13};
+                    input.dispatchEvent(new KeyboardEvent('keydown',o));
+                    input.dispatchEvent(new KeyboardEvent('keypress',o));
+                    input.dispatchEvent(new KeyboardEvent('keyup',o));
+                    return JSON.stringify({enter:1})
+                  }catch(x){}
+                }
+                return JSON.stringify({noSend:1})
+              }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
+            })()
+            """;
+
+    private static final String READ_JS = """
+            (function(){
+              try{
+                var b=String(document.body?document.body.innerText:'');
+                var out=[];
+                var ns=document.querySelectorAll('[class*="msg"],[class*="message"],[class*="bubble"],[class*="chat"],[class*="content"]');
+                var start=Math.max(0,ns.length-50);
+                for(var i=start;i<ns.length;i++){
+                  var e=ns[i];
+                  if(!e)continue;
+                  try{
+                    var r=e.getBoundingClientRect();
+                    if(r.width<8||r.height<8)continue;
+                  }catch(x){continue}
+                  var s=String(e.innerText||e.textContent||'').replace(/\\s+/g,' ').replace(/^\\s+|\\s+$/g,'');
+                  if(!s||s.length>120)continue;
+                  out.push(s);
+                  if(out.length>=12)break;
+                }
+                return JSON.stringify({tail:b.slice(-3000),bubbles:out,url:String(location.href)});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
             })()
             """;

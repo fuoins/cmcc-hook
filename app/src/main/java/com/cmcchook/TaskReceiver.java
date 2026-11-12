@@ -182,10 +182,37 @@ final class TaskReceiver {
                         }, "cmcc-coupon").start();
                         return;
                     }
+                    // r13：灵犀立即发口令（不等 10 点）。口令由模块随广播带过来，
+                    // 目标进程读不到模块的 settings，只能走 extra。
+                    if (LingxiGrab.CMD_SEND.equals(cmd)) {
+                        final String text = intent.getStringExtra("text");
+                        LingxiGrab.text(text);
+                        ack(context, cmd);
+                        final BroadcastReceiver.PendingResult sendPending = goAsync();
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    // LingxiGrab.send 自己会把每一步和最终回执写进 GRAB，
+                                    // 这里不再重复一条，免得日志里同一次发送出现两遍。
+                                    LingxiGrab.send(text);
+                                } catch (Throwable t) {
+                                    HookLog.log("GRAB", "灵犀发口令异常", String.valueOf(t));
+                                } finally {
+                                    try {
+                                        sendPending.finish();
+                                    } catch (Throwable ignored) {
+                                    }
+                                }
+                            }
+                        }, "cmcc-lingxi-send").start();
+                        return;
+                    }
                     // v4.2.0 抢券：提前进页面等、到点自动抢。和流量一样不进任务队列 ——
                     // 它可能要等几个小时，进队列会把「过任务」堵死。
                     if (cmd.startsWith(GrabTask.CMD)) {
                         final String kind = cmd.substring(GrabTask.CMD.length());
+                        LingxiGrab.text(intent.getStringExtra("text"));
                         ack(context, cmd);
                         final BroadcastReceiver.PendingResult grabPending = goAsync();
                         new Thread(new Runnable() {
