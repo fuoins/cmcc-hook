@@ -79,6 +79,10 @@ final class TaskRunner {
     static final String CMD_OPEN = "open:";
     /** v4.0 流量余量：离屏只读官方余量页，不进任务队列、不记今日状态。 */
     static final String CMD_FLOW = "flow";
+    /** r19：全活动接入清单（只读诊断，不进任务队列、不发请求）。 */
+    static final String CMD_CATALOG = "catalog";
+    /** r19：离线自验（纯函数，不依赖真机、不发请求）。 */
+    static final String CMD_SELFTEST = "selftest";
 
     private static final String STATE_FILE = "cmcc_hook_tasks";
     private static final String KEY_HANDLED_SEQ = "handled_seq";
@@ -594,6 +598,19 @@ final class TaskRunner {
     private static Result dispatch(String cmd) {
         if (CMD_ALL.equals(cmd)) {
             return runAll();
+        }
+        // r19：两个只读诊断命令。不写今日状态、不进 SWEEP、不触发保活服务。
+        if (CMD_CATALOG.equals(cmd)) {
+            return Result.ok("全活动接入清单 · " + ActivityCatalog.summary(),
+                    ActivityCatalog.report(), ActivityCatalog.summary());
+        }
+        if (CMD_SELFTEST.equals(cmd)) {
+            String text = ActivityCatalog.selfCheck();
+            String head = text.substring(0, Math.min(60, text.length())).split("\n")[0];
+            if (text.startsWith("PASS")) {
+                return Result.ok("离线自验 · " + head, text, head);
+            }
+            return Result.fail("离线自验 · " + head, text, "把完整日志发我，按失败项修注册表。");
         }
         if (CMD_WELFARE.equals(cmd)) {
             return WelfareFeed.discover();
@@ -1175,6 +1192,9 @@ final class TaskRunner {
             for (String r : rows) {
                 table.append(r).append('\n');
             }
+            // r19：一键汇总末尾带一句接入全景，别让「没打通的活动」继续隐身。
+            table.append("\n接入清单: ").append(ActivityCatalog.summary()).append('\n')
+                    .append("  完整缺口跑 catalog 查看；离线自验跑 selftest。\n");
             detail.insert(0, table);
             HookLog.log("TASK", "一键汇总", table.toString());
         }
@@ -1303,6 +1323,14 @@ final class TaskRunner {
         if (CMD_WELFARE.equals(cmd)) {
             HookLog.log(result.ok ? "TASK" : "TASK-FAIL",
                     (result.ok ? "盘点完成 · " : "盘点失败 · ") + result.summary,
+                    result.detail == null ? "" : result.detail);
+            return;
+        }
+        // r19：接入清单 / 离线自验是只读诊断，不是活动：不写今日完成、不记失败
+        // 次数、不进四态汇总，免得首页计数被带偏（同「盘点/探路」的处理）。
+        if (CMD_CATALOG.equals(cmd) || CMD_SELFTEST.equals(cmd)) {
+            HookLog.log(result.ok ? "TASK" : "TASK-FAIL",
+                    (CMD_CATALOG.equals(cmd) ? "接入清单 · " : "离线自验 · ") + result.summary,
                     result.detail == null ? "" : result.detail);
             return;
         }

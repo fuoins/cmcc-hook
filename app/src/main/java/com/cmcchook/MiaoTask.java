@@ -19,6 +19,11 @@ import org.json.JSONObject;
  *
  * <p>判定只认证据：阳光值变大，或点击后页面确实发出了 2xx 请求。
  * 只是「点了按钮」不算成功，避免又出现 7 日打卡那种「日志写成功、账号没签到」。
+ *
+ * <p>r19：{@code run()} 开头先走 {@link SeedTasks} 的 coc3 服务端任务直报，
+ * 「赚阳光值」列表里的浏览/分享任务改由 {@code getGrowthTaskList} 拉清单、
+ * {@code visit}/{@code share} 上报、再复查 {@code isFinish=1} 验收。服务端确认的
+ * 数量是最高优先级证据；通道不可用时才回退下面这套 DOM 点击链路，功能不回退。
  */
 final class MiaoTask {
 
@@ -48,9 +53,16 @@ final class MiaoTask {
         // 那时免费任务已经点完，拿它做前后对比等于拿「点完之后」比「点完之后」，
         // 永远判不出点击有没有换来阳光值（r17 日志「160→160 未变」就是这么来的）。
         int sunClick0 = readSun(page);
-        int freeTasks = runFreeTasks(page, entry, detail);
+        // r19：先走 coc3 服务端任务直报（上游 cmcc_seed 的 getGrowthTaskList /
+        // visit / share 阶梯）。那三个浏览任务此前靠点 IMG.content-btn，r16 按结构
+        // 定位、r18 加阳光值前后对比，仍反复「点了没跳 / 阳光值 160→160」——
+        // 它们本质是服务端登记的浏览任务，页面点击只是触发一次上报。
+        // 服务端清单复查 isFinish=1 才是硬证据；通道不可用时回退原 DOM 链路。
+        SeedTasks.Outcome seed = SeedTasks.run(page, detail);
+        int freeTasks = seed.accepted > 0 ? 0 : runFreeTasks(page, entry, detail);
         int sunClick1 = readSun(page);
-        detail.append("赚阳光值免费任务: 点击且真正跳转过 ").append(freeTasks).append(" 个\n");
+        detail.append("赚阳光值免费任务: 服务端确认 ").append(seed.confirmed)
+                .append(" 个，DOM 点击且真正跳转过 ").append(freeTasks).append(" 个\n");
         if (sunClick0 >= 0 && sunClick1 >= 0) {
             detail.append("阳光值(点击前后): ").append(sunClick0).append(" → ").append(sunClick1)
                     .append(sunClick1 > sunClick0 ? "（+" + (sunClick1 - sunClick0) + "）" : "（未变）")
@@ -143,6 +155,17 @@ final class MiaoTask {
             detail.append("执行后: ").append(brief(text1)).append('\n');
         }
 
+        // 0) r19：服务端清单复查 isFinish=1 是最硬证据，优先于阳光值差与点击回执。
+        //    主脚本（签到/浇水/收豆）这一轮照跑完了，这里只决定记不记战果。
+        if (seed.confirmed > 0) {
+            String summary = "豆苗养成记 · 服务端确认完成 " + seed.confirmed + " 个任务"
+                    + (seed.gain > 0 ? "，阳光值 +" + seed.gain : "")
+                    + (seed.still > 0 ? "（另有 " + seed.still + " 个状态待刷新）" : "");
+            return TaskRunner.Result.ok(summary,
+                    detail.append("判定(r19): 以 coc3 getGrowthTaskList 复查 isFinish=1 为准，"
+                            + "本轮跳过 DOM 点击链路，不再靠阳光值差或 2xx 回执猜。\n")
+                            .toString(), summary);
+        }
         // 1) 阳光值变多：最硬的证据。
         if (sun0 >= 0 && sun1 > sun0) {
             String summary = "豆苗养成记 · 阳光值 +" + (sun1 - sun0) + "（" + sun0 + " → " + sun1 + "）";
@@ -153,6 +176,15 @@ final class MiaoTask {
         if (netOk > 0 && clickTry > 0) {
             String summary = "豆苗养成记 · 完成 " + Math.max(clickOk, 1) + " 个动作";
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
+        }
+        // r19：服务端已接受上报但复查状态还没刷新 —— 不记成功，也不许走到下面
+        // 「点了按钮但页面没回执」把它误报成失败。本轮标「无需操作」，下轮复查补。
+        if (seed.accepted > 0) {
+            String summary = "豆苗养成记 · 已上报 " + seed.accepted
+                    + " 个任务，服务端状态待刷新";
+            return TaskRunner.Result.idle(summary,
+                    detail.append("判定(r19): 上报已接受但复查 isFinish 未刷新，本轮不记完成，"
+                            + "也不重复点 DOM。\n").toString(), summary);
         }
         // v4.10.0：赚阳光值免费任务已经逐个点了（跳出去停 5 秒再拉回来），
         // 即使页面内主脚本这一轮没读到新的 2xx，也不能判成「没做成」。
