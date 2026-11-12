@@ -382,6 +382,7 @@ public final class LogReceiver extends BroadcastReceiver {
         AppPrefs.setTaskState(context, cmd,
                 day,
                 intent.getBooleanExtra("ok", false),
+                intent.getBooleanExtra("idle", false),
                 intent.getStringExtra("summary"),
                 intent.getIntExtra("attempts", 0));
     }

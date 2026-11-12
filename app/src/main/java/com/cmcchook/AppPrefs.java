@@ -3,6 +3,8 @@ package com.cmcchook;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.util.Map;
+
 final class AppPrefs {
     static final String TARGET_PACKAGE = "com.greenpoint.android.mc10086.activity";
     static final String MODULE_PACKAGE = "com.cmcchook";
@@ -111,16 +113,24 @@ final class AppPrefs {
 
     static void setTaskState(Context context, String cmd, String day,
                              boolean ok, String summary, int attempts) {
+        setTaskState(context, cmd, day, ok, false, summary, attempts);
+    }
+
+    /** r15 P2：idle 单独存一份，不改 task_state_ 的 OK/FAIL 前缀。 */
+    static void setTaskState(Context context, String cmd, String day,
+                             boolean ok, boolean idle, String summary, int attempts) {
         long now = System.currentTimeMillis();
         status(context).edit()
                 .putString(taskKey("task_state_", cmd, day, context),
                         (ok ? "OK " : "FAIL ") + (summary == null ? "" : summary))
+                .putBoolean(taskKey("task_idle_", cmd, day, context), idle)
                 .putInt(taskKey("task_attempt_", cmd, day, context), attempts)
                 // v4.10.0-r7：模块侧记一份「本次结果时间」，供福利页条目展示。
                 // 目标进程里那份 result_at_<cmd> 模块读不到，这里在收到 STATE 广播时
                 // 自己落一个，误差只有广播延迟，且完全不碰任务执行链路。
                 .putLong(taskKey("task_at_", cmd, day, context), now)
-                .putString("last_task_line", labelOf(cmd) + " " + (ok ? "完成" : "失败")
+                .putString("last_task_line", labelOf(cmd) + " "
+                        + (idle ? "无需操作" : (ok ? "完成" : "失败"))
                         + " · " + (summary == null ? "" : summary))
                 .putLong("last_task_at", now)
                 .apply();
@@ -225,6 +235,11 @@ final class AppPrefs {
         return status(context).getInt(taskKey("task_attempt_", cmd, day, context), 0);
     }
 
+    /** r15 P2：这次结果是「无需操作」吗。头部诊断摘要据此显示 ○。 */
+    static boolean getTaskIdle(Context context, String cmd, String day) {
+        return status(context).getBoolean(taskKey("task_idle_", cmd, day, context), false);
+    }
+
     static long getLastTick(Context context) {
         return status(context).getLong("last_tick", 0L);
     }
@@ -326,6 +341,10 @@ final class AppPrefs {
         // 取舍：真换号瞬间若号码尚未上报，本帧不清；等号码回灌且 UID 再漂移时
         // 仍会判到（prefsName 按 UID 分文件，数据隔离不依赖这条日志）。
         if (ph.isEmpty() || oldPhone.isEmpty() || ph.equals(oldPhone)) {
+            // r15 P0：同账号 UID 漂移（或号码还没上报）。界面把今日状态存在
+            // status 文件里、key 后缀是 @UID前12位，UID 一变整套 key 就换掉，
+            // 19:11 跑完的 9 项到 19:29 全显示 ○。这里把当日状态接到新后缀。
+            carryTaskScope(context, old, u, today());
             return;
         }
         try {
@@ -341,6 +360,58 @@ final class AppPrefs {
                 "UID: " + AccountScope.shortOf(old) + " → " + AccountScope.shortOf(u)
                         + "\n两个账号的数据分开存：今日任务状态、券清单、验证码缓存、活动进度。"
                         + "\n券清单已清空，请重新扫描。"));
+    }
+
+    /**
+     * r15 P0：UID 漂移后，把 {@code status} 文件里旧 {@code @UID} 后缀的当日 key
+     * 复制到新后缀。任务侧的分片文件由 {@link AccountScope} 接续，这里补的是
+     * 模块界面「今日」列表读的那一份；目标已有的值一律不覆盖。
+     */
+    private static void carryTaskScope(Context context, String fromUid, String toUid, String day) {
+        String from = "@" + AccountScope.shortOf(fromUid);
+        String to = "@" + AccountScope.shortOf(toUid);
+        if (from.equals(to)) {
+            return;
+        }
+        try {
+            SharedPreferences p = status(context);
+            Map<String, ?> all = p.getAll();
+            SharedPreferences.Editor e = p.edit();
+            boolean changed = false;
+            for (Map.Entry<String, ?> en : all.entrySet()) {
+                String k = en.getKey();
+                if (!k.contains(day) || !k.endsWith(from)) {
+                    continue;
+                }
+                String nk = k.substring(0, k.length() - from.length()) + to;
+                if (p.contains(nk)) {
+                    continue;
+                }
+                Object v = en.getValue();
+                if (v instanceof Boolean) {
+                    e.putBoolean(nk, (Boolean) v);
+                } else if (v instanceof Integer) {
+                    e.putInt(nk, (Integer) v);
+                } else if (v instanceof Long) {
+                    e.putLong(nk, (Long) v);
+                } else if (v instanceof Float) {
+                    e.putFloat(nk, (Float) v);
+                } else if (v instanceof String) {
+                    e.putString(nk, (String) v);
+                } else {
+                    continue;
+                }
+                changed = true;
+            }
+            if (changed) {
+                e.apply();
+                LogStore.append(context, new LogEntry(System.currentTimeMillis(), "ACCOUNT",
+                        "UID 漂移 · 今日状态已接续",
+                        "旧后缀: " + from + "\n新后缀: " + to
+                                + "\n界面「今日」列表不再因 UID 漂移清零。"));
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /** 界面显示的账号文案。 */

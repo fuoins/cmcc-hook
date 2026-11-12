@@ -140,6 +140,12 @@ final class HookLog {
      * v2.3 首页的「今日」一直显示 ○ 就是这个原因。这里用广播同步一份回去。
      */
     static void state(String cmd, boolean ok, String summary, int attempts, String day) {
+        state(cmd, ok, false, summary, attempts, day);
+    }
+
+    /** r15 P2：idle 单独带一个标记，摘要据此显示「○ 无需操作」。 */
+    static void state(String cmd, boolean ok, boolean idle, String summary,
+                      int attempts, String day) {
         Context ctx = context();
         if (ctx == null || cmd == null || cmd.isEmpty()) {
             return;
@@ -152,6 +158,7 @@ final class HookLog {
                     | Intent.FLAG_RECEIVER_FOREGROUND);
             intent.putExtra("cmd", cmd);
             intent.putExtra("ok", ok);
+            intent.putExtra("idle", idle);
             intent.putExtra("summary", cut(summary, 160));
             intent.putExtra("attempts", attempts);
             intent.putExtra("day", day);

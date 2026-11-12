@@ -282,7 +282,9 @@ final class CanvasTask {
                 || text1.contains("今日已抽") || text1.contains("机会已用完");
 
         detail.append("签到: 调用 ").append(signTry).append(" 次，成功 ").append(signOk).append('\n');
-        detail.append("抽奖: 尝试 ").append(drawTry).append(" 次，成功 ").append(drawOk).append('\n');
+        int drawRemainDrop = draw == null ? 0 : draw.optInt("remainDrop", 0);
+        detail.append("抽奖: 尝试 ").append(drawTry).append(" 次，成功 ").append(drawOk)
+                .append("（状态量消耗 ").append(drawRemainDrop).append(" 次）\n");
         String netLine = netBrief(net);
         if (!netLine.isEmpty()) {
             detail.append("网络证据:\n").append(netLine).append('\n');
@@ -1082,7 +1084,7 @@ final class CanvasTask {
                       x.addEventListener('load',function(){
                         try{
                           if(/lottery|sign|draw|clock|receive|task|activity/i.test(x.__qu)){
-                            NET.push({u:String(x.__qu).slice(0,220),s:x.status,b:String(x.responseText||'').slice(0,2000)})
+                            NET.push({u:String(x.__qu).slice(0,220),s:x.status,b:String(x.responseText||'').slice(0,8192)})
                           }
                         }catch(e){}
                       });
@@ -1100,7 +1102,7 @@ final class CanvasTask {
                       try{
                         if(/lottery|sign|draw|clock|receive|task|activity/i.test(u)){
                           var cp=r.clone();
-                          cp.text().then(function(t){ NET.push({u:String(u).slice(0,220),s:r.status,b:String(t).slice(0,2000)}) })
+                          cp.text().then(function(t){ NET.push({u:String(u).slice(0,220),s:r.status,b:String(t).slice(0,8192)}) })
                         }
                       }catch(e){}
                       return r;
@@ -1383,7 +1385,19 @@ final class CanvasTask {
                   var d=JSON.parse(hit.b);
                   code=String(d.code==null?'':d.code);
                   msg=String(d.msg||d.message||'');
-                }catch(e){}
+                }catch(e){
+                  // r15 P0：响应体带 BOM / 被钩子截断时 JSON.parse 会抛，旧代码直接吞掉
+                  // → code/msg 全空 → 明明「您中奖了!」也被判成被拒、整轮报 ✗。
+                  // 11-12 19:15 日志：中奖响应 2364 字符被 slice(0,2000) 截成半截。
+                  // 现在用正则把 code/msg 兜底认回来。
+                  var b=String(hit.b||'');
+                  var mc=/code\\s*\\D{0,4}(\\d{2,8})/.exec(b);
+                  if(mc) code=mc[1];
+                  var mm=/(?:msg|message)\\s*["']?\\s*[:=]\\s*["']?([^"',}]{1,60})/.exec(b);
+                  if(mm) msg=String(mm[1]).replace(/^["'\\s]+|["'\\s]+$/g,'');
+                  if(!code && /60000/.test(b)) code='60000';
+                  if(!code) code='parse-failed';
+                }
                 return {ok:(code==='60000'||code==='200'),code:code,msg:msg,
                         risk:riskOf(hit.b),data:hit.b,via:'page'};
               }
@@ -2105,6 +2119,8 @@ final class CanvasTask {
                         if(!r || (r.ok===false && r.msg==='页面没发抽奖请求')){
                           r=await lotteryOnce(id)||r;
                         }
+                        if(r&&r.ok===false&&!r.code&&!r.msg)
+                          line('  抽奖 '+id+' 回执无 code/msg（响应体被截断或页面自组请求），改看网络与状态量证据');
                         if(!r) r={ok:false,code:'',msg:'没有可用的抽奖通道',risk:false};
                         // v3.91：命中服务端风控立即收手，绝不再补刀重试。
                         if(r.risk){
@@ -2136,7 +2152,34 @@ final class CanvasTask {
                         await wait(900);
                       }
                     }
-                    if(draw.risk>0){
+                    // r15 P0：独立状态量证据 —— 抽奖前后「剩余次数」真的下降，
+                  // 即使网络回执解析不出来也是抽中了。11-12 日志 3→2，
+                  // 页面文案同步从「3 次翻牌机会」变成「2 次」。三条证据取最大。
+                  try{
+                    var lastId='';
+                    if(draw.rems.length){
+                      var rz0=String(draw.rems[draw.rems.length-1]).split(':');
+                      lastId=rz0[0]||'';
+                    }
+                    if(lastId){
+                      var after=await remainOf(lastId);
+                      if(after<0) after=netRemain();
+                      if(after<0) after=remainFromPage();
+                      var before=-2;
+                      for(var z=0;z<draw.rems.length;z++){
+                        var rz=String(draw.rems[z]).split(':');
+                        if(rz[0]===lastId && !isNaN(Number(rz[1]))){ before=Number(rz[1]); break }
+                      }
+                      draw.remainBefore=before; draw.remainAfter=after;
+                      if(before>=0 && after>=0 && after<before){
+                        draw.remainDrop=before-after;
+                        line('  状态量: 剩余次数 '+before+' → '+after+'（消耗 '+(before-after)+' 次，按成功计）');
+                      } else {
+                        line('  状态量: 剩余次数 '+before+' → '+after+'（无下降，不额外计成功）');
+                      }
+                    }
+                  }catch(e){ line('  状态量读取失败: '+e) }
+                  if(draw.risk>0){
                       // 命中风险后不再直发接口：改点页面自己的翻牌按钮，由页面
                       // 自己组织请求体（operDfp 等设备指纹只有页面能补）。
                       var hd=clickDrawExact();
@@ -2175,15 +2218,17 @@ final class CanvasTask {
                   for(var i=0;i<NET.length;i++){
                     try{
                       if(!/lottery[/]lottery/i.test(NET[i].u)) continue;
-                      var d=JSON.parse(NET[i].b);
-                      if(String(d.code)==='60000'){
-                        netOk++;
-                        var pz2=prizeOf(d);
-                        if(pz2) draw.prize=pz2;
-                      }
+                      var b=String(NET[i].b||''), d=null;
+                      try{ d=JSON.parse(b) }catch(pe){}
+                      var code=d?String(d.code==null?'':d.code):'';
+                      if(!code){ var mc=/code\\s*\\D{0,4}(\\d{2,8})/.exec(b); if(mc) code=mc[1] }
+                      if(code!=='60000') continue;
+                      netOk++;
+                      var pz2=prizeOf(d||b);
+                      if(pz2) draw.prize=pz2;
                     }catch(e){}
                   }
-                  draw.ok=Math.max(draw.apiOk||0, netOk);
+                  draw.ok=Math.max(draw.apiOk||0, netOk, draw.remainDrop||0);
                   var t1=btext();
                   done({stage:'done',title:document.title||'',text:t0,text1:t1,
                         comps:comps.length,ax:AX.length,sign:sign,draw:draw,

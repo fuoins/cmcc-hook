@@ -275,13 +275,20 @@ final class LogExporter {
         for (int i = 0; i < cmds.length; i++) {
             String state = AppPrefs.getTaskState(context, cmds[i], day);
             int attempts = AppPrefs.getTaskAttempts(context, cmds[i], day);
+            // r15 P2：与一键汇总表统一成四态。以前 idle 也记成 OK，
+            // 头部写「7日打卡分百万 ✓ 完成」，汇总表却写「○ 无需操作」。
+            boolean idle = AppPrefs.getTaskIdle(context, cmds[i], day);
             String mark;
-            if (state.startsWith("OK")) {
+            if (state.isEmpty()) {
+                mark = "–";
+            } else if (idle) {
+                mark = "○";
+            } else if (state.startsWith("OK")) {
                 mark = "✓";
             } else if (state.startsWith("FAIL")) {
                 mark = attempts > 1 ? "✗" + attempts : "✗";
             } else {
-                mark = "○";
+                mark = "–";
             }
             line.append(names[i]).append(' ').append(mark);
             if (i < cmds.length - 1) {
@@ -305,7 +312,7 @@ final class LogExporter {
         if (last != null && !last.isEmpty()) {
             sb.append("最近一次: ").append(last).append('\n');
         }
-        sb.append("图例: ✓ 完成　✗ 失败（数字为当天次数）　○ 未执行\n");
+        sb.append("图例: ✓ 完成　○ 无需操作　✗ 失败（数字为当天次数）　– 未执行/跳过\n");
     }
 
     // ------------------------------------------------------------ 筛选与压缩

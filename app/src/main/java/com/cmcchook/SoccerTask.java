@@ -123,12 +123,31 @@ final class SoccerTask {
                     detail.toString(),
                     "离屏 WebView 没能加载球赛页面。重开一次中国移动 App 再试。");
         }
+        // r15 P1：和收鹅蛋共用同一套页面存活检查。球赛同样是 lyh 域真页，
+        // 落在空白 WebView 时脚本只会报「组件没挂载」，白等 90 秒。
+        long overall = System.currentTimeMillis() + 25_000L;
+        if (!GooseTask.pageAlive(page, detail, "GOOSE-SOCCER")) {
+            HookLog.log("GOOSE-SOCCER", "真页空白 · 重建一次",
+                    "存活检查没过，关掉当前 WebView 会话，按入口重开一次真页。");
+            String key = WebSession.key();
+            WebSession.end();
+            WebSession.begin(key == null || key.isEmpty() ? "soccer" : key,
+                    entry, GooseTask.budget(overall, 12_000L));
+            WebPage fresh = WebSession.current();
+            if (fresh == null || !GooseTask.pageAlive(fresh, detail, "GOOSE-SOCCER")) {
+                return TaskRunner.Result.skip("球赛狂欢季：真页没起来（空白 / 被跳转顶掉）",
+                        detail.toString(),
+                        "请在 App 里手动点一次「球赛狂欢季」，让官方容器把活动页加载出来；"
+                                + "模块会记住带 pc/pk 的入口并复用真页。");
+            }
+            page = fresh;
+        }
         // 没有 pc/pk 就没有登录态：这一轮不算失败，也不进当天失败次数。
         if (!entry.contains("pc=")) {
-            return TaskRunner.Result.skip("球赛狂欢季：还没有登录参数（pc/pk）",
+            return TaskRunner.Result.skip("球赛狂欢季：没拿到带 pc/pk 的落地页",
                     detail.toString(),
-                    "在 App 里手动点一次「球赛狂欢季」，模块会把带 pc/pk 的入口记下来，"
-                            + "之后就能自动跑。");
+                    "真页还没走到门户 SSO 签发的落地地址。在 App 里手动点一次「球赛狂欢季」，"
+                            + "模块会把带 pc/pk 的入口记下来，之后就能自动跑。");
         }
 
         // r14：先看页面是不是「本省不支持」。球赛是辽宁 lyh 域的活动，外省号

@@ -3,7 +3,11 @@ package com.cmcchook;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.HashSet;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
@@ -27,6 +31,10 @@ final class AccountScope {
     private static final String KEY_PHONE = "last_phone";
     private static final String KEY_CHANGED_AT = "changed_at";
     private static final String KEY_MIGRATED = "migrated_";
+    /** r15：上一次用于分片的 UID；同账号漂移时据此接续当日状态。 */
+    private static final String KEY_SCOPE_UID = "scope_uid";
+    private static final String KEY_SCOPE_PHONE = "scope_phone_";
+    private static volatile String scopedUid = "";
 
     /** Cookie 缓存有效期。太短会频繁读 JAR，太长会漏掉刚发生的账号切换。 */
     private static final long TTL_MS = 15_000L;
@@ -133,6 +141,9 @@ final class AccountScope {
         }
         String name = base + "__" + shortOf(u);
         migrate(ctx, base, name);
+        if (ctx != null) {
+            syncScope(ctx, u);
+        }
         return name;
     }
 
@@ -195,6 +206,157 @@ final class AccountScope {
                         + "\n当前账号: " + shortOf(now)
                         + "\n两套数据独立存放：任务完成记录、券清单、验证码缓存、活动进度都不复用。");
         return true;
+    }
+
+    /**
+     * r15 P0：同账号 UID 漂移时，把旧分片今天的记录接到新分片。
+     *
+     * <p>11-12 19:11 一键跑完 9 项（UID {@code mhrz44b292…}），19:29 服务端在
+     * 另一个活动域下发了 {@code mhrzd2e29b…}，手机号仍是 {@code 198****6742}。
+     * 分片名按 UID 前 12 位生成，于是界面读到一份全新的空状态：9 项全变 ○，
+     * 模块又会把已做过的活动重跑一遍，白花时间还重复发抽奖请求。
+     * {@code migrate()} 只从「无后缀的旧格式」搬一次，管不了这种分片间漂移。
+     *
+     * <p>这里在所有 prefs 访问的必经入口 {@link #prefsNameFor} 检测分片变化，
+     * 目标进程和模块界面进程都会各自执行一次；只接「当日」与「最近结果时间」
+     * 类 key，目标分片已有的值一律不覆盖，券清单和验证码缓存不参与。
+     */
+    private static void syncScope(Context ctx, String uid) {
+        if (ctx == null || uid == null || uid.isEmpty() || uid.equals(scopedUid)) {
+            return;
+        }
+        // 先占位再干活：下面的 HookLog.log 内部也可能读 prefs，避免同一进程重入。
+        scopedUid = uid;
+        try {
+            SharedPreferences g = ctx.getSharedPreferences(GLOBAL, Context.MODE_PRIVATE);
+            String prev = g.getString(KEY_SCOPE_UID, "");
+            String phone = currentPhone(ctx);
+            if (phone != null && !phone.isEmpty()) {
+                g.edit().putString(KEY_SCOPE_PHONE + shortOf(uid), phone).apply();
+            }
+            if (!prev.isEmpty() && !prev.equals(uid)) {
+                String day = new SimpleDateFormat("yyyyMMdd", Locale.US).format(new Date());
+                String flag = "carry_" + shortOf(prev) + "_" + shortOf(uid) + "_" + day;
+                if (!g.getBoolean(flag, false)) {
+                    boolean same = sameAccountForScope(g, prev, phone);
+                    int moved = same ? carryAll(ctx, prev, uid, day) : 0;
+                    g.edit().putBoolean(flag, true).apply();
+                    HookLog.log("ACCOUNT", "UID 漂移 · 当日状态接续",
+                            "上一分片: " + shortOf(prev) + "\n当前分片: " + shortOf(uid)
+                                    + "\n判据: " + (same ? "同手机号（或号码未识别，保守按同账号）" : "号码不同，按真切号处理")
+                                    + "\n接续文件数: " + moved
+                                    + "\n说明: 服务端在不同活动域下发不同 UID 时，当日完成记录不再清零。");
+                }
+            }
+            g.edit().putString(KEY_SCOPE_UID, uid).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 两个分片是否属于同一个手机号。号码读不到时保守按同账号处理。 */
+    private static boolean sameAccountForScope(SharedPreferences g, String prev, String phone) {
+        String prevPhone = "";
+        try {
+            prevPhone = g.getString(KEY_SCOPE_PHONE + shortOf(prev), "");
+        } catch (Throwable ignored) {
+        }
+        if (!prevPhone.isEmpty() && phone != null && !phone.isEmpty()) {
+            return prevPhone.equals(phone);
+        }
+        // SSO 早期 maskedPhone() 常返回空串，恰好是匿名 UID 漂移高发期。
+        // 只接当天状态、不接券/验证码，保守接续的风险可控。
+        return true;
+    }
+
+    private static String currentPhone(Context ctx) {
+        try {
+            if (ctx != null && AppPrefs.MODULE_PACKAGE.equals(ctx.getPackageName())) {
+                return AppPrefs.getCurrentPhone(ctx);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            return SsoLogin.maskedPhone();
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
+    /** 把旧分片里「当日」相关的 key 复制到新分片；已存在的不覆盖。 */
+    private static int carryAll(Context ctx, String fromUid, String toUid, String day) {
+        int moved = 0;
+        try {
+            File dir = new File(ctx.getApplicationInfo().dataDir, "shared_prefs");
+            File[] files = dir.listFiles();
+            if (files == null) {
+                return 0;
+            }
+            String suffix = "__" + shortOf(fromUid);
+            String newSuffix = "__" + shortOf(toUid);
+            for (File f : files) {
+                String fn = f.getName();
+                if (!fn.endsWith(".xml")) {
+                    continue;
+                }
+                String oldName = fn.substring(0, fn.length() - 4);
+                if (GLOBAL.equals(oldName) || !oldName.endsWith(suffix)) {
+                    continue;
+                }
+                String base = oldName.substring(0, oldName.length() - suffix.length());
+                if (NO_MIGRATE.contains(base)) {
+                    continue;
+                }
+                String newName = base + newSuffix;
+                if (newName.equals(oldName)) {
+                    continue;
+                }
+                try {
+                    SharedPreferences from = ctx.getSharedPreferences(oldName, Context.MODE_PRIVATE);
+                    SharedPreferences to = ctx.getSharedPreferences(newName, Context.MODE_PRIVATE);
+                    Map<String, ?> all = from.getAll();
+                    if (all == null || all.isEmpty()) {
+                        continue;
+                    }
+                    SharedPreferences.Editor e = to.edit();
+                    boolean changed = false;
+                    for (Map.Entry<String, ?> en : all.entrySet()) {
+                        String k = en.getKey();
+                        boolean daily = k.contains(day) || k.startsWith("result_at_")
+                                || k.startsWith("task_at_") || k.startsWith("last_")
+                                || k.contains("entry");
+                        if (!daily || to.contains(k)) {
+                            continue;
+                        }
+                        Object v = en.getValue();
+                        if (v instanceof Boolean) {
+                            e.putBoolean(k, (Boolean) v);
+                        } else if (v instanceof Integer) {
+                            e.putInt(k, (Integer) v);
+                        } else if (v instanceof Long) {
+                            e.putLong(k, (Long) v);
+                        } else if (v instanceof Float) {
+                            e.putFloat(k, (Float) v);
+                        } else if (v instanceof String) {
+                            e.putString(k, (String) v);
+                        } else if (v instanceof Set) {
+                            @SuppressWarnings("unchecked")
+                            Set<String> set = (Set<String>) v;
+                            e.putStringSet(k, set);
+                        } else {
+                            continue;
+                        }
+                        changed = true;
+                    }
+                    if (changed) {
+                        e.apply();
+                        moved++;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return moved;
     }
 
     /** 把旧的无后缀数据搬给「第一个识别到的账号」，每个文件只搬一次。 */

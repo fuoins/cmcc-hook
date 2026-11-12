@@ -242,7 +242,28 @@ final class GooseTask {
                     "把日志发我。这条说明真页没加载成功，不是活动本身的问题。"
                             + "先手动点一次「收鹅蛋换好礼」，模块会把带 pc/pk 的入口记下来。");
         }
-        if (!ensureLogin(page, detail)) {
+        long overall = System.currentTimeMillis() + 25_000L;
+        if (!pageAlive(page, detail, "GOOSE")) {
+            // r15 P1：坏页不在原地空转。11-12 19:12 那轮页面落在空白 WebView，
+            // 一条 lyh 业务请求都没有，脚本却把 74 秒登录重试链全跑了一遍。
+            // 关掉会话、按入口重开一次真页（只是重开活动页，不是自动登录）。
+            HookLog.log("GOOSE", "真页空白 · 重建一次",
+                    "存活检查没过，关掉当前 WebView 会话，按入口重开一次真页。\n"
+                            + "总预算 25 秒，重建与登录重试共用，不再叠加。");
+            String key = WebSession.key();
+            WebSession.end();
+            WebSession.begin(key == null || key.isEmpty() ? "goose" : key,
+                    entryUrl(), budget(overall, 12_000L));
+            WebPage fresh = WebSession.current();
+            if (fresh == null || !pageAlive(fresh, detail, "GOOSE")) {
+                return TaskRunner.Result.skip("收鹅蛋：真页没起来（空白 / 被跳转顶掉）",
+                        detail.toString(),
+                        "证据链见「页面存活检查」日志。请在 App 里手动点一次「收鹅蛋换好礼」，"
+                                + "让官方容器把活动页加载出来；模块会记住带 pc/pk 的入口并复用真页。");
+            }
+            page = fresh;
+        }
+        if (!ensureLogin(page, detail, overall)) {
             String entry = entryUrl();
             // v3.44：把现场写进完整日志，下一轮能直接定位是哪一步没走通
             //（SSO 中转？pc/pk 没生成？页面文本是什么），不用再靠猜。
@@ -257,27 +278,24 @@ final class GooseTask {
                 scene = "现场读取异常: " + e;
             }
             HookLog.log("GOOSE", "收鹅蛋登录诊断 · " + (entry != null && entry.contains("pc=")
-                            ? "有 pc/pk 但未登录" : "无 pc/pk"),
+                            ? "有 pc/pk 但页面没就绪" : "没拿到带 pc/pk 的落地页"),
                     "缓存入口: " + brief(entry) + "\n"
                             + "页面现场: " + scene + "\n"
                             + "过程:\n" + detail);
-            if (entry == null || !entry.contains("pc=")) {
-                // 没有 pc/pk 就没有登录态，这一轮不算失败，也不该记进当天次数。
-                // v3.44：裸地址现在会自己在离屏页走门户 SSO 拿到 pc/pk（见 waitLogged），
-                // 首轮没拿到的多半是 SSO 还没走完/被外部跳转顶走，再执行一次即可。
-                return TaskRunner.Result.skip("收鹅蛋：还没有登录参数（pc/pk）",
-                        detail.toString(),
-                        "真页会自己走一遍门户登录拿 pc/pk，再点一次「执行任务」重试；"
-                                + "若连续几次都不行，在 App 里手动点一次「收鹅蛋换好礼」，"
-                                + "模块会把带 pc/pk 的入口记下来，之后就能自动跑。");
+            // r15 P1：不再把「页面没起来」说成「还没有登录参数」。19:12 日志里
+            // URL 明明带 pc，页面却是空白 WebView、零业务请求，旧文案误导排查。
+            String why = (entry == null || !entry.contains("pc="))
+                    ? "真页没起来（空白页，或没走到带 pc/pk 的落地页）"
+                    : "页面已打开但没发出业务请求（可能被外部跳转顶掉）";
+            if (entry != null && entry.contains("pc=")) {
+                // pc/pk 过期时作废会话缓存，下一轮真页才会重走门户 SSO。
+                SsoLogin.invalidate();
             }
-            // v3.48：pc/pk 过期时主动作废会话缓存，下一轮离屏页才会重走门户 SSO
-            // 拿新参数；否则一直复用旧 pc/pk，连续几轮都报「页面未登录」。
-            SsoLogin.invalidate();
-            return TaskRunner.Result.fail("收鹅蛋页面未登录",
+            return TaskRunner.Result.skip("收鹅蛋：" + why,
                     detail.toString(),
-                    "页面打开了但没登录（已清会话缓存，下一轮会重走登录）。这通常意味着 pc/pk 过期，"
-                            + "再执行一次；仍不行时，在 App 里手动点一次「收鹅蛋」活动页即可恢复。");
+                    "证据链见「页面存活检查」和「收鹅蛋登录诊断」两条日志。"
+                            + "在 App 里手动点一次「收鹅蛋换好礼」，让官方容器把活动页加载出来；"
+                            + "模块会记住带 pc/pk 的入口并复用真页，之后就能自动跑。");
         }
         if (SELFTEST_ONLY) {
             // v3.22 自检版：动态定位业务接口层 + 只发一次只读接口验证直发。
@@ -492,11 +510,75 @@ final class GooseTask {
      * <p>所以这里分三步：先看当前页；没登录就换成缓存里带 pc/pk 的真实入口；
      * 还不行就拿页面自己存下的 accesstoken 拼 {@code wechatParams} 再试一次。
      */
-    private static boolean ensureLogin(WebPage page, StringBuilder detail) {
+    /**
+     * r15 P1：页面存活硬检查 + 证据链日志。
+     *
+     * <p>11-12 19:12 一键那轮，页面落在 {@code com.tencent.smtt.sdk.WebView$a}，
+     * readyState/title/正文/业务请求全空；19:29 手动点过界面后落在
+     * {@code WebViewEx}，同一条短链 190 条 raiseGoose 业务请求、一次跑通。
+     * 说明失败不是 pc/pk、也不是脚本，是 WebView 实例不对。旧代码在坏页里
+     * 把整套登录重试链跑满 74 秒，这里先把它挡掉。
+     */
+    static boolean pageAlive(WebPage page, StringBuilder detail, String tag) {
+        String cls = "";
+        try {
+            Object raw = page.raw();
+            if (raw != null) {
+                cls = raw.getClass().getName();
+            }
+        } catch (Throwable ignored) {
+        }
+        String v = null;
+        try {
+            v = page.eval("(function(){try{"
+                    + "var t=document.body?document.body.innerText:'';"
+                    + "var biz=0;try{var r=performance.getEntriesByType('resource')||[];"
+                    + "for(var i=0;i<r.length;i++){if(/lyh\\.lncmcc\\.com|huodong-portal|\\/lnlyh\\//i.test(r[i].name||''))biz++}}catch(e){}"
+                    + "var app=document.querySelector('#app')||document.querySelector('#root');"
+                    + "var vue=!!(app&&(app.__vue__||app.__vue_app__));"
+                    + "return JSON.stringify({ready:document.readyState,title:document.title||'',"
+                    + "len:t.length,html:(document.documentElement?document.documentElement.outerHTML.length:0),"
+                    + "vue:vue,biz:biz,url:location.href.slice(0,180)})"
+                    + "}catch(e){return ''}})()", 3_000L);
+        } catch (Throwable e) {
+            v = "eval异常:" + e;
+        }
+        HookLog.log(tag, "页面存活检查",
+                "WebView: " + cls + "\n现场: " + (v == null ? "eval 返回 null" : v)
+                        + "\n判据: readyState=complete 且 (正文>0 或 html>2000)"
+                        + " 且 (标题非空 或 Vue 或 业务请求>0)");
+        if (detail != null) {
+            detail.append("页面存活: WebView=").append(cls).append(" · 现场=")
+                    .append(v == null ? "null" : v).append('\n');
+        }
+        if (v == null || v.isEmpty()) {
+            return false;
+        }
+        try {
+            JSONObject o = new JSONObject(v);
+            boolean ready = "complete".equals(o.optString("ready"));
+            int len = o.optInt("len", 0);
+            int html = o.optInt("html", 0);
+            int biz = o.optInt("biz", 0);
+            boolean hasTitle = !o.optString("title").trim().isEmpty();
+            boolean vue = o.optBoolean("vue", false);
+            return ready && (len > 0 || html > 2000) && (hasTitle || vue || biz > 0);
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    /** 25 秒总预算里还剩多少，取 min(单步上限, 剩余)，用完返回 0 立即收手。 */
+    static long budget(long deadline, long cap) {
+        long left = deadline - System.currentTimeMillis();
+        return Math.max(0L, Math.min(cap, left));
+    }
+
+    private static boolean ensureLogin(WebPage page, StringBuilder detail, long deadline) {
         // 页面刚加载完时 indexFun 还没回来，pageInitData 是空的。
         // 裸地址进页面时还要走一遍门户 SSO（先跳 sso_token，再跳回带 pc/pk 的主页），
         // 这一段实测要 10 秒上下，只等 8 秒会把「正在登录」误判成「未登录」。
-        if (waitLogged(page, 16_000L)) {
+        if (waitLogged(page, budget(deadline, 16_000L))) {
             detail.append("登录: 已登录\n");
             // v3.44：页面自己走完门户 SSO 后 URL 会带 pc/pk，把这份真实入口记下来。
             // 下次执行直接用缓存地址，不必再让用户「手动点进一次」拿信息。
@@ -527,7 +609,7 @@ final class GooseTask {
                 } else {
                     detail.append("登录: 换真实入口重试（带 pc/pk）\n");
                 }
-                if (page.navigate(entry, 18_000L) && waitLogged(page, 12_000L)) {
+                if (page.navigate(entry, budget(deadline, 18_000L)) && waitLogged(page, budget(deadline, 12_000L))) {
                     detail.append("登录: 拉回活动页后已登录\n");
                     return true;
                 }
@@ -545,7 +627,7 @@ final class GooseTask {
         String cur = page.url();
         if (cur == null || !cur.contains("dwzCode=0AnebE")) {
             detail.append("登录: 用卡片短链换票（dwzCode=0AnebE）\n");
-            if (page.navigate(SHORT_LINK, 25_000L) && waitLogged(page, 20_000L)) {
+            if (page.navigate(SHORT_LINK, budget(deadline, 25_000L)) && waitLogged(page, budget(deadline, 20_000L))) {
                 String landed = page.url();
                 if (landed != null && landed.contains("pc=")) {
                     rememberEntry(landed);
@@ -565,7 +647,7 @@ final class GooseTask {
         String here = page.url();
         if (!cached.isEmpty() && !cached.equals(here)) {
             detail.append("登录: 备用入口 · 缓存 pc/pk\n");
-            if (page.navigate(cached, 15_000L) && waitLogged(page, 12_000L)) {
+            if (page.navigate(cached, budget(deadline, 15_000L)) && waitLogged(page, budget(deadline, 12_000L))) {
                 detail.append("登录: 备用入口登录成功\n");
                 return true;
             }
@@ -576,7 +658,7 @@ final class GooseTask {
         // 短链和缓存都不行时这条路仍有一半机会，且不消耗活动次数。
         if (!isGoosePage(page.url())) {
             detail.append("登录: 备用入口 · 裸地址走门户 SSO\n");
-            if (page.navigate(TaskApi.ACT_GOOSE, 18_000L) && waitLogged(page, 14_000L)) {
+            if (page.navigate(TaskApi.ACT_GOOSE, budget(deadline, 18_000L)) && waitLogged(page, budget(deadline, 14_000L))) {
                 String landed = page.url();
                 if (landed != null && landed.contains("pc=")) {
                     rememberEntry(landed);
@@ -605,7 +687,7 @@ final class GooseTask {
                     if (!uid.isEmpty()) {
                         base = base + "&uid=" + enc(uid);
                     }
-                    if (page.navigate(base, 15_000L) && waitLogged(page, 10_000L)) {
+                    if (page.navigate(base, budget(deadline, 15_000L)) && waitLogged(page, budget(deadline, 10_000L))) {
                         detail.append("登录: 用本地 accesstoken 登录成功\n");
                         return true;
                     }
@@ -725,6 +807,9 @@ final class GooseTask {
                 // 旧判据拿「攒饲料 / 投喂 / 已赠送」当已登录，骨架也全中，于是 ensureLogin
                 // 直接放行、动作链空跑。现在只认「已有鹅蛋：数字」这种真数据。
                 + "if(/已有鹅蛋[:：]?\\s*\\d+/.test(t))return '1';"
+                + "var biz=0;try{var rs=performance.getEntriesByType('resource')||[];"
+                + "for(var j=0;j<rs.length;j++){if(/lyh\\.lncmcc\\.com|huodong-portal|\\/lnlyh\\//i.test(rs[j].name||''))biz++}}catch(e){}"
+                + "if(biz>0&&t.length>100&&!/加载中|loading/i.test(t))return '1';"
                 + "return '0'"
                 + "}catch(e){return '0'}})()", 5_000L);
         return "1".equals(value);

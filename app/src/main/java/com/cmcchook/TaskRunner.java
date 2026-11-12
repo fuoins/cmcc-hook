@@ -10,7 +10,9 @@ import android.widget.Toast;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -1042,6 +1044,10 @@ final class TaskRunner {
         // 要看「哪几个白跑了」得自己数。这里逐项记一行四态（完成/无需操作/失败/跳过），
         // 跑完一次性写进日志和结果详情，耗时也带上 —— 一眼看出时间花在哪。
         java.util.List<String> rows = new ArrayList<>();
+        // r15 P1：收尾复查只针对「主流程真跑成功」的消耗型活动。
+        // 19:15 日志里鹅蛋在主流程已 skip、周周误报失败，收尾复查又各跑一遍，
+        // 白花约 2 分钟且结果不进汇总表；周六补抽（主流程成功）才是有用的。
+        Set<String> mainOk = new HashSet<>();
         int okCount = 0;
         int idleCount = 0;
         // v3.79：12:48 日志实证 —— 换号后 App 登录态全掉，一键过全部还是把
@@ -1086,6 +1092,11 @@ final class TaskRunner {
                         + " · " + secs(t0) + " · " + one.summary);
                 if (one.ok) {
                     okCount++;
+                    // idle 表示「今天本来就没机会/已做过」，没有余额可补，
+                    // 不再进收尾复查；只有真跑了动作且成功的才值得复查一次。
+                    if (!one.idle) {
+                        mainOk.add(cmd);
+                    }
                     if (one.idle) {
                         idleCount++;
                     }
@@ -1107,7 +1118,7 @@ final class TaskRunner {
                         }
                     }
                 }
-                markResult(HookLog.context(), cmd, one.ok, one.summary);
+                markResult(HookLog.context(), cmd, one.ok, one.idle, one.summary);
                 // 失败时把明细一起写进来。以前只打 summary，「页面未登录」这种
                 // 一句话看不出是没登录、还是被广告页顶掉了，还得回头翻全量日志。
                 HookLog.log("TASK", "活动结束 · " + name + " " + (one.ok ? "完成" : "失败"),
@@ -1166,6 +1177,11 @@ final class TaskRunner {
                         "任务全部跑完，按最新余额补抽 / 补喂 / 收蛋，覆盖做任务后又攒下的次数。");
                 for (String sc : SWEEP_CMDS) {
                     if (!inCmds(cmds, sc)) {
+                        continue;
+                    }
+                    if (!mainOk.contains(sc)) {
+                        sweepDetail.append("· ").append(label(sc))
+                                .append("：主流程未成功（跳过/失败），本轮不重复复查\n");
                         continue;
                     }
                     RealPage.closeOwned();
@@ -1289,7 +1305,7 @@ final class TaskRunner {
         }
         if (cmd.indexOf(',') < 0 && !CMD_ALL.equals(cmd)) {
             // 列表的结果在 runList 里逐个记过了，这里不能覆盖成整组的摘要。
-            markResult(ctx, cmd, result.ok, result.summary);
+            markResult(ctx, cmd, result.ok, result.idle, result.summary);
         }
         StringBuilder detail = new StringBuilder(result.detail == null ? "" : result.detail);
         if (result.userText != null && !result.userText.isEmpty()) {
@@ -1534,6 +1550,16 @@ final class TaskRunner {
      * 值形如 {@code OK 签到成功 +8} / {@code FAIL 登录失败}。
      */
     static void markResult(Context ctx, String cmd, boolean ok, String summary) {
+        markResult(ctx, cmd, ok, false, summary);
+    }
+
+    /**
+     * r15 P2：idle（无需操作）随广播单独带一个标记。
+     * 状态文本仍以 {@code OK } 开头 —— 多处 {@code startsWith("OK")} 用它判
+     * 「今天已跑过、不用再跑」，改前缀会让「无需操作」的活动被反复重跑。
+     * 文件头诊断摘要读那个标记显示成「○ 无需操作」，与一键汇总表口径一致。
+     */
+    static void markResult(Context ctx, String cmd, boolean ok, boolean idle, String summary) {
         if (ctx == null || cmd == null || cmd.isEmpty()) {
             return;
         }
@@ -1546,7 +1572,7 @@ final class TaskRunner {
             putString(ctx, KEY_PREFIX_RESULT + key + "_" + dayKey(), text);
             putLong(ctx, KEY_PREFIX_RESULT_AT + key, System.currentTimeMillis());
             // 结果同时回传模块进程，首页「今日」才能显示出来。
-            HookLog.state(key, ok, text, attemptsToday(ctx, key), dayKey());
+            HookLog.state(key, ok, idle, text, attemptsToday(ctx, key), dayKey());
         }
     }
 
