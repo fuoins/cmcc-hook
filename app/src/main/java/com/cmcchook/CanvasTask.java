@@ -149,9 +149,10 @@ final class CanvasTask {
             }
             if (domOk > 0) {
                 if (submitN <= 0) {
-                    String idleSummary = name + " · 未确认打卡（没看到提交类回执）";
-                    return TaskRunner.Result.idle(idleSummary,
-                            detail.append("判定: v3.87 按回执尺子拦下，不报成功\n").toString(),
+                    // r18：点了按钮但没抓到提交回执 —— 不能算完成，也不能打 ✓。
+                    String idleSummary = name + " · 点了打卡但没看到提交回执（需人工确认）";
+                    return TaskRunner.Result.skip(idleSummary,
+                            detail.append("判定(r18): 按回执尺子拦下，不报成功\n").toString(),
                             idleSummary);
                 }
                 String summary = name + " · 打卡成功";
@@ -176,10 +177,10 @@ final class CanvasTask {
             // 摘要也写明是「按进页判定」，不和真点过按钮的「打卡成功」混在一起。
             if (kind == KIND_DAILY7 && daily7Paid(text0)) {
                 // v3.48：以前这里报 ok，但「进页 + 文案」根本不是打卡回执，
-                // 用户看到 ✓ 却不知道是不是自己手动打的卡。改成 idle：
-                // 不报成功、不计失败次数，明确写清「没有打卡按钮，未确认打卡」。
-                String summary = name + " · 页面没有打卡按钮，未确认打卡（不算完成）";
-                return TaskRunner.Result.idle(summary, detail.toString(), summary);
+                // 用户看到 ✓ 却不知道是不是自己手动打的卡。
+                // r18：从 idle 改 skip —— idle 会被汇总表打成 ✓，和「未确认」自相矛盾。
+                String summary = name + " · 页面没有打卡按钮，未确认（需人工确认）";
+                return TaskRunner.Result.skip(summary, detail.toString(), summary);
             }
             // v4.0.5：19:24 日志实证 —— 7 日打卡首屏已经完整渲染出活动页
             // （「我的奖品 / 第1天…第7天 / 剩余1次机会 / 每天登录可抽奖1次」），
@@ -230,12 +231,15 @@ final class CanvasTask {
                 // 页面是好的，只是没挂载 Vue 组件 / 没抓到可提交的打卡按钮。
                 // 如实报「没找到入口」：不猜坐标、不伪造提交、也不冒充完成。
                 if (kind == KIND_DAILY7) {
-                    String summary = name + " · 未确认打卡（页面无按钮/热区，本轮零提交）";
-                    return TaskRunner.Result.idle(summary,
-                            detail.append("判定(v4.14): 活动页已渲染，但没有任何可确认的打卡入口。\n")
-                                    .append("这类页面按「进页即打卡」处理，未确认就不报成功；\n")
-                                    .append("下一轮进页会重新记一次，不影响当天次数。\n").toString(),
-                            summary);
+                    // r18：以前这里用 idle —— idle 的 ok 是 true，一键汇总会打成 ✓，
+                    // 摘要却写「零提交」，用户看到的就是「✓ 但没做」。
+                    // 改成 skip：汇总表标「–」，如实表示「没做成、需要人工点一次」。
+                    String summary = name + " · 本轮零提交（页面无按钮/热区，需人工点一次）";
+                    return TaskRunner.Result.skip(summary,
+                            detail.append("判定(r18): 活动页已渲染，但没有任何可确认的打卡入口。\n")
+                                    .append("页面是 canvas/图片渲染，DOM 上找不到按钮，坐标点击也没命中。\n")
+                                    .append("不伪造提交、不冒充完成，本轮标记为跳过。\n").toString(),
+                            "这个活动的打卡按钮画在 canvas 里，模块点不到。请在 App 里手动点一次「签到」。");
                 }
                 return TaskRunner.Result.fail(name + " · 页面已渲染但没找到打卡入口",
                         detail.append("判定(v4.0.5): 首屏已是活动页，不是登录页（")
@@ -484,6 +488,15 @@ final class CanvasTask {
 
     /** 周周的「去逛逛」停留门槛。用户实测 5 秒就够，多留 1 秒防服务端按整秒截断。 */
     private static final long WEEKLY_STAY_MS = 6_000L;
+
+    /**
+     * r18：周周浏览任务的总预算。
+     *
+     * <p>每轮固定耗时约 2s 判定 + 6s 停留 + 重开活动页(最多 25s) + 3.5s 复查，
+     * 12 轮上限能拖到 10 分钟，把一键总时长撑爆；中途被杀还什么都不留。
+     * 3 分钟够点完 3~4 个卡片，剩下的下一轮再补。
+     */
+    private static final long WEEKLY_BUDGET_MS = 180_000L;
     /** 一轮最多做几个浏览任务。每个约 13 秒（跳 2 + 停 6 + 回 4）。 */
     private static final int WEEKLY_TASK_TRIES = 12;
 
@@ -849,6 +862,10 @@ final class CanvasTask {
      */
     private static void runWeeklyTasks(WebPage page, String entry, StringBuilder detail) {
         sleep(1_500L);
+        // r18：这个循环以前没有任何总预算，每轮固定 sleep 2s+6s+3.5s 再加重开页 25s，
+        // 最坏能跑 10 分钟；而且全程只往 detail 里写，日志文件里一条都看不到。
+        // 22:22 那轮就是这样：日志空白 3 分半，事后无从判断卡在哪一步。
+        long deadline = System.currentTimeMillis() + WEEKLY_BUDGET_MS;
         // r14：先看页面组件里的任务清单。清单明确为空就不再点 —— 以前 DOM 数到
         // 卡片就点，卡片虚影/懒加载时白跑一轮 13 秒。
         JSONArray list = weeklyTasks(page);
@@ -864,6 +881,7 @@ final class CanvasTask {
         int left = weeklyTodo(page);
         if (left == 0) {
             detail.append("浏览任务: 没有待做（都已完成）\n");
+            HookLog.log("CANVAS", "周周浏览任务 · 没有待做", "DOM 卡片数 0，本轮不点。");
             return;
         }
         if (left < 0) {
@@ -872,6 +890,10 @@ final class CanvasTask {
             } else {
                 detail.append("浏览任务: 页面上读不到「去逛逛」卡片，跳过\n");
             }
+            HookLog.log("CANVAS", "周周浏览任务 · 读不到待做卡片",
+                    "组件清单 " + (list == null ? "无" : list.length() + " 条")
+                            + " · DOM 计数 " + left + "\n"
+                            + "这一轮不点，避免空跑。");
             return;
         }
         if (list != null && list.length() == 0) {
@@ -882,6 +904,19 @@ final class CanvasTask {
                 .append(" 个，点「去逛逛」后停留 ").append(WEEKLY_STAY_MS / 1000).append(" 秒\n");
         int done = 0, skip = 0;
         for (int i = 0; i < WEEKLY_TASK_TRIES && left > 0; i++) {
+            if (System.currentTimeMillis() >= deadline) {
+                detail.append("浏览任务: 预算用完（").append(WEEKLY_BUDGET_MS / 1000).append(" 秒），收手\n");
+                HookLog.log("CANVAS", "周周浏览任务 · 预算用完",
+                        "已记上 " + done + " 个，还剩 " + left + " 个没做。\n"
+                                + "每轮要重开活动页等落地，单项耗时较长；剩下的下一轮再补。");
+                break;
+            }
+            // r18：每轮写一条文件日志。以前整个循环只往 detail 里追加，
+            // 进程中途被杀时日志里没有任何痕迹，分不清是卡住还是被打断。
+            HookLog.log("CANVAS", "周周浏览任务 · 第 " + (i + 1) + " 轮",
+                    "剩余待做 " + left + " 个 · 已记上 " + done + " 个\n"
+                            + "流程: 点「去逛逛」→ 等跳转 → 停留 " + (WEEKLY_STAY_MS / 1000)
+                            + " 秒 → 重开活动页 → 复查剩余数");
             // v4.10.0：点了没记上时换下一张卡片，别一直点第一个（老逻辑 8 次全打在
             // 同一个按钮上，日志里「( 0/1)」一个没变）。
             String raw = weeklyTaskOne(page, skip);
@@ -953,6 +988,9 @@ final class CanvasTask {
             }
         }
         detail.append("浏览任务: 本轮记上 ").append(done).append(" 个，剩余 ").append(left).append(" 个\n");
+        HookLog.log("CANVAS", "周周浏览任务 · 收口",
+                "本轮记上 " + done + " 个 · 剩余 " + left + " 个\n"
+                        + (left > 0 ? "还有待做，下一轮会接着点。" : "浏览任务已全部完成。"));
     }
 
     /**

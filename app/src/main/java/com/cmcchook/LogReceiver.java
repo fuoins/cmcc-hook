@@ -34,6 +34,9 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_SMS_DIAG = "com.cmcchook.action.SMS_DIAG";
     /** v4.2.0 刷新 / 抢券的实时步骤（界面上滚动显示，不用干等）。 */
     static final String ACTION_PROGRESS = HookLog.ACTION_PROGRESS;
+
+    /** r18：目标进程跑完一轮任务，让模块进程停掉保活服务。 */
+    static final String ACTION_TASK_END = HookLog.ACTION_TASK_END;
     /** r8 常驻采集：目标进程旁路送来的一条原始请求 / 响应。 */
     static final String ACTION_RAW_CAPTURE = RawCapture.ACTION;
 
@@ -96,6 +99,12 @@ public final class LogReceiver extends BroadcastReceiver {
             handleProbeAct(context, intent);
         } else if (ACTION_LOGIN_LOST.equals(action)) {
             handleLoginLost(context, intent);
+        } else if (ACTION_TASK_END.equals(action)) {
+            // r18：目标进程跑完一轮（正常、失败、异常都会发），这里把前台服务降下来。
+            KeepAliveService.stop(context);
+            HookLog.log("ALIVE", "保活服务 · 任务已结束，主动停止",
+                    "由目标进程的收尾广播触发，不留常驻通知。");
+            return;
         } else if (ACTION_COUPON_LIST.equals(action)) {
             handleCouponList(context, intent);
         } else if (ACTION_COUPON_PROGRESS.equals(action)) {

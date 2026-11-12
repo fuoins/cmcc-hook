@@ -17,6 +17,15 @@ import de.robv.android.xposed.callbacks.XC_LoadPackage;
 final class HookLog {
     static final String MODULE_PACKAGE = "com.cmcchook";
     static final String TARGET_PACKAGE = "com.greenpoint.android.mc10086.activity";
+
+    /**
+     * r18：目标进程跑完一轮任务后，通知模块进程把保活服务停掉。
+     *
+     * <p>任务执行在**中国移动进程**里（TaskReceiver 挂在目标 App 的 Application 上），
+     * 而前台服务在**模块进程**。目标进程既没有这个 Service 组件、也无权跨 UID 启停，
+     * 所以只能单向发一条广播，让模块侧的 LogReceiver 去 stop。
+     */
+    static final String ACTION_TASK_END = "com.cmcchook.action.TASK_END";
     /**
      * 模块版本。
      *

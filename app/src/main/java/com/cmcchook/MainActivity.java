@@ -492,11 +492,14 @@ public final class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onStop() {
-        // r17：模块界面退到后台时记一笔，方便和「模块又关了」的时间点对照。
-        // 任务期间有前台服务保活；没任务时被回收属正常，下次打开会重新读盘。
-        if (TaskRunner.isRunning()) {
-            HookLog.log("APP", "模块界面退到后台 · 任务仍在跑（前台服务保活）",
-                    "本轮有 KeepAliveService 常驻通知；如果任务仍中断，把这份日志发我。");
+        // r18：任务实际跑在中国移动进程里，模块进程的 TaskRunner.RUNNING 永远是 false，
+        // r17 用它判断「任务仍在跑」等于永假。改成看任务下发时间戳：15 分钟内算在跑。
+        long seq = AppPrefs.getTaskSeq(this);
+        boolean running = seq > 0 && System.currentTimeMillis() - seq < 15 * 60 * 1000L;
+        if (running) {
+            HookLog.log("APP", "模块界面退到后台 · 本轮任务可能仍在跑",
+                    "保活服务由模块进程启动，任务结束会收到 TASK_END 自动停止。\n"
+                            + "如果这之后日志仍中断，说明被杀的是中国移动进程，不是模块。");
         }
         super.onStop();
     }
@@ -2378,6 +2381,12 @@ public final class MainActivity extends AppCompatActivity {
      */
     private void runTask(String cmd, String label) {
         AppPrefs.triggerTask(this, cmd);
+        // r18：保活必须在这里（模块进程）启动。
+        // r17 把它写在 TaskRunner.execute 里，而那个方法跑在中国移动进程里——
+        // 用目标包的 Context 去启 com.cmcchook.KeepAliveService，目标包没有这个组件，
+        // 直接抛异常被 catch 进 logcat，所以日志里一点痕迹都没有，模块照样被回收。
+        // 此刻模块界面还在前台，startForegroundService 不受 Android 12+ 后台限制。
+        KeepAliveService.start(this);
         boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
         if (alive && sendTaskBroadcast(cmd)) {
             String hint = TaskRunner.CMD_GOOSE.equals(cmd)

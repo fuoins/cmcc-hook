@@ -244,6 +244,7 @@ final class SoccerTask {
         int undo = out.optInt("undo", 0);
         int done = out.optInt("done", 0);
         int left = out.optInt("left", 0);
+        int dom = out.optInt("dom", 0);
         String mode = out.optString("mode", "");
         String actNo = out.optString("actNo", "");
 
@@ -319,11 +320,18 @@ final class SoccerTask {
             // v3.66：0 项任务和「任务都做完了」是两件事。11-08 08:33 页面改版后
             // 扫不到任务数组，以前直接报「今天没有待做任务」并打勾，属于假成功。
             if (total == 0) {
+                // r18：DOM 上有任务按钮、数组却读空 —— 这是读错组件或读太早，不是「今天没任务」，
+                // 不能再当 skip 糊过去，否则永远是 0 项、永远跳过。
+                if (dom > 0) {
+                    summary = "球赛狂欢季 · 页面有 " + dom + " 个任务按钮，但任务数组读空";
+                    return TaskRunner.Result.fail(summary, detail.toString(),
+                            "页面 DOM 上有「去完成/立即参与」按钮，说明任务存在，只是脚本没读到数据字段。\n"
+                                    + "把这份日志发我，我按 DOM 按钮直接点，不再依赖组件数组。");
+                }
                 summary = "球赛狂欢季 · 页面没列出任务项";
                 return TaskRunner.Result.skip(summary, detail.toString(),
-                        "页面里没扫到任务数组（可能是改版，也可能是今天确实没任务）。"
-                                + "请在 App 里手动点开球赛页看一眼：有「去完成/去邀请」按钮就把完整日志发我；"
-                                + "没有就说明今天没任务，不用再跑。");
+                        "页面里既没扫到任务数组、DOM 上也没有「去完成/去邀请」按钮，"
+                                + "说明今天确实没有任务。");
             }
             summary = "球赛狂欢季 · 今天没有待做任务"
                     + (voteSkip.isEmpty() ? "" : "（" + voteSkip + "）");
@@ -572,16 +580,25 @@ final class SoccerTask {
                       for(var k in v){ try{ harvest(v[k],depth+1) }catch(e){} }
                     }
                   }
-                  var refresh=null;
-                  for(var i=0;i<comps.length && !refresh;i++){
+                  // r18：以前这里是「先命中先用」，正则里带了裸词 inviteTask，而
+                  // GuessTicket.buildInviteTask 含这个子串、又排在 fetchInviteTask 前面，
+                  // 于是每轮只调 build（它只生成分享链接，回执里没有任务数组），
+                  // 真正的 fetchInviteTask 从未被调用 —— 日志里「刷新: buildInviteTask OK」
+                  // 后面永远跟着「任务: 共 0 项」。
+                  // 现在：排除 build/handle 前缀，按 fetch/load/get 优先排序，逐个试到拿到任务数组。
+                  var cands=[];
+                  for(var i=0;i<comps.length;i++){
                     var ms=mnames(comps[i]);
                     for(var j=0;j<ms.length;j++){
-                      if(/taskIndex|fetchInviteTask|fetchTask|inviteTask|loadTask/i.test(ms[j])){
-                        refresh={c:comps[i],m:ms[j]}; break
-                      }
+                      var mn=ms[j];
+                      if(/^(build|handle|close|show|open|toggle)/i.test(mn)) continue;
+                      if(!/taskIndex|fetchInviteTask|fetchTask|loadTask|getTaskList|getTaskInfo/i.test(mn)) continue;
+                      cands.push({c:comps[i],m:mn,score:/^(fetch|load|get)/i.test(mn)?2:1});
                     }
                   }
-                  if(refresh){
+                  cands.sort(function(a,b){return b.score-a.score});
+                  for(var ci=0;ci<cands.length&&!extra;ci++){
+                    var refresh=cands[ci];
                     try{
                       var r0=refresh.c[refresh.m]();
                       if(r0&&isFn(r0.then)) r0=await r0;
@@ -589,16 +606,29 @@ final class SoccerTask {
                       harvest(r0,0);
                       if(extra) line('刷新回执里拿到任务 '+extra.length+' 项');
                     }catch(e){ line('刷新: '+refresh.m+' 失败 '+e) }
-                    await wait(1500);
-                    scanTasks();
-                    if(!owner&&extra){
-                      owner={}; field='__extra'; owner[field]=extra;
-                      line('任务数组: 用刷新回执 共 '+extra.length+' 项');
-                    }
-                  } else line('刷新: 没找到任务方法');
+                    await wait(800);
+                  }
+                  if(!cands.length) line('刷新: 没找到任务方法');
+                  await wait(1500);
+                  scanTasks();
+                  if(!owner&&extra){
+                    owner={}; field='__extra'; owner[field]=extra;
+                    line('任务数组: 用刷新回执 共 '+extra.length+' 项');
+                  }
 
                   var tasks=owner?(owner[field]||[]):[];
                   line('任务: 共 '+tasks.length+' 项');
+                  // r18：数组读空时用 DOM 上的任务按钮做交叉验证。
+                  // 页面有按钮 = 字段没对上（读错组件/读太早）；页面也没按钮 = 今天确实没任务。
+                  var domBtn=0;
+                  try{
+                    var elAll=document.querySelectorAll('div,span,button,a');
+                    for(var q=0;q<elAll.length;q++){
+                      var tx=String(elAll[q].innerText||'').replace(/\\s+/g,'');
+                      if(/^(去完成|立即参与|去邀请|去逛逛|领取|去参与)$/.test(tx)) domBtn++;
+                    }
+                  }catch(e){}
+                  line('DOM任务按钮: '+domBtn+' 个');
                   var undo=0;
                   for(var i=0;i<tasks.length;i++){
                     var st=stageOf(tasks[i]);
@@ -813,7 +843,7 @@ final class SoccerTask {
 
                   done({ok:left===0, stage:'done', actNo:actNo, mode:mode,
                         total:tasks.length, undo:undo, done:doneCount, left:left,
-                        vote:voteOut});
+                        dom:domBtn, vote:voteOut});
                 }catch(err){
                   done({ok:false, stage:'error', msg:String((err&&err.stack)||err)});
                 }

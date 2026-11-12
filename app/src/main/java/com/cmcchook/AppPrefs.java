@@ -98,6 +98,16 @@ final class AppPrefs {
                 .apply();
     }
 
+    /**
+     * r18：最近一次下发任务的时间戳。
+     *
+     * <p>任务在目标进程执行，模块进程读不到 TaskRunner 的运行标志，只能靠这个时间戳
+     * 判断「刚点过一键、可能还在跑」。模块界面退到后台时的埋点、以及保活提示都读它。
+     */
+    static long getTaskSeq(Context context) {
+        return settings(context).getLong("task_cmd_seq", 0L);
+    }
+
     static long getLastHeartbeat(Context context) {
         return status(context).getLong("last_heartbeat", 0L);
     }

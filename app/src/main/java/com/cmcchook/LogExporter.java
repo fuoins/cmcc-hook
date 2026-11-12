@@ -262,6 +262,10 @@ final class LogExporter {
      */
     private static void appendDigest(StringBuilder sb, Context context) {
         sb.append("=== 诊断摘要 ===\n");
+        // r18：这张表读的是「当日累计」的持久化状态，包含手动单独执行的轮次，
+        // 不等于本轮一键的结果。22:22 那轮周周跑到一半被杀、本轮没写结论，
+        // 摘要仍显示 21:5x 那轮的 ✗，很容易被当成本轮失败。这里明确标出来。
+        sb.append("注: 以下为当日累计（含手动执行/上一轮的记录），不等同于本轮结果。\n");
         String day = AppPrefs.today();
         String[] cmds = {"sign", "egg", "goose", "soccer", "tearbox", "saturday",
                 "video", "daily7", "miao", "recharge", "wed", "seckill", "lucky3", "weekly",

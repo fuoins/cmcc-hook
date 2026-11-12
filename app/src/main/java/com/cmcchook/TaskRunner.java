@@ -2,6 +2,7 @@ package com.cmcchook;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.SharedPreferences;
 import android.os.Handler;
 import android.os.Looper;
@@ -481,9 +482,9 @@ final class TaskRunner {
                         + skipLine(HookLog.context(), cmd) + "\n"
                         + "入口: " + entry(resolveEntry(cmd))
                         + "\nCookie: " + CookieStore.summary());
-        // r17：把模块进程抬到前台服务优先级。一键要跑两三分钟，广播的 goAsync 只能
-        // 多留几十秒，期间模块界面退后台就会被 HyperOS 当缓存进程回收。
-        KeepAliveService.start(activity);
+        // r18：这里不再启停保活服务。本方法跑在中国移动进程里，KeepAliveService 在模块包，
+        // 跨 UID 且目标包无此组件，调用只会抛异常（r17 就是这么静默失败的）。
+        // 启动在 MainActivity.runTask（模块进程）；结束时由下面 finally 发一条广播回去。
         POOL.execute(new Runnable() {
             @Override
             public void run() {
@@ -524,8 +525,8 @@ final class TaskRunner {
                     HookLog.logcat("task finish failed: " + e);
                 } finally {
                     // 不管 finish 出什么问题，锁都要放掉，否则后面所有任务都被跳过。
-                    // r17：任务结束立刻降级，不留常驻通知。
-                    KeepAliveService.stop(activity);
+                    // r18：保活服务在模块进程，这里只能发广播让它停（见 notifyTaskEnd）。
+                    notifyTaskEnd();
                     RUNNING.set(false);
                     String next = PENDING_PROBE.getAndSet(null);
                     if (next != null) {
@@ -542,6 +543,27 @@ final class TaskRunner {
                 }
             }
         });
+    }
+
+    /**
+     * r18：告诉模块进程「这一轮结束了，可以把前台服务降下来」。
+     *
+     * <p>本方法在目标进程中执行，发不了模块包的组件，只能发一条显式广播；
+     * 模块侧的 LogReceiver 收到后 stopService。广播丢了也不会常驻——
+     * KeepAliveService 自己有 15 分钟兜底超时。
+     */
+    private static void notifyTaskEnd() {
+        try {
+            Context ctx = HookLog.context();
+            if (ctx == null) {
+                return;
+            }
+            Intent i = new Intent(HookLog.ACTION_TASK_END);
+            i.setPackage(HookLog.MODULE_PACKAGE);
+            ctx.sendBroadcast(i);
+        } catch (Throwable e) {
+            HookLog.logcat("notifyTaskEnd failed: " + e);
+        }
     }
 
     /**

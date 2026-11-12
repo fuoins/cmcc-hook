@@ -90,6 +90,7 @@
                 <action android:name="com.cmcchook.action.PROBE" />
                 <action android:name="com.cmcchook.action.PROBE_ACT" />
                 <action android:name="com.cmcchook.action.LOGIN_LOST" />
+                <action android:name="com.cmcchook.action.TASK_END" />
                 <action android:name="com.cmcchook.action.COUPON_LIST" />
                 <action android:name="com.cmcchook.action.COUPON_PROGRESS" />
                 <action android:name="com.cmcchook.action.COUPON_NEED_CODE" />

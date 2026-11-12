@@ -43,8 +43,19 @@ final class MiaoTask {
         // v4.10.0：先做「赚阳光值」列表里的免费任务。这些任务点了会跳到别的
         // 活动页，脚本上下文会被销毁，所以由 Java 侧逐个点 → 停 5 秒 → 拉回本页复查。
         // 全部做完（或没有待做）之后，再注入主脚本做页面内的签到/浇水/收豆。
+        //
+        // r18：阳光值必须在点击**之前**取一次。主脚本里的基线是脚本启动时才读的，
+        // 那时免费任务已经点完，拿它做前后对比等于拿「点完之后」比「点完之后」，
+        // 永远判不出点击有没有换来阳光值（r17 日志「160→160 未变」就是这么来的）。
+        int sunClick0 = readSun(page);
         int freeTasks = runFreeTasks(page, entry, detail);
-        detail.append("赚阳光值免费任务: 完成 ").append(freeTasks).append(" 个\n");
+        int sunClick1 = readSun(page);
+        detail.append("赚阳光值免费任务: 点击且真正跳转过 ").append(freeTasks).append(" 个\n");
+        if (sunClick0 >= 0 && sunClick1 >= 0) {
+            detail.append("阳光值(点击前后): ").append(sunClick0).append(" → ").append(sunClick1)
+                    .append(sunClick1 > sunClick0 ? "（+" + (sunClick1 - sunClick0) + "）" : "（未变）")
+                    .append('\n');
+        }
 
         page.eval(MIAO_SCRIPT, 8_000L);
         String raw = null;
@@ -149,14 +160,19 @@ final class MiaoTask {
         // 160 没动，却报了 ✓。现在要求阳光值确实上涨才算完成，否则标无需操作，
         // 让下一轮复查时再补，避免把白点记成战果。
         if (freeTasks > 0) {
-            if (sun0 >= 0 && sun1 >= 0 && sun1 <= sun0) {
+            // r18：优先用「点击前 / 点击后」这一对（sunClick0/1），它才是真正对应
+            // 免费任务点击的差值；主脚本的 sun0/sun1 只在读不到时兜底。
+            int base = sunClick0 >= 0 ? sunClick0 : sun0;
+            int now = sunClick1 >= 0 ? sunClick1 : sun1;
+            if (base >= 0 && now >= 0 && now <= base) {
                 String summary = "豆苗养成记 · 点了 " + freeTasks + " 个任务，阳光值 "
-                        + sun0 + "→" + sun1 + " 未变";
+                        + base + "→" + now + " 未变";
                 return TaskRunner.Result.idle(summary,
-                        detail.append("判定(r17): 点击后阳光值没有上涨，可能延迟到账，本轮不记完成。\n")
+                        detail.append("判定(r18): 点击后阳光值没有上涨，任务多半没被服务端记账，本轮不记完成。\n")
                                 .toString(), summary);
             }
-            String summary = "豆苗养成记 · 完成 " + freeTasks + " 个赚阳光值任务";
+            String summary = "豆苗养成记 · 完成 " + freeTasks + " 个赚阳光值任务"
+                    + (base >= 0 && now > base ? "（阳光值 +" + (now - base) + "）" : "");
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
         }
         // 3) v4.0.5：判定顺序修正 —— 旧版先判「点了按钮没回执 → 失败」，
@@ -229,6 +245,30 @@ final class MiaoTask {
      * <p>付费订购类（办理铂金会员 / 畅看会员 / 去订购）由脚本按「去订购」按钮
      * 与卡片文案双重排除，只点免费的「去浏览/去分享/去领取/去看看/去邀请/去关注」。
      */
+    /** r18：只读阳光值，供「点击前 / 点击后」对比用，不依赖主脚本。 */
+    private static final String MIAO_SUN = """
+            (function(){
+              try{
+                var t=String((document.body&&document.body.innerText)||'');
+                var m=t.match(/我的阳光值\\s*(\\d+)/)||t.match(/阳光值\\s*(\\d+)/);
+                return m?m[1]:'';
+              }catch(e){return ''}
+            })()
+            """;
+
+    /** 读不到返回 -1（页面还在渲染时是正常的，不要当 0）。 */
+    private static int readSun(WebPage page) {
+        String v = page.eval(MIAO_SUN, 3_000L);
+        if (v == null) {
+            return -1;
+        }
+        try {
+            return Integer.parseInt(v.trim());
+        } catch (Throwable e) {
+            return -1;
+        }
+    }
+
     private static int runFreeTasks(WebPage page, String entry, StringBuilder detail) {
         detail.append("赚阳光值任务: 图片按钮(IMG.content-btn)按结构定位，不靠 innerText\n");
         int done = 0;
@@ -262,11 +302,19 @@ final class MiaoTask {
             sleep(1_200L);
             String landed = page.url();
             boolean jumped = landed != null && !landed.contains("2026dmycj");
-            if (jumped) {
-                detail.append("    已跳到 ").append(brief(landed)).append("，停留 5 秒\n");
-            } else {
-                detail.append("    页面内跳转/未离开，仍停 5 秒让服务端计时长\n");
+            if (!jumped) {
+                // r18：没离开豆苗页 = 点到的不是任务按钮（多半是 tab 图标或卡片容器）。
+                // 以前这里照样停 5 秒、照样 done++，于是日志写「点了 4 个」，
+                // 而服务端一分阳光值都没记，页面还报 TypeError。
+                // 现在：不计数、不空等，连续 3 次就收手，如实报「点了没跳」。
+                detail.append("    点击未触发跳转（仍在豆苗页），不计入完成\n");
+                if (++stall >= 3) {
+                    detail.append("  免费任务: 连续 3 次点击都没跳转，收手（按钮定位需修正）\n");
+                    break;
+                }
+                continue;
             }
+            detail.append("    已跳到 ").append(brief(landed)).append("，停留 5 秒\n");
             sleep(MIAO_STAY_MS);
             if (!page.navigate(entry, 25_000L)) {
                 detail.append("  免费任务: 拉回豆苗页失败，停止\n");
@@ -349,6 +397,10 @@ final class MiaoTask {
                 }
                 var PAY=/去订购|办理|会员|铂金|畅看|订购订单/;
                 var DONE=/已完成|已领取|已浏览|已看过|已打卡|明天再来|已参与/;
+                // r18：卡片必须带「收益或任务关键词」才算任务卡。
+                // 只按 content-btn 找会命中页面底部的 tab 图标，点下去只是切 tab
+                // （日志里 URL 的 pageKey 从 2 一路涨到 5，阳光值一分没动）。
+                var POS=/\\+\\s*10|阳光|直播|榜单|爆品|网龄|分享|一豆|签到|浏览|观看/;
                 var WORDS=['去浏览','去分享','去领取','去看看','去邀请','去关注','去完成','去参与'];
                 var cards=[],seen=[];
                 function add(el,card,name,kind){
@@ -378,6 +430,7 @@ final class MiaoTask {
                   if(r.height>160||ratio<0.6||ratio>12)continue;
                   var card=cardOf(e),ct=labelOf(card);
                   if(PAY.test(ct)||DONE.test(ct))continue;
+                  if(!POS.test(ct))continue;
                   add(e,card,ct||'图片浏览任务','img');
                 }
                 // ② 文字按钮：老版本页面仍用「去浏览」这类纯文字按钮，保留兜底。
@@ -395,11 +448,11 @@ final class MiaoTask {
                 if(!cards.length)return JSON.stringify({none:1,left:0});
                 var pick=cards[0];
                 fire(pick.el);
-                var up=pick.card;
-                for(var u=0;u<3&&up;u++){
-                  if(up!==pick.el)fire(up);
-                  up=up.parentElement;
-                }
+                // r18：只补点卡片本身和它的直接父级。以前连点 3 层祖先，
+                // 会把 tab 容器/整页容器的点击也触发，日志里表现为 pageKey 连续变化
+                // 外加一串页面 TypeError，任务却一个没记上。
+                if(pick.card&&pick.card!==pick.el)fire(pick.card);
+                if(pick.card&&pick.card.parentElement)fire(pick.card.parentElement);
                 return JSON.stringify({name:pick.name,left:cards.length,
                                        kind:pick.kind,url:String(location.href)});
               }catch(err){return JSON.stringify({err:String(err&&err.message||err)})}

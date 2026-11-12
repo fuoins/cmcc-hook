@@ -114,7 +114,8 @@ final class EggTask {
             if (remain > base || triggered == 0) {
                 break;
             }
-            sleep(400);
+            // r18：400ms 太短，服务端登记浏览任务通常要 1~2 秒。三轮回 1.5 秒。
+            sleep(1_500);
         }
         int gained = Math.max(remain - base, 0);
         detail.append("任务: 共 ").append(taskCount).append(" 个，触发 ").append(triggered)
@@ -125,8 +126,19 @@ final class EggTask {
         }
 
         if (remain <= 0) {
+            // r18：触发了任务但次数一分没到账 —— 说明只发出了 startBrowse，
+            // 服务端没认这笔浏览（这类任务通常要求真打开落地页并停留几秒）。
+            // 以前这里走 idle，idle 的 ok 是 true，汇总表会打成 ✓，看着像做成了。
+            if (triggered > 0 && gained <= 0) {
+                String text = "触发 " + triggered + " 个浏览任务，次数 " + base + "→" + remain
+                        + " 没到账（需人工进落地页停留）";
+                detail.append("结果: ").append(text).append('\n');
+                return TaskRunner.Result.skip(title + " · " + text, detail.toString(),
+                        "这些浏览任务要真打开落地页并停留几秒才算。模块只发出了 startBrowse 请求。\n"
+                                + "请在 App 里手动点开一次任务链接，再回来执行。");
+            }
             String text = triggered > 0
-                    ? "做了 " + triggered + " 个任务但次数没到账"
+                    ? "做了 " + triggered + " 个任务，次数仍为 0"
                     : "今天没有抽奖次数";
             detail.append("结果: ").append(text).append('\n');
             return TaskRunner.Result.idle(title + " · " + text, detail.toString(), "· " + text);
