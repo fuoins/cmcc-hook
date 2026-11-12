@@ -43,6 +43,13 @@ final class ScriptEngine {
 
     static TaskRunner.Result run(String script, String name, String referer,
                                  StringBuilder detail) {
+        // 旧调用点不限时；快路径会传一个硬预算，超时立刻收手交给旧链路兜底。
+        return run(script, name, referer, detail, Long.MAX_VALUE);
+    }
+
+    /** 带截止时间的入口：快路径专用。到点抛 fail，由 FastPath 回退真页链路。 */
+    static TaskRunner.Result run(String script, String name, String referer,
+                                 StringBuilder detail, long deadlineMs) {
         JSONObject root;
         try {
             root = new JSONObject(script);
@@ -57,7 +64,7 @@ final class ScriptEngine {
             return TaskRunner.Result.fail(name + "：脚本没有步骤", "", "");
         }
         try {
-            String text = runSteps(steps, vars, detail);
+            String text = runSteps(steps, vars, detail, deadlineMs);
             return TaskRunner.Result.ok(text, detail.toString(), text);
         } catch (ScriptResult e) {
             String d = e.detail == null || e.detail.isEmpty() ? detail.toString() : e.detail;
@@ -87,9 +94,13 @@ final class ScriptEngine {
         }
     }
 
-    /** 执行一组步骤，返回最终文本。 */
-    private static String runSteps(JSONArray steps, Vars vars, StringBuilder detail) {
+    /** 执行一组步骤，返回最终文本。deadline 到点立即中止，避免快路径拖住整轮。 */
+    private static String runSteps(JSONArray steps, Vars vars, StringBuilder detail,
+                                   long deadline) {
         for (int i = 0; i < steps.length(); i++) {
+            if (System.currentTimeMillis() > deadline) {
+                throw new ScriptResult("fail", "快路径超时，已回退真页链路", null);
+            }
             JSONObject step = steps.optJSONObject(i);
             if (step == null) {
                 continue;
@@ -97,11 +108,19 @@ final class ScriptEngine {
             if (step.has("req")) {
                 doReq(step.optJSONObject("req"), vars, detail);
             } else if (step.has("if")) {
-                doIf(step.optJSONObject("if"), vars, detail);
+                doIf(step.optJSONObject("if"), vars, detail, deadline);
             } else if (step.has("for")) {
-                doFor(step.optJSONObject("for"), vars, detail);
+                doFor(step.optJSONObject("for"), vars, detail, deadline);
             } else if (step.has("sleep")) {
-                WebPage.sleep(step.optLong("sleep", 1000));
+                long ms = step.optLong("sleep", -1L);
+                if (ms < 0) {
+                    try {
+                        ms = Long.parseLong(vars.render(step.optString("sleep", "1000")).trim());
+                    } catch (Throwable ignored) {
+                        ms = 1000L;
+                    }
+                }
+                WebPage.sleep(Math.max(0L, Math.min(ms, 20_000L)));
             } else if (step.has("log")) {
                 detail.append(vars.render(step.optString("log", ""))).append('\n');
             } else if (step.has("set")) {
@@ -135,7 +154,12 @@ final class ScriptEngine {
             return;
         }
         String url = path.startsWith("http") ? path : TaskNet.BASE + path;
-        String ref = vars.get("referer");
+        // 单请求可自带 Referer（浏览任务要「目标页 Referer」冒充到访）；
+        // 不写则沿用脚本全局 referer，旧脚本行为不变。
+        String ref = vars.render(req.optString("ref", ""));
+        if (ref.isEmpty()) {
+            ref = vars.get("referer");
+        }
         JSONObject saved = new JSONObject();
         try {
             TaskNet.Resp resp;
@@ -194,12 +218,13 @@ final class ScriptEngine {
 
     // ------------------------------------------------------------ 控制流
 
-    private static void doIf(JSONObject node, Vars vars, StringBuilder detail) {
+    private static void doIf(JSONObject node, Vars vars, StringBuilder detail,
+                             long deadline) {
         JSONObject cond = node.optJSONObject("cond");
         boolean hit = cond == null || evalCond(cond, vars);
         JSONArray branch = hit ? node.optJSONArray("then") : node.optJSONArray("else");
         if (branch != null) {
-            runSteps(branch, vars, detail);
+            runSteps(branch, vars, detail, deadline);
         }
     }
 
@@ -265,7 +290,8 @@ final class ScriptEngine {
         return value;
     }
 
-    private static void doFor(JSONObject node, Vars vars, StringBuilder detail) {
+    private static void doFor(JSONObject node, Vars vars, StringBuilder detail,
+                              long deadline) {
         String listPath = node.optString("list", "");
         String as = node.optString("as", "it");
         JSONArray steps = node.optJSONArray("do");
@@ -284,7 +310,7 @@ final class ScriptEngine {
         for (int i = 0; i < list.length() && i < max; i++) {
             vars.put(as, list.opt(i));
             vars.put("idx", i);
-            runSteps(steps, vars, detail);
+            runSteps(steps, vars, detail, deadline);
         }
         vars.remove(as);
         vars.remove("idx");

@@ -143,6 +143,54 @@ final class WebSession {
         return false;
     }
 
+    /**
+     * r8 快路径用的轻量上下文：只等文档建立，不等 Vue 渲染、不等落地跳转链、
+     * 不做场景快照。服务端认的是「请求由页面 JS 发出」，文档一起就够发 fetch。
+     *
+     * <p>任何一步判不过都直接返回 false，由调用方原样回退 {@link #beginFast}——
+     * 旧链路一行不删，功能不回退，只是这次多花一次开页。
+     */
+    static boolean beginFastLite(String key, String url, long timeoutMs) {
+        long start = System.currentTimeMillis();
+        suppressAuto = true;
+        WebPage live;
+        try {
+            live = tryReal(key, url, Math.min(Math.max(timeoutMs, 8_000L), 14_000L));
+        } finally {
+            suppressAuto = false;
+        }
+        if (live == null || live.raw() == null) {
+            return false;
+        }
+        // 文档建立即可发请求：渲染、Vue mount、落地跳转链都不等。
+        long okEnd = System.currentTimeMillis() + 6_000L;
+        while (!live.ok() && live.raw() != null && System.currentTimeMillis() < okEnd) {
+            try {
+                Thread.sleep(200L);
+            } catch (InterruptedException ignored) {
+                break;
+            }
+        }
+        if (!live.ok()) {
+            live.close();
+            return false;
+        }
+        String landed = live.url();
+        if (landed == null || landed.contains("qwhdsso/login") || RealPage.transit(landed)) {
+            // 停在登录页 / 中转页：这个现场发不了活动接口，交给完整链路去换票。
+            live.close();
+            return false;
+        }
+        current = live;
+        currentKey = key;
+        HookLog.log("TASK", "轻量页面上下文 · " + key + " · "
+                        + (System.currentTimeMillis() - start) + "ms",
+                "URL: " + landed + "\n"
+                        + "只等文档建立，不等渲染 / 落地跳转链 / 场景快照；"
+                        + "接口全部在这个真页上下文里发。");
+        return true;
+    }
+
     /** 页面已经开着时补一次 localStorage 注入（换票可能在开页之后才完成）。 */
     private static void injectJwt(WebPage page, String script) {
         if (page == null || script == null) {
@@ -428,5 +476,14 @@ final class WebSession {
         if (page != null) {
             page.close();
         }
+    }
+
+    /**
+     * r8：只清引用、不关页。快路径命中时页面由 {@code RealPage.closeOwned()}
+     * 统一收尾，避免和这里重复关闭同一个真页。
+     */
+    static void detach() {
+        current = null;
+        currentKey = "";
     }
 }

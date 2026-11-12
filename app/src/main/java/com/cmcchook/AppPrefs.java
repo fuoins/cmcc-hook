@@ -31,6 +31,10 @@ final class AppPrefs {
     static final String KEY_AD_BLOCK = "ad_block";
     static final String KEY_KEEPALIVE = "keep_alive";
     static final String KEY_KEEP_GAP = "keep_gap";
+    /** r8：快路径（页面上下文纯请求编排）总开关，默认开；失败自动回退旧链路。 */
+    static final String KEY_FAST_PATH = "fast_path";
+    /** r8：常驻采集旁路开关，默认关；用户手动做一遍活动时才打开录全量请求。 */
+    static final String KEY_RAW_CAPTURE = "raw_capture";
 
     private AppPrefs() {
     }

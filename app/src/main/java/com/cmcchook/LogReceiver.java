@@ -31,6 +31,8 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_SMS_DIAG = "com.cmcchook.action.SMS_DIAG";
     /** v4.2.0 刷新 / 抢券的实时步骤（界面上滚动显示，不用干等）。 */
     static final String ACTION_PROGRESS = HookLog.ACTION_PROGRESS;
+    /** r8 常驻采集：目标进程旁路送来的一条原始请求 / 响应。 */
+    static final String ACTION_RAW_CAPTURE = RawCapture.ACTION;
 
     /** 优惠券页开着时，收到广播立刻刷新；关着就只落盘。 */
     interface CouponWatcher {
@@ -81,6 +83,8 @@ public final class LogReceiver extends BroadcastReceiver {
             handleWelfare(context, intent);
         } else if (ACTION_PROBE.equals(action)) {
             handleProbe(context, intent);
+        } else if (ACTION_RAW_CAPTURE.equals(action)) {
+            handleRawCapture(context, intent);
         } else if (ACTION_PROBE_ACT.equals(action)) {
             handleProbeAct(context, intent);
         } else if (ACTION_LOGIN_LOST.equals(action)) {
@@ -241,6 +245,17 @@ public final class LogReceiver extends BroadcastReceiver {
                 return;
             }
             ProbeStore.save(context, json);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** r8：一条原始记录追加进 JSONL，不去重、不截断、不进任务队列。 */
+    private void handleRawCapture(Context context, Intent intent) {
+        try {
+            String json = intent.getStringExtra(RawCapture.EXTRA_JSON);
+            if (json != null && !json.isEmpty()) {
+                RawCaptureStore.append(context, json);
+            }
         } catch (Throwable ignored) {
         }
     }

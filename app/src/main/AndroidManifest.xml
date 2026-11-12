@@ -86,6 +86,8 @@
                 <!-- v4.0 流量余量结果 + 电话进程框架层短信通道安装诊断 -->
                 <action android:name="com.cmcchook.action.FLOW_DATA" />
                 <action android:name="com.cmcchook.action.SMS_DIAG" />
+                <!-- r8 常驻采集：目标进程旁路送来的原始请求 / 响应 -->
+                <action android:name="com.cmcchook.action.RAW_CAPTURE" />
             </intent-filter>
         </receiver>
 

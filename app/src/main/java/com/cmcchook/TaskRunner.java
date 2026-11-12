@@ -496,11 +496,14 @@ final class TaskRunner {
                     RealPage.beginSession();
                     try {
                         result = dispatch(cmd);
-                    } finally {
-                        // 任务结束把页面关掉，不留一堆窗口在 App 里。
-                        RealPage.closeOwned();
-                        RealPage.endSession();
-                    }
+                } finally {
+                    // 任务结束把页面关掉，不留一堆窗口在 App 里。
+                    // r8：快路径命中时不经过 runOne 的 WebSession.end()，这里只清引用，
+                    // 页面统一交给 closeOwned 关，避免重复关闭同一个真页。
+                    WebSession.detach();
+                    RealPage.closeOwned();
+                    RealPage.endSession();
+                }
                 } catch (Throwable e) {
                     result = Result.fail("任务异常：" + e, android.util.Log.getStackTraceString(e),
                             "把日志发我。");
@@ -719,6 +722,13 @@ final class TaskRunner {
     }
 
     private static Result runOne(String cmd) {
+        // r8 快路径：先试「页面上下文纯请求编排」，命中就直接收工；
+        // 未注册 / 失败 / 超时 / 异常一律返回 null，下面原样走现有真页链路。
+        // 旧代码一行不删，某个活动的快路径在你机器上不被服务端认也不会漏做。
+        Result fast = FastPath.tryRun(cmd);
+        if (fast != null) {
+            return fast;
+        }
         String key = null;
         String url = null;
         boolean needToken = false;
@@ -907,7 +917,7 @@ final class TaskRunner {
                             + "说明: 用户手动打开的签到页已登录、已布局，本次直接在它上面跑脚本。\n");
             login.append("现场: 复用 App 前台真页（跳过离屏开页）\n");
         }
-        if (!frontWisdom && !WebSession.beginFast(key, url, 20_000L)) {
+        if (!frontWisdom && !beginSessionFast(key, url)) {
             HookLog.log("TASK", "活动页没起来 · " + label(cmd),
                     "URL: " + briefUrl(url) + "\n" + login);
             // 页面没起来是环境问题，不是活动本身拒绝。不计失败次数，
@@ -993,6 +1003,18 @@ final class TaskRunner {
         } finally {
             WebSession.end();
         }
+    }
+
+    /**
+     * r8：所有活动的开页都先试「轻量上下文」（只等文档建立，不等渲染），
+     * 判不过或开关关掉就原样回退到原来的完整 beginFast。
+     * 这样明文域不用重建 WebView 等 Vue，密文/画布域照旧走原来的现场判定。
+     */
+    private static boolean beginSessionFast(String key, String url) {
+        if (HookPrefs.flag("fast_path", true) && WebSession.beginFastLite(key, url, 12_000L)) {
+            return true;
+        }
+        return WebSession.beginFast(key, url, 20_000L);
     }
 
     /** 按顺序跑指定的几个活动，每个都执行、每个都单独记账。 */

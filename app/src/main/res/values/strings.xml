@@ -234,4 +234,17 @@
     <string name="coupon_hide_blocked">隐藏满减券</string>
     <string name="coupon_used">已用</string>
     <string name="coupon_failed">失败</string>
+
+    <!-- r8：快路径 + 常驻采集旁路 -->
+    <string name="fast_section">执行加速 / 采集（r8）</string>
+    <string name="fast_path_title">页面上下文快路径</string>
+    <string name="fast_path_desc">活动接口改在真页里直接发请求，不等渲染、不点按钮、不逐个停留；任何一步没过都自动回退原来的真页链路，旧代码没删，不会漏做。关掉就全程按原来的方式跑。</string>
+    <string name="raw_capture_title">常驻采集（原始请求流）</string>
+    <string name="raw_capture_desc">打开后，手动在 App 里做一遍活动，每条请求/响应的完整头与正文都会旁路录下来（不过滤、不去重）。导出报告会标出参数来源和哪些域是密文，用来把更多活动收敛成脚本。报告含 Cookie / token，别外传。</string>
+    <string name="capture_export">导出采集报告</string>
+    <string name="capture_clear">清空采集</string>
+    <string name="capture_no_data">还没录到请求。先打开「常驻采集」，再到中国移动 App 里手动做一遍活动。</string>
+    <string name="capture_export_fail">导出采集报告失败</string>
+    <string name="capture_cleared">采集记录已清空</string>
+    <string name="capture_summary">已录 %1$d 条请求</string>
 </resources>

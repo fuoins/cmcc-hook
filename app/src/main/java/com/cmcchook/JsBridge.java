@@ -17,6 +17,9 @@ public final class JsBridge {
             String type = json.optString("type", "");
             String page = json.optString("page", "");
             if ("xhr".equals(type) || "fetch".equals(type) || "beacon".equals(type)) {
+                // r8 常驻采集旁路：放在所有开关 / UrlFilter / apiOnly 过滤之前，
+                // 原样留一份完整请求（含全量头与请求体），纯旁路不改任何任务逻辑。
+                RawCapture.record("h5", json);
                 // v3.80：页面级 XHR 钩子比任务脚本注入得早。wisdom 的登录回执
                 // 在这里留一份摘要，供任务日志自证（不受「详细原始返回」开关影响）。
                 WisdomTask.noteLoginReply(json.optString("url", ""),

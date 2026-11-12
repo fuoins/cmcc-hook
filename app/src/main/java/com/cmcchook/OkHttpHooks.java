@@ -90,6 +90,11 @@ final class OkHttpHooks {
     }
 
     private static void handleProceed(XC_MethodHook.MethodHookParam param) {
+        // r8 常驻采集旁路：独立于下面所有开关与过滤，开关打开就原样录一条。
+        // 放在方法最前面，连 nativeHttp 关掉、UrlFilter 判不感兴趣的也录。
+        if (RawCapture.enabled()) {
+            rawSide(param);
+        }
         // 探路期间无视「原生抓包」开关：福利中心的数据是原生接口下发的，
         // 关掉就什么都看不到，探路等于白跑。
         if (!HookPrefs.nativeHttp() && !ProbeSession.active()) {
@@ -157,6 +162,24 @@ final class OkHttpHooks {
             HookLog.log(tag, summary, detail.toString());
         } catch (Throwable e) {
             reportOnce("response", "format HTTP response failed: " + e);
+        }
+    }
+
+    /** r8：把所有过滤之前的原生请求原样送进常驻采集旁路。 */
+    private static void rawSide(XC_MethodHook.MethodHookParam param) {
+        try {
+            Object request = findRequest(param.args);
+            if (request == null) {
+                return;
+            }
+            String url = requestUrl(request);
+            Object response = param.getResult();
+            int code = response == null ? 0 : intValue(call(response, "code"), 0);
+            RawCapture.record("okhttp", RawCapture.of(url, requestMethod(request), code,
+                    requestHeaders(request), requestBody(request),
+                    response == null ? "" : responseHeaders(response),
+                    response == null ? "" : responseBody(response)));
+        } catch (Throwable ignored) {
         }
     }
 

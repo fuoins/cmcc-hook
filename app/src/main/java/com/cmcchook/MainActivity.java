@@ -417,6 +417,17 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchAdBlock, AppPrefs.KEY_AD_BLOCK);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
         bindSwitch(R.id.switchKeepAlive, AppPrefs.KEY_KEEPALIVE);
+        // r8：快路径默认开（失败自动兜底），常驻采集默认关（含敏感头，按需打开）。
+        bindSwitch(R.id.switchFastPath, AppPrefs.KEY_FAST_PATH, true);
+        bindSwitch(R.id.switchRawCapture, AppPrefs.KEY_RAW_CAPTURE, false);
+        View btnCaptureExport = findViewById(R.id.btnCaptureExport);
+        if (btnCaptureExport != null) {
+            btnCaptureExport.setOnClickListener(v -> exportCapture());
+        }
+        View btnCaptureClear = findViewById(R.id.btnCaptureClear);
+        if (btnCaptureClear != null) {
+            btnCaptureClear.setOnClickListener(v -> clearCapture());
+        }
         // v4.10.0-r2：「立即全部跑一次」已挪到福利中心顶部，功能页不再有这个按钮。
 
         // 每次进界面都按当前开关重排一次，版本升级 / 清数据后也能自动恢复。
@@ -1385,6 +1396,40 @@ public final class MainActivity extends AppCompatActivity {
         } catch (Throwable e) {
             Toast.makeText(this, "唤起失败：" + e, Toast.LENGTH_LONG).show();
         }
+    }
+
+    /** r8：导出常驻采集的结构化报告（原始流 + deps[] 参数来源 + 密文域标注）。 */
+    private void exportCapture() {
+        int n = RawCaptureStore.count(this);
+        if (n == 0) {
+            Toast.makeText(this, R.string.capture_no_data, Toast.LENGTH_LONG).show();
+            return;
+        }
+        final String name = RawCaptureStore.exportName(this);
+        new Thread(() -> {
+            try {
+                String report = RawCaptureStore.buildReport(this);
+                LogExporter.Output out = LogExporter.exportFile(this, name,
+                        "application/json",
+                        report.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                runOnUiThread(() -> {
+                    if (out.uri != null) {
+                        shareProbe(out.uri);
+                    } else {
+                        Toast.makeText(this, "已保存到 " + out.path, Toast.LENGTH_LONG).show();
+                    }
+                });
+            } catch (Throwable e) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        getString(R.string.capture_export_fail) + " " + e,
+                        Toast.LENGTH_LONG).show());
+            }
+        }, "capture-export").start();
+    }
+
+    private void clearCapture() {
+        RawCaptureStore.clear(this);
+        Toast.makeText(this, R.string.capture_cleared, Toast.LENGTH_SHORT).show();
     }
 
     private void exportProbe() {
