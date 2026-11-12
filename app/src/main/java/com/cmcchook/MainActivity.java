@@ -323,6 +323,7 @@ public final class MainActivity extends AppCompatActivity {
         grabStatus = findViewById(R.id.grabStatus);
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
+        findViewById(R.id.btnGrabLingxi).setOnClickListener(v -> grabStart("lingxi"));
         // v4.10.0-r2：福利页顶部改成「立即全部跑一次」；原来的「刷新（重读清单）」
         // 按用户要求删掉，CMD_WELFARE 命令本身保留，供探路 / 采集自己用。
         findViewById(R.id.btnWelfareRunAll).setOnClickListener(
@@ -1364,7 +1365,9 @@ public final class MainActivity extends AppCompatActivity {
         if (grabStatus != null) {
             grabStatus.setText("· 打开抢券页…");
         }
-        Toast.makeText(this, "已进入抢券页，正在等待开抢", Toast.LENGTH_SHORT).show();
+        Toast.makeText(this, "lingxi".equals(kind)
+                ? "已开始等待；请停在灵犀的券页，到点会自动点"
+                : "已进入抢券页，正在等待开抢", Toast.LENGTH_SHORT).show();
     }
 
     /**

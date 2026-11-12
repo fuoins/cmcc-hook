@@ -19,6 +19,7 @@ import java.util.Calendar;
  * <ul>
  *   <li>{@code wed}：{@link WedTask#run()}（补签到 → receiveSign 领券 → 抽奖）</li>
  *   <li>{@code seckill}：{@link SignTask#runSeckill()}（查场次 → 蹲点 → 撞击重试）</li>
+ *   <li>{@code lingxi}：{@link LingxiGrab#run()}（每周二、周四 10:00，灵犀页面上直接点）</li>
  * </ul>
  *
  * <p>本类只负责三件事：先把 App 拉到前台、把抢券页打开停住（用户能看见页面在等）、
@@ -73,8 +74,10 @@ final class GrabTask {
         currentKind = kind;
         long start = System.currentTimeMillis();
         try {
-            String label = "wed".equals(kind) ? "周三 88 元话费券" : "12 点话费券";
-            long at = "wed".equals(kind) ? nextWednesday8() : nextNoon();
+            String label = "wed".equals(kind) ? "周三 88 元话费券"
+                    : "lingxi".equals(kind) ? "灵犀 · 周二/周四 10 点券" : "12 点话费券";
+            long at = "wed".equals(kind) ? nextWednesday8()
+                    : "lingxi".equals(kind) ? nextTueThu10() : nextNoon();
             long wait = at - System.currentTimeMillis();
             HookLog.log("GRAB", "抢券 · " + label + " · " + fmt(at),
                     "现在: " + fmt(System.currentTimeMillis())
@@ -84,14 +87,25 @@ final class GrabTask {
                             + "提前进就是在页面上等，过点才进就直接抢。");
 
             // 1. 打开抢券页并停住（同时把 App 拉到前台）。
-            HookLog.progress("grab", "· 打开抢券页…");
-            String url = entryOf(kind);
-            if (url != null && !url.isEmpty()) {
-                boolean opened = WebSession.beginFast(
-                        "wed".equals(kind) ? "wedrecharge" : "sign", url, 25_000L);
-                HookLog.progress("grab", opened ? "✓ 页面已打开，停在抢券页" : "· 页面没打开，直接走接口");
+            if ("lingxi".equals(kind)) {
+                // 灵犀没有已知接口，抢的是「已经停住的那一页」，所以这里只找页面，
+                // 找不到就让用户手动进一次，不硬开一个空壳页。
+                HookLog.progress("grab", "· 找灵犀页面…");
+                StringBuilder pd = new StringBuilder();
+                WebPage lingxi = LingxiGrab.prepare(pd);
+                HookLog.log("GRAB", "灵犀抢券 · 页面", pd.toString());
+                HookLog.progress("grab", lingxi != null
+                        ? "✓ 已停在灵犀页，等开抢" : "· 没找到灵犀页，请手动进到抢券页");
             } else {
-                HookLog.progress("grab", "· 没有活动入口，直接走接口");
+                HookLog.progress("grab", "· 打开抢券页…");
+                String url = entryOf(kind);
+                if (url != null && !url.isEmpty()) {
+                    boolean opened = WebSession.beginFast(
+                            "wed".equals(kind) ? "wedrecharge" : "sign", url, 25_000L);
+                    HookLog.progress("grab", opened ? "✓ 页面已打开，停在抢券页" : "· 页面没打开，直接走接口");
+                } else {
+                    HookLog.progress("grab", "· 没有活动入口，直接走接口");
+                }
             }
 
             // 2. 等到点（每 5 秒报一次倒计时，用户能看见确实在等）。
@@ -115,7 +129,8 @@ final class GrabTask {
             // 3. 交给现成实现。WedTask 内含「打卡 + 领券 + 抽奖」，
             //    runSeckill 内含「查场次 + 蹲到开场 + 撞击重试」。
             HookLog.progress("grab", "· 到点了，开始抢…");
-            TaskRunner.Result r = "wed".equals(kind) ? WedTask.run() : SignTask.runSeckill();
+            TaskRunner.Result r = "wed".equals(kind) ? WedTask.run()
+                    : "lingxi".equals(kind) ? LingxiGrab.run() : SignTask.runSeckill();
             String text = r == null ? "没有返回" : r.summary;
             HookLog.progress("grab", (r != null && r.ok ? "✓ " : "· ") + text);
             HookLog.log("GRAB", "抢券结束 · " + label + " · " + text,
@@ -169,6 +184,35 @@ final class GrabTask {
             t.add(Calendar.DAY_OF_MONTH, 7);
         }
         return t.getTimeInMillis();
+    }
+
+    /**
+     * 下一个周二 / 周四 10:00。
+     *
+     * <p>今天就是周二或周四、且已经过了 10 点：返回「现在」直接试一次
+     * （窗口没关还能捡漏），不再等下一场。
+     */
+    private static long nextTueThu10() {
+        Calendar now = Calendar.getInstance();
+        for (int i = 0; i < 8; i++) {
+            Calendar t = (Calendar) now.clone();
+            t.add(Calendar.DAY_OF_MONTH, i);
+            int dow = t.get(Calendar.DAY_OF_WEEK);
+            if (dow != Calendar.TUESDAY && dow != Calendar.THURSDAY) {
+                continue;
+            }
+            t.set(Calendar.HOUR_OF_DAY, 10);
+            t.set(Calendar.MINUTE, 0);
+            t.set(Calendar.SECOND, 0);
+            t.set(Calendar.MILLISECOND, 0);
+            if (i == 0 && now.getTimeInMillis() >= t.getTimeInMillis()) {
+                return now.getTimeInMillis();
+            }
+            if (t.getTimeInMillis() > now.getTimeInMillis()) {
+                return t.getTimeInMillis();
+            }
+        }
+        return now.getTimeInMillis();
     }
 
     /** 下一个 12:00；已过 12 点返回「现在」（直接试一次）。 */

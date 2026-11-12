@@ -139,7 +139,9 @@
     <string name="grab_wed">周三 88 元话费券</string>
     <string name="grab_wed_desc">每周三 08:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
     <string name="grab_noon">12 点话费券</string>
-    <string name="grab_noon_desc">每天 12:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
+    <string name="grab_noon_desc">每周一次 · 12:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
+    <string name="grab_lingxi">灵犀 · 周二/周四 10 点券</string>
+    <string name="grab_lingxi_desc">每周二、周四 10:00 开抢 · 先手动进到灵犀的券页，再点「进入等待」；到点就在这一页自动点</string>
     <string name="grab_enter">进入等待</string>
     <string name="grab_idle">还没开始。提前进去会在页面上等，到点自动抢；已经过点就直接试着抢。</string>
     <string name="welfare_never">内置活动已全部列出。点「扫描福利专区」可以发现福利专区里新上架、内置表里还没有的活动。</string>
