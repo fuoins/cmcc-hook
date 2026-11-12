@@ -40,6 +40,12 @@ import java.util.Map;
  *
  * <p>读不到时不瞎编：把命中的 key、缓存原文、单位编码、DOM 明文、探针原文
  * 全写进「详细原始返回」日志，方便按证据核对。
+ *
+ * <p>v4.10.0-r9：{@code flowtype=2}「国内其他流量」逐包过滤 —— 已用尽
+ * （{@code remainRes<=0} 或已用≥总量）与已失效（{@code expireFlag!=0} 或
+ * {@code expireDate/flowExpireDate} 已过）的包不进入 items，分类卡的总量/已用
+ * 只累加剩余的有效包，不再用分类汇总兜底（汇总含失效量）。过滤条数与原因
+ * 写入「详细原始返回」，便于核对。其他分类维持原样。
  */
 final class FlowTask {
 
@@ -73,7 +79,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "v4.10.0-r8-20261112";
+    static final String BUILD = "v4.10.0-r9-20261112";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;
@@ -141,7 +147,8 @@ final class FlowTask {
     private static final String TREE_JS = """
             (function(){
               var r={state:'loading',items:[],source:'',url:location.href,title:document.title,
-                     error:'',plans:0,flows:0,share:'',stateKeys:'',rawTree:'',domText:''};
+                     error:'',plans:0,flows:0,share:'',stateKeys:'',rawTree:'',domText:'',
+                     cutN:0,cutDry:0,cutDead:0,cutList:''};
               function L(x){return !x?[]:(Array.isArray(x)?x:[x])}
               try{var bt=document.body?document.body.innerText:'';r.domText=(bt||'').slice(0,6000);}catch(e){}
               var st=null;
@@ -180,6 +187,43 @@ final class FlowTask {
                 return n+'MB';
               }
               var CAT={'0':'国内通用流量','1':'定向流量','2':'国内其他流量','3':'WLAN流量'};
+              var OTHER='2',cutN=0,cutDry=0,cutDead=0,cutList=[];
+              var NOW=Date.now();
+              function num(v){
+                if(v==null||v==='')return NaN;
+                var n=Number(v);
+                return isFinite(n)?n:NaN;
+              }
+              function ts(v){
+                if(!v)return 0;
+                var s=String(v).replace(/-/g,'/').replace('T',' ');
+                var dot=s.indexOf('.');
+                if(dot>0)s=s.substring(0,dot);
+                var t=new Date(s).getTime();
+                return isFinite(t)?t:0;
+              }
+              // 「已失效」：过期标记非 0，或到期时间已过（套餐/叶子任一）。
+              function dead(o){
+                if(!o)return false;
+                var f=String(o.expireFlag==null?'':o.expireFlag);
+                if(f!==''&&f!=='0'&&f!=='00')return true;
+                var ex=ts(o.flowExpireDate||o.expireDate||o.invalidDate);
+                return ex>0&&ex<NOW;
+              }
+              // 「已用尽」：剩余为 0（且确实有量），或已用 >= 总量。
+              function dry(o){
+                if(!o)return false;
+                var t=num(o.totalRes!=null?o.totalRes:o.flowSumNum);
+                var u=num(o.usedRes!=null?o.usedRes:o.flowUsdNum);
+                var m=num(o.remainRes!=null?o.remainRes:o.flowRemainNum);
+                if(isFinite(m)&&m<=0&&((isFinite(t)&&t>0)||(isFinite(u)&&u>0)))return true;
+                return isFinite(t)&&t>0&&isFinite(u)&&u>=t;
+              }
+              function cut(nm,why){
+                cutN++;
+                if(why==='dead')cutDead++;else cutDry++;
+                if(cutList.length<8)cutList.push(String(nm||'流量包').slice(0,18)+'('+(why==='dead'?'失效':'用尽')+')');
+              }
               function push(nm,cat,usd,rem,tot,u){
                 var a=amt(usd,u),b=amt(rem,u),c=amt(tot,u);
                 if(!a&&!b&&!c)return;
@@ -190,26 +234,42 @@ final class FlowTask {
                 L(tree).forEach(function(sec){
                   L(sec&&sec.planRemianFlowRes).forEach(function(g){
                     var ty=String(g.flowtype),cat=CAT[ty]||('流量'+ty),s0=r.items.length;
+                    var other=(ty===OTHER),plansBefore=plans;
                     L(g.planRemianFlowInfoRes).forEach(function(p){
                       plans++;
                       var fl=L(p.flowInfoRes),u=p.unit||g.unit||sec.unit;
+                      if(other&&dead(p)){cut(p.planName,'dead');return;}
                       if(fl.length){
                         fl.forEach(function(f){
                           flows++;
+                          if(other){
+                            if(dead(f)){cut(f.flowName||p.planName,'dead');return;}
+                            if(dry(f)){cut(f.flowName||p.planName,'dry');return;}
+                          }
                           var nm=p.planName||f.flowName||cat;
                           if(f.flowName&&p.planName&&f.flowName!==p.planName)nm=nm+' · '+f.flowName;
                           push(nm,cat,f.usedRes,f.remainRes,f.totalRes,f.unit||u);
                         });
                       }else{
+                        if(other&&dry(p)){cut(p.planName,'dry');return;}
                         push(p.planName||cat,cat,p.usedRes,p.remainRes,p.totalRes,u);
                       }
                     });
+                    // 国内其他流量不走分类汇总兜底：汇总数含已用尽/已失效包，
+                    // 会把上面刚排除掉的量又加回来。有效叶子逐条累加即可。
+                    // 例外：这一类压根没有套餐明细（只有 flowtype 级汇总）时无从判定，
+                    // 仍按汇总显示，免得整类流量直接消失。
                     if(r.items.length===s0){
-                      push(cat+'（汇总）',cat,g.flowUsdNum,g.flowRemainNum,g.flowSumNum,g.unit||sec.unit);
+                      if(!other){
+                        push(cat+'（汇总）',cat,g.flowUsdNum,g.flowRemainNum,g.flowSumNum,g.unit||sec.unit);
+                      }else if(plans===plansBefore){
+                        push(cat+'（汇总）',cat,g.flowUsdNum,g.flowRemainNum,g.flowSumNum,g.unit||sec.unit);
+                      }
                     }
                   });
                 });
               }catch(e){r.error='树解析异常: '+e;}
+              r.cutN=cutN;r.cutDry=cutDry;r.cutDead=cutDead;r.cutList=cutList.join('、');
               r.plans=plans;r.flows=flows;
               try{
                 var sh=st.userShareInfo||{},ov=sh.shareFlowOverallData||{};
@@ -221,7 +281,9 @@ final class FlowTask {
                 }
               }catch(e){}
               r.source='Vuex 余量查询页全量树';
-              r.state=r.items.length?'ready':'empty';
+              // 树正常解析出来（plans/flows>0）但条目被过滤空，也算就绪：
+              // 别让「国内其他流量全是失效包」退化成超时 + 缓存兜底把失效量又显示回来。
+              r.state=(r.items.length||plans>0||flows>0)?'ready':'empty';
               return JSON.stringify(r);
             })()
             """;
@@ -326,7 +388,7 @@ final class FlowTask {
             RealPage.endSession();
             closeOpened(diary);
         }
-        if (tree != null && countItems(tree) > 0) {
+        if (tree != null && hasData(tree)) {
             try {
                 tree.put("at", System.currentTimeMillis());
             } catch (Throwable ignored) {
@@ -334,6 +396,13 @@ final class FlowTask {
             diary.append("全量树: 套餐 ").append(tree.optInt("plans"))
                     .append(" · 流量叶子 ").append(tree.optInt("flows"))
                     .append(" · 共享流量状态 ").append(tree.optString("share", "无")).append('\n');
+            int cutN = tree.optInt("cutN");
+            if (cutN > 0) {
+                diary.append("过滤: 国内其他流量 已排除 ").append(cutN)
+                        .append(" 项（用尽 ").append(tree.optInt("cutDry"))
+                        .append(" / 失效 ").append(tree.optInt("cutDead")).append("）")
+                        .append(tree.optString("cutList", "")).append('\n');
+            }
             diary.append("条目 ").append(countItems(tree)).append(" 条 · 总耗时 ")
                     .append(System.currentTimeMillis() - start).append("ms\n");
             String rt = tree.optString("rawTree", "");
@@ -378,7 +447,7 @@ final class FlowTask {
         }
         HookLog.progress("flow", "· 等新屏请求并解密…");
         JSONObject o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "新屏");
-        if (o != null && countItems(o) > 0) {
+        if (o != null && hasData(o)) {
             diary.append("新屏直读成功，未读任何旧页\n");
             return o;
         }
@@ -386,7 +455,7 @@ final class FlowTask {
         HookLog.progress("flow", "· 新屏没数据，重载一次…");
         reloadOpened(diary);
         o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "新屏重载");
-        if (o != null && countItems(o) > 0) {
+        if (o != null && hasData(o)) {
             return o;
         }
         HookLog.progress("flow", "· 新屏没读到，改读首页缓存…");
@@ -518,7 +587,7 @@ final class FlowTask {
             // 20 秒上限：单次 eval 自己就吃 3 秒，预算不够会出现「轮询 2 轮就判死」。
             JSONObject o = pollTree(page, TREE_DEADLINE_MS, 700L, diary, "真页");
             realUnresponsive = o == null;
-            if (o != null && countItems(o) > 0) {
+            if (o != null && hasData(o)) {
                 diary.append("真页直读成功，未新建任何 WebView\n");
             }
             if (o == null) {
@@ -558,7 +627,7 @@ final class FlowTask {
         if (fresh) {
             diary.append("离屏第 1 次: 复用真页地址（含 channelId/yx）\n");
             o = openAndPoll(real, TREE_DEADLINE_MS - 4_000L, diary);
-            if (o != null && countItems(o) > 0) {
+            if (o != null && hasData(o)) {
                 return o;
             }
             diary.append("复用真页地址没读到，换裸地址重试\n");
@@ -633,7 +702,7 @@ final class FlowTask {
                     last = o;
                     String st = o.optString("state", "loading");
                     lastState = st;
-                    if (countItems(o) > 0) {
+                    if (hasData(o)) {
                         break;
                     }
                     boolean hard = "login".equals(st) || "error".equals(st);
@@ -836,6 +905,17 @@ final class FlowTask {
             } catch (Throwable ignored) {
             }
         }
+    }
+
+    /**
+     * 树是否已经可用。
+     *
+     * <p>不只看 items 条数：国内其他流量把「已用尽 / 已失效」逐条排除后，可能一条不剩，
+     * 但树本身是完整的（state=ready）。这时必须停轮询、直接用树，不能判空去走缓存兜底 ——
+     * 缓存只有分类汇总，会把刚排除掉的失效量又加回来。
+     */
+    private static boolean hasData(JSONObject o) {
+        return countItems(o) > 0 || (o != null && "ready".equals(o.optString("state", "")));
     }
 
     private static int countItems(JSONObject o) {
