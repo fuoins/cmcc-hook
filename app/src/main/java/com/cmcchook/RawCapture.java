@@ -81,22 +81,28 @@ final class RawCapture {
     }
 
     /**
-     * 开关。第一次被问到时顺手发一条自检 —— 即使开关是关的也发，
-     * 这样报告里能证明「目标进程确实读到了 false」，而不是广播丢了。
+     * 要不要发这一条。
+     *
+     * <p>r12 起开关判定搬到模块进程：这里只负责「明确读到关」才不发。
+     * 读不到（{@link HookPrefs#rawCaptureOrNull()} 返回 null）一律照发，
+     * 由 {@link LogReceiver} 按模块自己的开关决定落不落盘 —— 否则默认关的
+     * 采集在跨进程读不到 prefs 时会永久静默失效，且查不出原因。
+     *
+     * <p>第一次被问到时顺手发一条自检（即使读到关也发），报告里能证明是
+     * 「目标进程读到了 false」还是「读不到」。
      */
-    static boolean enabled() {
-        boolean on;
+    static boolean shouldSend() {
+        Boolean on = null;
         try {
-            on = HookPrefs.rawCapture();
-        } catch (Throwable e) {
-            on = false;
+            on = HookPrefs.rawCaptureOrNull();
+        } catch (Throwable ignored) {
         }
         if (!selfChecked) {
             // 只有真的发出去才记「已自检」：极早期请求拿不到 Context 时下次重试，
             // 否则报告里会永远缺这条，又变成黑盒。
             selfChecked = selfCheck(on);
         }
-        return on;
+        return on == null || on;
     }
 
     /**
@@ -108,7 +114,7 @@ final class RawCapture {
             return;
         }
         // 先问开关：第一次问会发自检，不能因为第一条是静态资源就跳过。
-        if (!enabled()) {
+        if (!shouldSend()) {
             return;
         }
         try {
@@ -257,7 +263,7 @@ final class RawCapture {
         }
     }
 
-    private static boolean selfCheck(boolean on) {
+    private static boolean selfCheck(Boolean on) {
         try {
             JSONObject o = new JSONObject();
             o.put("ts", System.currentTimeMillis());
@@ -265,7 +271,9 @@ final class RawCapture {
             o.put("session", SESSION);
             o.put("source", "selfcheck");
             o.put("type", "selfcheck");
-            o.put("enabled", on);
+            // on == null 表示目标进程根本没读到模块 prefs，不是「读到关」。
+            o.put("switchReadable", on != null);
+            o.put("enabled", on == null ? JSONObject.NULL : on);
             o.put("pid", android.os.Process.myPid());
             o.put("process", HookLog.processName());
             o.put("module", HookLog.MODULE_VERSION);

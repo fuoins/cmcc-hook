@@ -1038,7 +1038,10 @@ final class WebViewHooks {
     private static String safeObject(Object object) {
         try {
             String value = String.valueOf(object);
-            return value.length() > 2000 ? value.substring(0, 2000) + "…" : value;
+            // r12：2000 会把 localStorage 里整段活动配置（regionJson / floorRule）
+            // 从中间切断，正是「加活动时要抄的服务端参数」。放到 8000，仍留上限
+            // 防止某条超大对象撑爆单条日志的 160k 预算。
+            return value.length() > 8000 ? value.substring(0, 8000) + "…" : value;
         } catch (Throwable e) {
             return object.getClass().getName();
         }

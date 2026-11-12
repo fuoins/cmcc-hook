@@ -205,6 +205,19 @@ final class LogExporter {
             sb.append("（原始 ").append(entries.size()).append(" 条，已按模式筛选）");
         }
         sb.append('\n');
+        // r12：采集开着时在日志头点明条数，免得导完日志还以为「什么都没录到」。
+        try {
+            int raw = RawCaptureStore.count(context);
+            if (raw > 0) {
+                sb.append("常驻采集: ").append(raw)
+                        .append(" 条原始请求已落盘（导出「采集报告」看 byAct 与 scriptDraft）\n");
+            } else if (AppPrefs.settings(context)
+                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, false)) {
+                sb.append("常驻采集: 开关已开但 0 条 —— 目标进程可能还没重启，"
+                        + "或这段时间内没有任何请求\n");
+            }
+        } catch (Throwable ignored) {
+        }
         long heartbeat = AppPrefs.getLastHeartbeat(context);
         if (heartbeat > 0) {
             sb.append("最近心跳: ")
@@ -327,7 +340,9 @@ final class LogExporter {
                 // v3.43：打开页面链路（含「容器没加载，已补 loadUrl」兜底诊断）。
                 || tag.equals("ACTIVITY")
                 // v3.44：收鹅蛋离屏登录现场诊断（SSO 中转 / pc/pk / 页面文本）。
-                || tag.equals("GOOSE") || tag.startsWith("GOOSE-");
+                || tag.equals("GOOSE") || tag.startsWith("GOOSE-")
+                // r12：常驻采集摘要。精简模式下也保留，否则「到底录没录到」又看不见。
+                || tag.equals("CAPTURE") || tag.equals("RAW");
         if (core || tag.contains("ERROR") || tag.contains("FAIL")) {
             return true;
         }

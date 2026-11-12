@@ -52,7 +52,37 @@ final class AppPrefs {
     }
 
     static void setBool(Context context, String key, boolean value) {
-        settings(context).edit().putBoolean(key, value).apply();
+        // 用 commit 而不是 apply：下面要立刻 chmod 这个文件，apply 是异步写，
+        // 可能文件还没落盘就去改权限，改成同步写最省心（开关切换频率极低）。
+        settings(context).edit().putBoolean(key, value).commit();
+        worldReadable(context);
+    }
+
+    /**
+     * r12：把 settings.xml 放开成「别人可读」。
+     *
+     * <p>目标进程（中国移动）读模块开关走的是 {@code XSharedPreferences}，
+     * 而 Android 7 起 {@code MODE_WORLD_READABLE} 被禁，文件默认 600。
+     * 读不到时默认关的开关（如常驻采集）会永远 false 且不报错 —— 这正是
+     * 「开了也一条都录不到」的根因之一。这里直接 chmod 664 兜一层。
+     *
+     * <p>不依赖 Xposed 的类：模块进程里 {@code XSharedPreferences} 未必加载得到，
+     * 用纯文件 API 更稳。失败就算了，调用方还有三态兜底。
+     */
+    private static void worldReadable(Context context) {
+        try {
+            java.io.File dir = context.getFilesDir().getParentFile();
+            if (dir == null) {
+                return;
+            }
+            java.io.File f = new java.io.File(new java.io.File(dir, "shared_prefs"),
+                    SETTINGS + ".xml");
+            if (f.exists()) {
+                // 第二个参数 false = 不只是 owner，其他用户也可读。
+                f.setReadable(true, false);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     /**

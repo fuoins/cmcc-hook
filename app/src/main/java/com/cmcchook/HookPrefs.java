@@ -124,6 +124,34 @@ final class HookPrefs {
         return rawCapture;
     }
 
+    /**
+     * r12：采集开关的「三态」读法，返回 null 表示**根本读不到**模块 prefs。
+     *
+     * <p>为什么需要三态：{@code raw_capture} 默认是 false，而其余开关默认 true。
+     * 一旦 XSharedPreferences 在目标进程读不到文件（Android 15 上文件权限 /
+     * SELinux 都可能挡），默认开的钩子照常工作，把故障完全掩盖；只有默认关的
+     * 采集会永远返回 false，表现就是「开了也一条都录不到」，且没有任何报错。
+     *
+     * <p>所以这里显式区分：能读到 → 按值；读不到 → null，由调用方按「照发，
+     * 交给模块进程判定」处理。
+     */
+    static Boolean rawCaptureOrNull() {
+        reload(false);
+        XSharedPreferences p = prefs;
+        if (p == null) {
+            return null;
+        }
+        try {
+            java.io.File f = p.getFile();
+            if (f == null || !f.exists() || !f.canRead()) {
+                return null;
+            }
+        } catch (Throwable e) {
+            return null;
+        }
+        return rawCapture;
+    }
+
     private static volatile long lastFlagAt;
 
     /**

@@ -29,8 +29,11 @@ final class HookLog {
      * <p>原先用 Class.forName 读 BuildConfig，模块类由宿主 ClassLoader 加载，
      * 这个类经常找不到，一路回退到硬编码的 "2.7" —— 于是装了 3.0 的日志里
      * 版本还是 2.7，排查时一直误判用户装的是哪一版。
+     * r12：改回 {@link FlowTask#BUILD}。versionName 永远是 4.10.0，r1…r11 的
+     * 日志头完全一样，排查时只能猜「你装的是哪一版」。BUILD 是带日期和序号的
+     * 指纹（v4.10.0-r12-20261112），编译期内联，不触发 FlowTask 初始化。
      */
-    static final String MODULE_VERSION = BuildConfig.VERSION_NAME;
+    static final String MODULE_VERSION = FlowTask.BUILD;
     static final String ACTION_LOG = "com.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.cmcchook.action.HEARTBEAT";
     static final String ACTION_STATE = "com.cmcchook.action.STATE";

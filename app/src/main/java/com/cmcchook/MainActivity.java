@@ -1437,6 +1437,14 @@ public final class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             try {
                 String report = RawCaptureStore.buildReport(this);
+                // r12：把采集摘要直接写进模块日志。这样只导日志也能看到「几个活动、
+                // 每个活动几步几接口几密文」，不用再打开几 MB 的 JSON 翻。
+                try {
+                    LogStore.append(this, new LogEntry(System.currentTimeMillis(),
+                            "CAPTURE", "采集报告已生成 · " + name,
+                            RawCaptureStore.brief(report)));
+                } catch (Throwable ignored) {
+                }
                 LogExporter.Output out = LogExporter.exportFile(this, name,
                         "application/json",
                         report.getBytes(java.nio.charset.StandardCharsets.UTF_8));

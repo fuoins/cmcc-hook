@@ -252,8 +252,58 @@ public final class LogReceiver extends BroadcastReceiver {
         }
     }
 
-    /** r8：一批原始记录追加进 JSONL，不去重、不截断、不进任务队列。 */
+    private static int rawBatches;
+    private static int rawTotal;
+    /** 本轮采集涉及的活动名（按出现顺序，最多 40 个），写进 CAPTURE 摘要。 */
+    private static final java.util.LinkedHashSet<String> RAW_ACTS =
+            new java.util.LinkedHashSet<>();
+
+    private static void noteAct(String act) {
+        if (act == null || act.isEmpty()) {
+            return;
+        }
+        synchronized (RAW_ACTS) {
+            if (RAW_ACTS.size() < 40) {
+                RAW_ACTS.add(act);
+            }
+        }
+    }
+
+    private static String actsLine() {
+        synchronized (RAW_ACTS) {
+            if (RAW_ACTS.isEmpty()) {
+                return "（未归属，可能还没进到活动页）";
+            }
+            StringBuilder sb = new StringBuilder();
+            for (String a : RAW_ACTS) {
+                if (sb.length() > 0) {
+                    sb.append(" / ");
+                }
+                sb.append(a);
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * r8：一批原始记录追加进 JSONL，不去重、不截断、不进任务队列。
+     *
+     * <p>r12：开关判定搬到模块进程。目标进程读不到模块 prefs（Android 15 上
+     * 跨进程文件权限会被挡）时会一律照发，所以这里是唯一的权威开关：关着就
+     * 直接丢，一条也不落盘。同时每批写一条 {@code CAPTURE} 模块日志，导出的
+     * 日志里就能看到采集到底有没有在跑，不用再去猜。
+     */
     private void handleRawCapture(Context context, Intent intent) {
+        boolean on;
+        try {
+            on = AppPrefs.settings(context)
+                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+        } catch (Throwable e) {
+            on = false;
+        }
+        if (!on) {
+            return;
+        }
         try {
             String json = intent.getStringExtra(RawCapture.EXTRA_JSON);
             if (json == null || json.isEmpty()) {
@@ -269,6 +319,7 @@ public final class LogReceiver extends BroadcastReceiver {
                     if (o == null) {
                         continue;
                     }
+                    noteAct(o.optString("act", ""));
                     if (RawCaptureStore.append(context, o.toString())) {
                         ok++;
                     } else {
@@ -279,6 +330,20 @@ public final class LogReceiver extends BroadcastReceiver {
                 ok++;
             } else {
                 fail++;
+            }
+            rawBatches++;
+            rawTotal += ok;
+            if (rawBatches == 1 || rawBatches % 20 == 0) {
+                StringBuilder d = new StringBuilder();
+                d.append("会话: ").append(new java.text.SimpleDateFormat(
+                        "HH:mm:ss", java.util.Locale.US)
+                        .format(new java.util.Date()));
+                d.append("\n文件: ").append(context.getFilesDir())
+                        .append("/raw-capture.jsonl");
+                d.append("\n涉及活动: ").append(actsLine());
+                d.append("\n详见: 导出「采集报告」看 byAct 与 scriptDraft");
+                HookLog.log("CAPTURE", "采集 +" + ok + " 条（累计 " + rawTotal
+                        + " · 第 " + rawBatches + " 批）", d.toString());
             }
             if (fail > 0) {
                 // 落盘失败不能再静默：写一条模块日志，导出日志时能看到。

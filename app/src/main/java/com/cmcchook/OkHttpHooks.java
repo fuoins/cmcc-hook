@@ -90,9 +90,10 @@ final class OkHttpHooks {
     }
 
     private static void handleProceed(XC_MethodHook.MethodHookParam param) {
-        // r8 常驻采集旁路：独立于下面所有开关与过滤，开关打开就原样录一条。
+        // r8 常驻采集旁路：独立于下面所有开关与过滤，能发就原样录一条。
         // 放在方法最前面，连 nativeHttp 关掉、UrlFilter 判不感兴趣的也录。
-        if (RawCapture.enabled()) {
+        // r12：开关判定在模块进程，这里读不到 prefs 也照发。
+        if (RawCapture.shouldSend()) {
             rawSide(param);
         }
         // 探路期间无视「原生抓包」开关：福利中心的数据是原生接口下发的，
