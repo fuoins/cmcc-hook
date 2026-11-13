@@ -585,6 +585,10 @@ final class SeedTasks {
                   if(Date.now()-t0>budget){ line('预算到，停止后续任务（剩余 '+(todo.length-i)+' 个）'); break }
                   var t=todo[i], tid=t.taskId, tt=Number(t.taskType);
                   var title=String(t.taskMainTitle||('任务'+tid)).slice(0,40);
+                  // r26：用户明确要求这两个不做 —— 「领取本月福袋」点下去会跳到
+                  // zero（铂金/PLUS 大福袋）页，「去福利社领权益」跳到另一个活动页，
+                  // 都不是豆苗自己的任务，做了也不算豆苗的数。
+                  if(/福袋|福利社/.test(title)){ line('· '+title+'（按要求不做，跳过）'); skipped++; continue }
                   if(tt===3){ line('· '+title+'（需真实办理/订购，跳过）'); skipped++; continue }
                   if(tt===6){ line('· '+title+'（需真实好友助力，跳过）'); skipped++; continue }
                   if(tt!==1&&tt!==2&&tt!==4&&tt!==5){ line('· '+title+'（未知类型 '+tt+'，跳过）'); skipped++; continue }
@@ -607,7 +611,13 @@ final class SeedTasks {
                     // 所以这里只记「已上报」，成败一律以复查 isFinish=1 为准。
                     line('✓ '+title+' 已上报（'+path+'/'+pr.mode+'/渠道 '+ch+'）'); accepted.push(tid);
                   }else if(okCode(o)){
+                    // r26：12:55 实测，业务码 0 但 data 是「当前任务不在进行中」——
+                    // 服务端明确说这个任务此刻不可做，不是我们参数错，也不是失败。
+                    // 旧版只打一行说明，不计入任何分类，于是 17 待办 = 13 跳过 + 4 条
+                    // 无人认领，统计看着像「有 4 个任务漏做了」。
                     line('· '+title+'：'+cut(d,60));
+                    if(typeof d==='string'&&/不在进行中|未开始|已结束|无此任务|不在活动时间/.test(d))
+                      skipped++;
                   }else{
                     line('✗ '+title+'：'+c+' '+cut(o&&o.msg,60)); failed++;
                   }

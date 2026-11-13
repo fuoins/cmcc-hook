@@ -74,8 +74,18 @@ final class MiaoTask {
         String lastBeat = "";
         // r14：95 秒 → 45 秒。这条链路绝大多数在 20 秒内出结果，剩下的一直在等
         // 「页面没动作」，白占一键总时长。到点就判失败，用户再单独点一次即可。
+        // r26：12:55 实测 —— 主脚本点到「+ 20 去领取」后页面跳到 zero（权益福袋），
+        // JS 上下文被销毁，此后所有 await 悬空，Java 侧只能干等到 45 秒报超时，
+        // 整轮 FAIL，连签到到底做没做成都看不出来。现在每轮顺手看一眼 URL：
+        // 一旦离开豆苗页就立刻收工，不让一次误点把整轮拖死。
+        String jumpOut = null;
         long deadline = System.currentTimeMillis() + 45_000L;
         while (System.currentTimeMillis() < deadline) {
+            String here = page.url();
+            if (here != null && !here.isEmpty() && !here.contains("2026dmycj")) {
+                jumpOut = here;
+                break;
+            }
             String value = page.eval(
                     "(function(){var v=window.__cmcc_miao;return v?String(v):'';})()", 6_000L);
             if (value != null && !value.isEmpty()) {
@@ -101,6 +111,24 @@ final class MiaoTask {
             sleep(600L);
         }
         if (raw == null) {
+            if (jumpOut != null) {
+                detail.append("页面被点走（").append(brief(jumpOut))
+                        .append("），提前收工，拉回豆苗页复查\n");
+                boolean back = page.navigate(entry, 25_000L);
+                sleep(2_500L);
+                int sunBack = back ? readSun(page) : -1;
+                if (back && sunClick0 >= 0 && sunBack > sunClick0) {
+                    String summary = "豆苗养成记 · 阳光值 +" + (sunBack - sunClick0);
+                    return TaskRunner.Result.ok(summary,
+                            detail.append("判定(r26): 跳转前已经点到任务，拉回后阳光值上涨。\n")
+                                    .toString(), summary);
+                }
+                String summary = "豆苗养成记 · 点击后页面跳走，本轮未确认";
+                return TaskRunner.Result.idle(summary,
+                        detail.append("判定(r26): 点击把页面带离豆苗页，脚本上下文已销毁，\n")
+                                .append("本次不记完成，也不判失败。下一轮会再试。\n")
+                                .toString(), summary);
+            }
             detail.append("脚本 45 秒没有回报");
             if (!lastBeat.isEmpty()) {
                 detail.append("，最后阶段: ").append(brief(lastBeat));
@@ -445,6 +473,12 @@ final class MiaoTask {
                 }
                 var PAY=/去订购|办理|会员|铂金|畅看|订购订单/;
                 var DONE=/已完成|已领取|已浏览|已看过|已打卡|明天再来|已参与/;
+                // r26：12:55 实测，runFreeTasks 连点 3 次都落在「我的阳光值 280
+                // 每日可签到1次~ 签到奖励记录 + 10 已领 + 10 已」这张签到卡上，
+                // 一次都没跳转。POS 里的「阳光/签到/+10」正好把它当成了任务卡。
+                // 签到卡、福袋卡、福利社卡都不是「赚阳光值」里可跳转的浏览任务，
+                // 这里直接排除，不再浪费 3 次点击。
+                var SKIP=/我的阳光值|每日可签到|签到奖励记录|福袋|本月|福利社|权益超市/;
                 // r18：卡片必须带「收益或任务关键词」才算任务卡。
                 // 只按 content-btn 找会命中页面底部的 tab 图标，点下去只是切 tab
                 // （日志里 URL 的 pageKey 从 2 一路涨到 5，阳光值一分没动）。
@@ -478,6 +512,7 @@ final class MiaoTask {
                   if(r.height>160||ratio<0.6||ratio>12)continue;
                   var card=cardOf(e),ct=labelOf(card);
                   if(PAY.test(ct)||DONE.test(ct))continue;
+                  if(SKIP.test(ct))continue;
                   if(!POS.test(ct))continue;
                   add(e,card,ct||'图片浏览任务','img');
                 }
@@ -491,6 +526,7 @@ final class MiaoTask {
                   if(!ok)continue;
                   var card2=cardOf(n),ct2=labelOf(card2);
                   if(PAY.test(ct2)||DONE.test(ct2))continue;
+                  if(SKIP.test(ct2))continue;
                   add(n,card2,ct2||t,'text');
                 }
                 if(!cards.length)return JSON.stringify({none:1,left:0});
@@ -799,8 +835,13 @@ final class MiaoTask {
                   if(/可签到|签到1次|每日|规则|说明|记录|剩余|我的阳光/.test(t)) continue;
                   // r25：12:36 实测点「领取本月福袋」会跳到 zero（铂金/PLUS 大福袋）页，
                   // 页面 JS 上下文被销毁，脚本永远等不到回报，最后报「页面脚本超时」。
-                  // 这类是跳转入口不是领取按钮，豆苗里不点。
-                  if(/福袋|本月|礼包|大礼|专题/.test(t)) continue;
+                  // r26：用户明确这两个不做；「去福利社领权益」同理，跳到别的活动页。
+                  if(/福袋|本月|礼包|大礼|专题|福利社|权益超市/.test(t)) continue;
+                  // r26：12:55 实测 —— 最后卡在「点击: + 20 去领取」，点下去页面跳到
+                  // zero 页，之后 41 秒全部悬空。这类「去xx」是任务入口（浏览/分享/
+                  // 关注/助力），不是页面内的领取按钮，本页脚本点它必死。
+                  // 交给 Java 侧 runFreeTasks 做「点→停 5 秒→拉回」，那边有跳转检测。
+                  if(/去(领取|浏览|看看|完成|参与|关注|邀请|分享|签到|逛逛)/.test(t)) continue;
                   var ok=false;
                   for(var j=0;j<words.length;j++){
                     if(t.indexOf(words[j])>=0){ ok=true; break }
@@ -921,9 +962,11 @@ final class MiaoTask {
 
                   // 精确词一个都没命中，退回宽泛词再试一次：
                   // 有些版本按钮就叫「签到」，不能因为怕点错标题就整个放弃。
+                  // r26：兜底词去掉「领取」单独一个词 —— 12:55 就是它把「+ 20 去领取」
+                  // 点上了，页面跳走直接超时。签到类只认「签到/打卡」。
                   if(tryN===0){
                     netMark=NET.length;
-                    var fb=hit(['签到','打卡','领取'],1);
+                    var fb=hit(['签到','打卡'],1);
                     if(fb){
                       tryN++;
                       acts.push(fb);
