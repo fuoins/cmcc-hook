@@ -78,7 +78,7 @@ final class MarkTasks {
     static String run(String referer, StringBuilder ignored) {
         StringBuilder d = new StringBuilder();
         int total = 0, todo = 0, ext = 0, blocked = 0;
-        int awarded = 0, second = 0;
+        int awarded = 0, second = 0, waitAward = 0;
         StringBuilder todoNames = new StringBuilder();
         StringBuilder blockedNames = new StringBuilder();
 
@@ -110,7 +110,9 @@ final class MarkTasks {
             // 连续两轮都是 FAILED 分享任务发奖失败，每轮白撞一次还占 200ms+。
             // 直接归到「不代做」，不再发请求。
             if (hardBlocked(name(t))) {
-                blocked++;
+                // 只算「待领未补」，不并进「不代做」——同一个任务在待办统计里还会再出现一次，
+                // 并到 blocked 会让 head 的「不代做 N」和账里实际的「—」个数对不上。
+                waitAward++;
                 d.append("[补领跳过] ").append(name(t)).append('(').append(id)
                         .append(") → 邀好友/分享类，服务端不补\n");
                 continue;
@@ -179,15 +181,18 @@ final class MarkTasks {
 
         // 4) 任务账：逐条列出每个任务的真实状态。
         //    以前到这里只回一句「任务完成」，用户看不到哪些真做了、哪些本来就不做。
-        d.append(ledger(tasks2 != null ? tasks2 : tasks));
+        //    只走 HookLog，不进 detail —— detail 会被 FastPath / TaskRunner 各回放一次，
+        //    账放进去 full.txt 里会重复四遍。
+        String account = ledger(tasks2 != null ? tasks2 : tasks);
 
         String head = "任务编排 · 共" + total + " / 待办" + todo + " / 外部合作区跳过" + ext
-                + " / 不代做" + blocked + " / 补领" + awarded + " / 二礼" + second
+                + " / 不代做" + blocked + " / 待领未补" + waitAward
+                + " / 补领" + awarded + " / 二礼" + second
                 + (todo > 0 ? " / 待办名 " + todoNames : "");
         // 交给 SignTask 判定「真做完」还是「还剩几个没做」，别再无条件报 OK。
         lastTodo = todo;
         lastTodoNames = (todo > 0 ? todoNames : blockedNames).toString();
-        HookLog.log("TASK", "任务编排 · 补领与统计", head + "\n" + d);
+        HookLog.log("TASK", "任务编排 · 补领与统计", head + "\n" + d + account);
         return head + "\n" + d;
     }
 
@@ -613,7 +618,9 @@ final class MarkTasks {
             } else if (st == 1) {
                 c[1]++;
                 mark = "✓";
-                note = "（已完成待领）";
+                // 已完成但奖励没领：能补的会补；邀好友/分享类服务端不给补，
+                // 账里要写清是「不补」而不是「待领」，否则像漏了钱。
+                note = hardBlocked(name(t)) ? "（已完成，奖励不补：邀好友类）" : "（已完成待领）";
             } else if (st == 0) {
                 if (isExt) {
                     // 第三方导流：模块代做没有意义，别算进「待做」让账永远降不到 0。
@@ -636,13 +643,21 @@ final class MarkTasks {
             }
             rows.get(cls).append("  ").append(mark).append(' ').append(name(t)).append(note).append('\n');
         }
-        int all = 0, doneAll = 0, todoAll = 0;
-        for (int[] c : cnt.values()) {
+        int all = 0, doneAll = 0, todoAll = 0, extAll = 0;
+        for (java.util.Map.Entry<String, int[]> e : cnt.entrySet()) {
+            int[] c = e.getValue();
+            if (e.getKey().contains("外部合作")) {
+                // 第三方导流不进分母：37 个永远做不了，算进去就成了「65 里只完成 25」。
+                extAll += c[0];
+                continue;
+            }
             all += c[0];
             doneAll += c[1];
             todoAll += c[2];
         }
-        lastLedgerHead = "已完成 " + doneAll + "/" + all + (todoAll > 0 ? "，待做 " + todoAll : "");
+        lastLedgerHead = "已完成 " + doneAll + "/" + all
+                + (todoAll > 0 ? "，待做 " + todoAll : "")
+                + (extAll > 0 ? "，另有 " + extAll + " 个第三方" : "");
         StringBuilder out = new StringBuilder("[任务账] ").append(lastLedgerHead).append('\n');
         for (java.util.Map.Entry<String, int[]> e : cnt.entrySet()) {
             String cls = e.getKey();
