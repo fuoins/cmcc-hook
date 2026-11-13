@@ -222,13 +222,22 @@ final class MiaoTask {
             String summary = "豆苗养成记 · 今天已经做过";
             return TaskRunner.Result.idle(summary, detail.toString(), summary);
         }
-        boolean noPending = (text1.contains("已领") || text0.contains("已领"))
+        // r23：11-13 11:53 日志实证 —— 页面上明确摆着「领取本月福袋 … 去领取」，
+        // 却被判成「已领完」并写进当日 OK。旧判据只要求「页面出现过已领」，
+        // 而「去领取」三个字不含「点击领」，正好从筛子里漏过去。
+        // 收紧为：本轮没点过、没有真跳转过的免费任务、页面不存在任何可动作入口。
+        boolean actable = text1.contains("去领取") || text1.contains("立即领取")
+                || text1.contains("点击领取") || text1.contains("去完成")
+                || text1.contains("去浏览") || text1.contains("去做任务")
+                || text1.contains("立即签到") || text1.contains("去签到");
+        boolean noPending = clickTry == 0 && freeTasks == 0 && !actable
+                && (text1.contains("已领") || text0.contains("已领"))
                 && !text1.contains("点击领") && !text0.contains("点击领");
         if (noPending) {
             String summary = "豆苗养成记 · 页面没有待领项（已领完）";
             return TaskRunner.Result.idle(summary,
-                    detail.append("判定(v4.0.5): 页面全是「已领」且无「点击领」待领项，\n")
-                            .append("点了按钮没回执不是服务端拒绝，而是没有可领的项。\n")
+                    detail.append("判定(r23): 本轮没点任何按钮、页面也没有可点的领取/任务入口，\n")
+                            .append("且页面只剩「已领」，才判没有待领项。\n")
                             .toString(), summary);
         }
         // 4) 点了按钮但页面没反应：判失败，不写成功。
@@ -236,6 +245,13 @@ final class MiaoTask {
             return TaskRunner.Result.fail("豆苗养成记 · 点了按钮但页面没回执",
                     detail.toString(),
                     "页面按钮点了但服务端没响应。把完整日志发我，我按页面真实按钮改。");
+        }
+        if (actable) {
+            String summary = "豆苗养成记 · 页面还有待做项，本轮没做成";
+            return TaskRunner.Result.idle(summary,
+                    detail.append("判定(r23): 页面仍挂着「去领取/去完成」类入口，但没有服务端回执，\n")
+                            .append("本轮不记完成。下一轮会再试。\n")
+                            .toString(), summary);
         }
         String summary = "豆苗养成记 · 页面上没找到可做的按钮";
         return TaskRunner.Result.idle(summary, detail.toString(),

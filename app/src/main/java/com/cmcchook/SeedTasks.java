@@ -299,6 +299,16 @@ final class SeedTasks {
                 }catch(e){}
                 return out;
               }
+              // r23：11-13 原始流实证 —— coc3 业务接口的会话头只有 phone 一个
+              //（36 位，Accept/Content-Type 之外再无 x-token/x-sign）。
+              // 没抓到 phone 就直发，等于空手敲门，白白触发「连续 2 次被拒整体降级」。
+              function hasPhone(){
+                try{
+                  var h=window.__cmccHdrs||{};
+                  for(var k in h){ if(String(k).toLowerCase()==='phone') return String(h[k]).length>0 }
+                }catch(e){}
+                return false;
+              }
               function timeout(p,ms){
                 return new Promise(function(res,rej){
                   var t=setTimeout(function(){ rej(new Error('req timeout')) },ms);
@@ -360,14 +370,20 @@ final class SeedTasks {
                     window.__cmccLastBody='';
                     var ret=AX[i].i.post(path,body);
                     if(ret&&isFn(ret.then)) ret=await timeout(ret,REQ_MS);
-                    return {ok:true,data:(ret&&ret.data!==undefined)?ret.data:ret,
+                    // r23：区分「axios 原始响应」和「页面拦截器已解包的业务对象」。
+                    // 旧写法只看 ret.data 是否存在，遇到已解包的实例会把业务 data
+                    //（成功时是 null）当成整个响应，于是一路判成业务码 -999。
+                    var rawAxios=!!(ret&&ret.data!==undefined&&
+                        (ret.status!==undefined||ret.config!==undefined||ret.headers!==undefined));
+                    return {ok:true,via:'axios',
+                            data:rawAxios?ret.data:ret,
                             sent:window.__cmccLastBody||''};
                   }catch(e){ err=String(e) }
                 }
                 try{
                   var r=await fetchJson(path,body);
-                  return {ok:r.ok,data:r.data,sent:'',err:(err?err+' / ':'')+(r.err||'')};
-                }catch(e){ return {ok:false,err:(err?err+' / ':'')+String(e)} }
+                  return {ok:r.ok,via:'fetch',data:r.data,sent:'',err:(err?err+' / ':'')+(r.err||'')};
+                }catch(e){ return {ok:false,via:'fetch',err:(err?err+' / ':'')+String(e)} }
               }
               function obj(r){ var d=(r&&r.data!==undefined)?r.data:r; return parsed(d) }
               function codeOf(o){
@@ -401,22 +417,54 @@ final class SeedTasks {
               function pageChannel(){
                 try{ return channelOf(String(location.href||'')) }catch(e){ return '' }
               }
-              async function list(){
-                var r=await postAxios(PT+'getGrowthTaskList',{taskListId:LIST_ID});
-                var o=obj(r);
-                if(!okCode(o)) return null;
+              // r23：清单请求失败必须留证。11-13 11:53 那轮只留下一句
+              // 「getGrowthTaskList 未返回 resultCode=0」，而页面自己随后崩在
+              // data[0]（Cannot read properties of undefined），说明真实情况
+              // 很可能是「resultCode=0 但 data 为 null」，被这句文案吞掉了。
+              // 现在四类失败分开报，各带响应前 140 字。
+              var listWhy=[];
+              function short(r){ try{ return cut((typeof r==='string')?r:JSON.stringify(r),90) }catch(e){ return cut(String(r),90) } }
+              async function listOnce(viaDirect){
+                var path=PT+'getGrowthTaskList', body={taskListId:LIST_ID}, r, src;
+                if(viaDirect){
+                  if(!hasPhone()) return {err:'直发跳过：还没抓到 phone 头'};
+                  r=await fetchJson(path,body); src='直发';
+                }else{
+                  r=await postAxios(path,body); src=(r.via==='fetch')?'页面fetch':'页面axios';
+                }
+                if(!r.ok) return {err:src+' 调用异常: '+short(r.err||'')};
+                if(r.data===null||r.data===undefined||r.data==='')
+                  return {err:src+' 返回空（响应体没有内容）'};
+                var o=parsed(r.data);
+                if(o===null) return {err:src+' 返回不是 JSON: '+short(r.data)};
+                // 有的 axios 实例响应拦截器已经解过包，ret 直接就是数组
+                if(o instanceof Array) return {tasks:o,src:src+'（已解包）'};
+                var c=codeOf(o);
+                if(!okCode(o)) return {err:src+' 业务码 '+c+': '+short(r.data)};
                 var d=o.data;
-                // 清单必须是数组；拿到对象说明接口变了，按「通道不可用」如实回报，
-                // 由 Java 侧回退 DOM，绝不把空对象当成「任务已全部完成」。
-                if(!d||typeof d.length!=='number') return null;
-                return d;
+                // 清单必须是数组；拿到 null 说明服务端这次没给清单，按「通道不可用」
+                // 如实回报，由 Java 侧回退 DOM，绝不把空值当成「任务已全部完成」。
+                if(!d||typeof d.length!=='number') return {err:src+' 业务码 0 但 data 不是数组: '+short(r.data)};
+                return {tasks:d,src:src};
+              }
+              async function list(){
+                var a=await listOnce(false);
+                if(a.tasks){ if(a.src.indexOf('已解包')>=0) line('清单: '+a.src); return a.tasks }
+                listWhy.push(a.err);
+                var b=await listOnce(true);
+                if(b.tasks){ listWhy.push('清单改直发取回'); line('清单: 页面 axios 取不到，改直发取回'); return b.tasks }
+                if(b.err) listWhy.push(b.err);
+                return null;
               }
 
               // 上报：先直发（body 保真），业务拒绝再回退页面 axios 并回读实际 body
-              var directTried=0, directFail=0, useDirect=true, directOk=0, fbOk=0;
+              var directTried=0, directFail=0, useDirect=true, directOk=0, fbOk=0, noPhoneHint=false;
               async function postTask(path,body){
                 var want=String(body.visitUrl||'');
-                if(useDirect){
+                if(useDirect&&!hasPhone()){
+                  // r23：没 phone 头直发必被拒，先让页面 axios 发一次把头带出来
+                  if(!noPhoneHint){ noPhoneHint=true; line('    直发暂缓：还没抓到 phone 头，先走页面 axios 打一发') }
+                }else if(useDirect){
                   directTried++;
                   var fr=await fetchJson(path,body), fo=obj(fr);
                   if(okCode(fo)){ directOk++; return {o:fo,mode:'direct'} }
@@ -441,7 +489,7 @@ final class SeedTasks {
                 var t0=Date.now();
                 var tasks=await list();
                 if(tasks===null){
-                  done({stage:'no-channel',reason:'getGrowthTaskList 未返回 resultCode=0'});
+                  done({stage:'no-channel',reason:listWhy.length?listWhy.join(' | '):'getGrowthTaskList 没拿到清单'});
                   return;
                 }
                 var todo=[], actionable=0;
