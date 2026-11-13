@@ -885,26 +885,38 @@ final class GooseTask {
      *
      * @return null 表示页面里没找到组件（run() 会据此判失败）
      */
-    /** v3.96：把本轮真实网络回执写进明细，判定尺子的证据来源。 */
-    private static void appendReceipt(StringBuilder detail, JSONObject out) {
+    /**
+     * r27：把本轮真实网络回执写进明细，判定尺子的证据来源。
+     *
+     * <p>13:42 号B日志实证四套数字打架：摘要 8 条 / 复核 1 条 / 报 5 个成功 /
+     * 真实 doTask 3 条。根因是复核读的是 VUE_SCRIPT 里的 NET 数组（页面重载即
+     * 清空），摘要读的是 localStorage 总数，两者不同源。现在统一读 __cmccGS.by
+     * 分组（跨重载持久），并把每类条数直接列出来，谁都能对账。
+     */
+    private static void appendReceipt(StringBuilder detail, JSONObject out, WebPage page) {
         int netN = out.optInt("netN", 0);
-        int submitN = out.optInt("submitN", 0);
-        detail.append("回执复核(v3.98): 鹅蛋接口 ").append(netN)
-                .append(" 条 · 提交类 ").append(submitN).append(" 条")
+        JSONObject by = submitGroups(page);
+        int total = 0;
+        java.util.Iterator<String> keys = by.keys();
+        while (keys.hasNext()) {
+            total += by.optInt(keys.next(), 0);
+        }
+        String breakdown = groupText(by);
+        detail.append("回执复核(r27): 鹅蛋接口 ").append(netN)
+                .append(" 条 · 提交类 ").append(total).append(" 条")
                 .append(" · 业务数据 ").append(out.optBoolean("dataReady", false) ? "就绪" : "未就绪")
                 .append('\n');
-        String subs = joinPaths(out.optJSONArray("submitPaths"));
+        detail.append("  提交类分组: ").append(breakdown.isEmpty() ? "无" : breakdown).append('\n');
         String querys = joinPaths(out.optJSONArray("queryPaths"));
-        detail.append("  提交类: ").append(subs.isEmpty() ? "无" : subs).append('\n');
         detail.append("  查询类: ").append(querys.isEmpty() ? "无" : querys).append('\n');
-        // v3.97：出游归来奖励单独验收。10:40 日志 travelRewardItems 有 1 项，
-        // 但 claimTravelReward 一次都没发 —— 旧版只刷新结算、没点弹窗领取按钮。
-        // 只有这里看到 claimTravelReward 的真实提交回执，才敢说「领取了」。
+        // v3.97：出游归来奖励单独验收。r27 改认 localStorage 分组 ——
+        // 13:42 号B实际发出 2 条 claimTravelReward 200，旧版却因 NET 数组
+        // 重载清空判「未确认」，是假否定。
         int travelItems = out.optInt("travelItems", 0);
-        if (travelItems > 0) {
-            boolean claimed = subs.contains("claimTravelReward");
-            detail.append("  出游归来领取: ").append(claimed
-                            ? "已确认（页面自己发出 claimTravelReward 回执）"
+        int travelClaims = by.optInt("claimTravelReward", 0);
+        if (travelItems > 0 || travelClaims > 0) {
+            detail.append("  出游归来领取: ").append(travelClaims > 0
+                            ? "已确认（claimTravelReward " + travelClaims + " 条）"
                             : "未确认（本轮没有 claimTravelReward 回执，弹窗按钮没点到或已无待领）")
                     .append(" · 点击 ").append(out.optInt("travelTap", 0)).append(" 次\n");
         }
@@ -939,7 +951,7 @@ final class GooseTask {
     private static TaskRunner.Result runVue(WebPage page, StringBuilder detail) {
         // 本轮「提交回执」计数清零。计数器存在页面 localStorage 里，页面重载不丢，
         // 所以只能在这里重置 —— 放在脚本里每次注入都重置的话，回跳重载后计数又会归零。
-        page.eval("try{localStorage.setItem('__cmccGS',JSON.stringify({t:Date.now(),n:0}))}catch(e){}", 3_000L);
+        page.eval("try{localStorage.setItem('__cmccGS',JSON.stringify({t:Date.now(),n:0,by:{}}))}catch(e){}", 3_000L);
         TaskRunner.Result first = runVueOnce(page, detail);
         if (first == null || !"notready".equals(lastStage)) {
             return first;
@@ -1015,7 +1027,7 @@ final class GooseTask {
                         + "说明只拿到加密响应，模块不解密、不拼签名\n");
                 detail.append("业务数据: 未就绪（首屏 ").append(brief(out.optString("firstText", ""))).append("）\n");
                 detail.append("组件数组字段: ").append(out.optString("arrayFields", "")).append('\n');
-                appendReceipt(detail, out);
+                appendReceipt(detail, out, page);
                 String summary = "收鹅蛋 · 本轮零提交（页面业务数据未就绪）";
                 lastStage = "notready";
                 return TaskRunner.Result.skip(summary, detail.toString(),
@@ -1092,8 +1104,14 @@ final class GooseTask {
                         .append(" → ").append(after.optString("my")).append("）\n");
                 lines.append("饲料: ").append(before.optString("feed"))
                         .append(" → ").append(after.optString("feed")).append('\n');
-                lines.append("打卡: ").append(before.optString("sign"))
-                        .append(" → ").append(after.optString("sign")).append('\n');
+                // r27：打卡状态不再打「→」空箭头。pageInitData.signFlag 在 13:42 日志里
+                // 前后都是空串，箭头只能打出「打卡:  → 」，等于没信息。改打本次实测状态。
+                String signTxt = before.optString("sign");
+                if (signTxt.isEmpty()) {
+                    signTxt = out.optString("signAfter",
+                            out.optString("signState", ""));
+                }
+                lines.append("打卡: ").append(signTxt.isEmpty() ? "未读到" : signTxt).append('\n');
             }
             String body = out.optString("text", "");
             if (!body.isEmpty()) {
@@ -1103,20 +1121,20 @@ final class GooseTask {
             // v3.96 回执复核：查询接口 != 提交接口。日志里 07:45 那轮
             // index/taskIndex/signIndex/boxQuery 发了 16 条，提交类 0 条，
             // 却被判成 ✓。现在把真实提交数摆到判定第一优先级。
-            appendReceipt(detail, out);
-            int submitN = out.optInt("submitN", 0);
-            // 浏览任务是在 runVueOnce 之后由 runTaskLoop 逐个点的，它们发出的 doTask
-            // 记在页面 localStorage 里（跨重载），这里取两者较大的那个作为本轮总数。
-            int persistedN = submitCount(page);
-            if (persistedN > submitN) {
-                submitN = persistedN;
+            appendReceipt(detail, out, page);
+            // r27：摘要与复核统一读 __cmccGS.by 分组。旧版 submitN 取
+            // max(out.submitN, submitCount) 两个不同来源的大值，submitPaths 又在
+            // 空时硬猜成 "doTask" —— 13:42 号B日志里 8 条回执被写成「（signIn）」，
+            // 复核却只有 1 条。现在总数 = 分组之和，括号里直接列分组明细。
+            JSONObject by = submitGroups(page);
+            int submitN = 0;
+            java.util.Iterator<String> bk = by.keys();
+            while (bk.hasNext()) {
+                submitN += by.optInt(bk.next(), 0);
             }
             int netN = out.optInt("netN", 0);
             boolean dataReady = out.optBoolean("dataReady", false);
-            String submitPaths = joinPaths(out.optJSONArray("submitPaths"));
-            if (submitPaths.isEmpty() && submitN > 0) {
-                submitPaths = "doTask";
-            }
+            String submitPaths = groupText(by);
             String queryPaths = joinPaths(out.optJSONArray("queryPaths"));
 
             if (submitN == 0 && !changed && taskDoneReal == 0) {
@@ -1134,6 +1152,14 @@ final class GooseTask {
                                 + "若连续几轮都这样，先在 App 里手动打开一次活动页让数据加载出来。");
             }
 
+            // r27：完成判据以「真实数据变化 / doTask 回执 / 打卡状态翻转」为主。
+            // 旧版只要 submitN>0 就判 OK —— 号A 13:38 那轮只发了 1 条 signIn
+            // （页面本来就已打卡），蛋、饲料、任务全没动，却也写成 OK。
+            int doTaskN = by.optInt("doTask", 0);
+            boolean signFlipped = "待打卡".equals(out.optString("signState", ""))
+                    && "已打卡".equals(out.optString("signAfter", ""));
+            boolean realWork = changed || doTaskN > 0 || taskDoneReal > 0 || signFlipped;
+
             StringBuilder summary = new StringBuilder("收鹅蛋 · ");
             if (done > 0) {
                 summary.append("日常任务 ").append(done).append(" 个 · ");
@@ -1145,11 +1171,18 @@ final class GooseTask {
             if (changed) {
                 summary.append(" · 数据已变化");
             }
-            String resultText = summary.toString();
-            if (changed || submitN > 0) {
-                return TaskRunner.Result.ok(resultText, detail.toString(), resultText);
+            if (signFlipped) {
+                summary.append(" · 打卡成功");
             }
-            return TaskRunner.Result.idle(resultText, detail.toString(), resultText);
+            if (!realWork) {
+                summary.append(" · 没有可做的事");
+                String idleText = summary.toString();
+                detail.append("判定(r27): 有回执但数据/任务都没动（").append(submitPaths)
+                        .append("），按「没有可做的事」记账，不算完成\n");
+                return TaskRunner.Result.idle(idleText, detail.toString(), idleText);
+            }
+            String resultText = summary.toString();
+            return TaskRunner.Result.ok(resultText, detail.toString(), resultText);
         } catch (Throwable e) {
             detail.append("组件结果解析失败: ").append(e).append('\n').append(raw).append('\n');
             return null;
@@ -1209,7 +1242,10 @@ final class GooseTask {
                   }catch(e){}
                   return '';
                 }
-                if(FORCE)return byComp('force');
+                // r27：FORCE 从「布尔」改成「任务名」——只强制重试上一个失败的那个任务。
+                // 旧版 failStreak>0 就让下一个任务走组件入口，结果是 9块9 失败一次后
+                // 被记进 tried 永久跳过，后面的任务却替它走了兜底路径。
+                if(FORCE && nameOf(t)===FORCE)return byComp('force');
                 var key=norm(title).slice(0,6);
                 var qm=/[「『【]([^」』】]+)[」』】]/.exec(title);
                 var alt=qm&&qm[1]?norm(qm[1]):'';
@@ -1319,34 +1355,42 @@ final class GooseTask {
               try{
                 if(window.__cmccGSNet) return 'already';
                 window.__cmccGSNet=1;
-                function bump(){
+                // r27：n 仍是「本轮所有提交类总数」，另按接口名分一组 by[path]。
+                // 13:42 号B日志实证：只数总数时，签到/投喂/收蛋/出游奖励都会让
+                // runTaskLoop 误判「这个任务拿到 doTask 回执」——6 个任务报 5 个成功，
+                // 真实 doTask 只有 3 条。按 path 分组后，验收只认 doTask 增量。
+                function bump(path){
                   try{
-                    var o={t:0,n:0};
-                    try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0} }catch(x){}
+                    var o={t:0,n:0,by:{}};
+                    try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0,by:{}} }catch(x){}
                     o.n=(Number(o.n)||0)+1;
+                    if(!o.by||typeof o.by!=='object')o.by={};
+                    var k=String(path||'unknown');
+                    o.by[k]=(Number(o.by[k])||0)+1;
                     localStorage.setItem('__cmccGS',JSON.stringify(o));
                   }catch(x){}
                 }
-                function isSub(u,s,b){
+                // 不是提交类返回空串；是提交类返回接口名（供 bump 分组）。
+                function subPath(u,s,b){
                   var str=String(u||''), i=str.indexOf('/raiseGoose/');
-                  if(i<0) return false;
+                  if(i<0) return '';
                   var t=str.slice(i+12).split('?')[0].split('#')[0].split('&')[0].split('/')[0];
                   if(t!=='doTask'&&t!=='signIn'&&t!=='feedGoose'&&t!=='harvestEgg'
                      &&t!=='claimTravelReward'&&t!=='claimMailboxPrize'&&t!=='claimPrize'
-                     &&t!=='boxClaim') return false;
+                     &&t!=='boxClaim') return '';
                   var st=Number(s)||0;
-                  if(st<200||st>=400) return false;
+                  if(st<200||st>=400) return '';
                   var body=String(b||'');
-                  if(/"success"\\s*:\\s*false/i.test(body)) return false;
-                  if(/"code"\\s*:\\s*"(?!200)/i.test(body)) return false;
-                  return true;
+                  if(/"success"\\s*:\\s*false/i.test(body)) return '';
+                  if(/"code"\\s*:\\s*"(?!200)/i.test(body)) return '';
+                  return t;
                 }
                 var op=XMLHttpRequest.prototype.open, se=XMLHttpRequest.prototype.send;
                 XMLHttpRequest.prototype.open=function(m,u){ this.__qu=String(u||''); return op.apply(this,arguments) };
                 XMLHttpRequest.prototype.send=function(b){
                   var x=this;
                   try{ x.addEventListener('load',function(){
-                    try{ if(isSub(x.__qu,x.status,x.responseText)) bump() }catch(e){}
+                    try{ var p=subPath(x.__qu,x.status,x.responseText); if(p) bump(p) }catch(e){}
                   }) }catch(e){}
                   return se.apply(this,arguments);
                 };
@@ -1359,7 +1403,7 @@ final class GooseTask {
                       if(String(u).indexOf('/raiseGoose/')>=0 && r && typeof r.then==='function'){
                         r.then(function(rr){
                           try{ var cp=rr.clone(); cp.text().then(function(t){
-                            try{ if(isSub(u,rr.status,t)) bump() }catch(e){}
+                            try{ var p=subPath(u,rr.status,t); if(p) bump(p) }catch(e){}
                           }) }catch(e){}
                         });
                       }
@@ -1405,15 +1449,21 @@ final class GooseTask {
         int done = 0;
         int failStreak = 0;
         int left = todo0;
+        // r27：上一个失败的任务名。非空时下一轮只强制重试它（走组件入口 toDoTask），
+        // 而不是让「下一个任务」替它兜底 —— 13:42 号B日志里 9块9 图片按钮点空一次后
+        // 就被永久跳过，兜底反被用在了 领视频会员 上。
+        String retryName = "";
         for (int i = 0; i < TASK_TRIES; i++) {
             // 上一次点击可能把页面整页重载了（跳落地页再被拉回），注入的钩子跟着丢，
             // 这里补装一次；已装过就直接返回，不会重复计数。
             page.eval(NET_HOOK_SCRIPT, 5_000L);
-            int before = submitCount(page);
+            // r27：只数 doTask。旧版数「所有提交类总数」，13:42 号B日志里
+            // signIn/claimTravelReward/feedGoose/harvestEgg 都会被算成
+            // 「这个任务拿到 doTask 回执」，6 个任务报 5 个成功、真实只有 3 条。
+            int before = submitCountOf(page, "doTask");
             // 点过的任务会进 tried，脚本按名字跳过，不再原地重复点同一个。
-            // failStreak>0 表示前面没拿到提交回执，这一轮直接走组件入口兜底。
             String raw = page.eval(TASK_ONE_SCRIPT
-                    .replace("__FORCE__", failStreak > 0 ? "1" : "0")
+                    .replace("__FORCE__", jsStr(retryName))
                     .replace("__SKIP__", skipJson(tried)), 10_000L);
             if (raw == null || raw.isEmpty()) {
                 detail.append("浏览任务: 点击脚本没回报，停止\n");
@@ -1468,13 +1518,14 @@ final class GooseTask {
             // 完成判据以「本轮 doTask 回执有没有增加」为准。剩余数只作参考：
             // 13:32 那次 doTask 明明回了 200，但剩余数读的是另一套字段，
             // 恒为 6 不下降，于是脚本判「没记上」并停下，后面两个任务全没做。
-            int after = submitCount(page);
+            int after = submitCountOf(page, "doTask");
             boolean submitted = before >= 0 && after > before;
             int now = taskTodo(page);
             if (submitted) {
                 done++;
                 failStreak = 0;
-                detail.append("浏览任务: 「").append(name).append("」已拿到 doTask 回执（提交 ")
+                retryName = "";
+                detail.append("浏览任务: 「").append(name).append("」已拿到 doTask 回执（doTask ")
                         .append(before).append(" → ").append(after).append("）\n");
                 if (now >= 0) {
                     left = now;
@@ -1482,17 +1533,29 @@ final class GooseTask {
             } else if (now >= 0 && now < left) {
                 done++;
                 failStreak = 0;
+                retryName = "";
                 detail.append("浏览任务: 剩余 ").append(left).append(" → ").append(now).append("（记上了）\n");
                 left = now;
             } else {
                 failStreak++;
+                boolean retried = !name.isEmpty() && name.equals(retryName);
                 detail.append("浏览任务: 「").append(name).append("」没拿到提交回执");
                 if (now >= 0) {
                     detail.append("，剩余仍 ").append(now);
                 }
+                if (!retried && !name.isEmpty()) {
+                    // 图片按钮点空（9块9 是绿底图，文本节点为空）→ 立刻让同一个任务
+                    // 改走组件入口 toDoTask 再来一次。tried 里先摘掉它，下一轮才选得到。
+                    retryName = name;
+                    tried.remove(name);
+                    detail.append("，改用组件入口重试");
+                } else {
+                    retryName = "";
+                    detail.append("（组件入口也没成功）");
+                }
                 detail.append('\n');
                 if (failStreak >= 3) {
-                    detail.append("浏览任务: 连续 3 个任务都没回执，停止本轮\n");
+                    detail.append("浏览任务: 连续 3 次没回执，停止本轮\n");
                     break;
                 }
             }
@@ -1546,18 +1609,68 @@ final class GooseTask {
         }
     }
 
-    /** 本轮已经发成功的提交类回执条数。-1 = 读不到。 */
-    private static int submitCount(WebPage page) {
+    // r27：旧的 submitCount(WebPage) 只读 __cmccGS.n（所有提交类混算），已由
+    // submitCountOf(page, "doTask") 取代 —— 保留会让「8 条回执」和「1 条 doTask」
+    // 两个口径继续并存，正是这轮要消灭的问题。
+
+    /**
+     * r27：读 __cmccGS.by —— 本轮各提交类接口各自的条数。页面整页重载时 NET
+     * 数组会清空，但 localStorage 里的分组不丢，所以复核/摘要/任务验收统一用它。
+     */
+    private static JSONObject submitGroups(WebPage page) {
         String v = page.eval("(function(){try{var o=JSON.parse(localStorage.getItem('__cmccGS')||'{}');"
-                + "return String(Number(o.n)||0)}catch(e){return '-1'}})()", 4_000L);
-        if (v == null) {
-            return -1;
-        }
+                + "return JSON.stringify(o.by||{})}catch(e){return '{}'}})()", 4_000L);
         try {
-            return Integer.parseInt(v.trim());
+            return new JSONObject(v == null || v.isEmpty() ? "{}" : v);
         } catch (Throwable e) {
-            return -1;
+            return new JSONObject();
         }
+    }
+
+    /** r27：只数某一种提交类（如 doTask），不再把签到/投喂/出游奖励混进来。 */
+    private static int submitCountOf(WebPage page, String path) {
+        return submitGroups(page).optInt(path, 0);
+    }
+
+    /** r27：把分组明细拼成 "doTask×3/signIn×1/feedGoose×1" 这类可读串。 */
+    private static String groupText(JSONObject by) {
+        if (by == null || by.length() == 0) {
+            return "";
+        }
+        String[] order = {"doTask", "signIn", "claimTravelReward", "feedGoose", "harvestEgg",
+                "claimMailboxPrize", "claimPrize", "boxClaim"};
+        StringBuilder sb = new StringBuilder();
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        for (String k : order) {
+            int n = by.optInt(k, 0);
+            if (n > 0) {
+                if (sb.length() > 0) {
+                    sb.append('/');
+                }
+                sb.append(k).append('×').append(n);
+            }
+            seen.add(k);
+        }
+        java.util.Iterator<String> it = by.keys();
+        while (it.hasNext()) {
+            String k = it.next();
+            if (seen.contains(k)) {
+                continue;
+            }
+            int n = by.optInt(k, 0);
+            if (n > 0) {
+                if (sb.length() > 0) {
+                    sb.append('/');
+                }
+                sb.append(k).append('×').append(n);
+            }
+        }
+        return sb.toString();
+    }
+
+    /** r27：把字符串安全地塞进注入脚本当 JS 字面量（任务名里可能带「」、引号）。 */
+    private static String jsStr(String s) {
+        return JSONObject.quote(s == null ? "" : s);
     }
 
     /** 已点过的任务名拼成 JS 数组字面量，供脚本跳过。 */
@@ -1620,6 +1733,26 @@ final class GooseTask {
                 }
                 return out;
               }
+              // r27：打卡状态三路判定。13:42 号B日志页面明写「今日已打卡，明日再来吧！」，
+              // 组件侧却判「待打卡」并白调一次 dakaFeedA —— 旧逻辑只看
+              // signObj.taskList 的 isComplete==='2'，而签到格子用的不是这个字段。
+              // 顺序：显式标志位 → 页面文案 → 列表兜底，任一路成立即算已打卡。
+              function signStateOf(c,st){
+                try{
+                  var p=c.pageInitData||{}, so=c.signObj||{};
+                  var f=[so.signFlag,so.isSign,so.signStatus,so.dakaFlag,
+                         p.signFlag,p.isSign,p.signStatus];
+                  for(var i=0;i<f.length;i++){
+                    var v=f[i];
+                    if(v===null||v===undefined||v==='') continue;
+                    var t=String(v);
+                    if(t==='1'||t==='2'||t==='true') return '已打卡';
+                  }
+                }catch(e){}
+                try{ if(/今日已打卡|明日再来/.test(bodyText())) return '已打卡' }catch(e){}
+                try{ if(leftOf(st).length===0) return '已打卡' }catch(e){}
+                return '待打卡';
+              }
               // ---- v3.96 判定尺子：查询接口 != 提交接口 ----
               // 07:45 日志实证：一轮鹅蛋只发 index/taskIndex/signIndex/boxQuery 共 16 条查询，
               // doTask/signIn/feedGoose/harvestEgg 一条都没有，却被打成 ✓「已跑完一轮」。
@@ -1648,11 +1781,15 @@ final class GooseTask {
               // 提交回执要跨页面重载累加：点完任务页面常整页重载（回跳或被拉回），
               // 页面里的 NET 数组跟着清空，13:32 那次 doTask 明明 200，复核却写成
               // 「提交类 0 条」。localStorage 是同一 origin 持久存储，重载不丢。
-              function bumpSubmit(){
+              // r27：与 NET_HOOK_SCRIPT 的 bump 共用同一份 __cmccGS 分组结构。
+              function bumpSubmit(path){
                 try{
-                  var o={t:0,n:0};
-                  try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0} }catch(x){}
+                  var o={t:0,n:0,by:{}};
+                  try{ o=JSON.parse(localStorage.getItem('__cmccGS')||'{}')||{t:0,n:0,by:{}} }catch(x){}
                   o.n=(Number(o.n)||0)+1;
+                  if(!o.by||typeof o.by!=='object')o.by={};
+                  var k=String(path||'unknown');
+                  o.by[k]=(Number(o.by[k])||0)+1;
                   localStorage.setItem('__cmccGS',JSON.stringify(o));
                 }catch(x){}
               }
@@ -1671,7 +1808,7 @@ final class GooseTask {
                         if(String(x.__qu).indexOf('/raiseGoose/')>=0){
                           var e={u:String(x.__qu).slice(0,220),s:x.status,b:String(x.responseText||'').slice(0,600)};
                           NET.push(e);
-                          if(isSubmit(e)) bumpSubmit();
+                          if(isSubmit(e)) bumpSubmit(pathOf(e.u));
                         }
                       }catch(e){}
                     }) }catch(e){}
@@ -1690,7 +1827,7 @@ final class GooseTask {
                             try{ var cp=rr.clone(); cp.text().then(function(t){
                               var e={u:String(u).slice(0,220),s:rr.status,b:String(t).slice(0,600)};
                               NET.push(e);
-                              if(isSubmit(e)) bumpSubmit();
+                              if(isSubmit(e)) bumpSubmit(pathOf(e.u));
                             }) }catch(e){}
                           });
                         }
@@ -1922,13 +2059,17 @@ final class GooseTask {
                 try{
                   if(typeof c.signIndexFun==='function'){
                     await c.signIndexFun('handle'); await wait(1500);
-                    var sign=c.signObj||{};
-                    var st=sign.taskList||[];
-                    var need=leftOf(st).length>0;
-                    out.actions.push('打卡: '+(need?'待打卡':'今日已完成'));
-                    if(need && typeof c.dakaFeedA==='function'){
-                      await c.dakaFeedA(); await wait(1800);
-                      out.actions.push('打卡领饲料');
+                    var st=(c.signObj||{}).taskList||[];
+                    var signBefore=signStateOf(c,st);
+                    out.signState=signBefore;
+                    out.actions.push('打卡: '+signBefore);
+                    if(signBefore!=='已打卡' && typeof c.dakaFeedA==='function'){
+                      try{ await c.dakaFeedA(); await wait(1800) }catch(e){}
+                      // 打完再拉一次状态，用「变没变」当验收，而不是「调过就算成」。
+                      try{ await c.signIndexFun('handle'); await wait(1000) }catch(e){}
+                      var st2=(c.signObj||{}).taskList||[];
+                      out.signAfter=signStateOf(c,st2);
+                      out.actions.push('打卡后: '+out.signAfter);
                     }
                   }
                 }catch(e){ out.actions.push('打卡异常:'+e.message) }

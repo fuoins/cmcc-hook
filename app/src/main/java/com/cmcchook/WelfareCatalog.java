@@ -95,20 +95,22 @@ final class WelfareCatalog {
                     WX + "/qwhdhub/goldeneggs/1026071510?A_C_CODE=HraVsPIWok", "1026071510",
                     STATE_IMPL, TaskRunner.CMD_EGG, false, true),
 
-            new Item("goose", "收鹅蛋 换好礼", "打卡 / 投喂 / 收蛋 / 领任务",
+            // r27：辽宁 lyh 域只有辽宁号能做，名字标 (辽宁) 且默认关，不进「一键全部」。
+            // 拆一百元礼盒本期已结束，标 (活动结束) 同样默认关。
+            // 三条由 items() 统一沉到「已接入」组末尾（带括号的活动集中显示）。
+            new Item("goose", "收鹅蛋 换好礼(辽宁)", "打卡 / 投喂 / 收蛋 / 领任务",
                     "https://lyh.lncmcc.com/lyhVue/index.html#/bgIndex?actNo=goose2025",
-                    "raisegoose", STATE_IMPL, TaskRunner.CMD_GOOSE, false, true),
+                    "raisegoose", STATE_IMPL, TaskRunner.CMD_GOOSE, false, false),
 
-            // 辽宁 lyh 域，加密接口，靠离屏页内调页面方法/接口封装完成。
-            new Item("soccer", "球赛狂欢季", "竞猜任务，攒竞猜票（不代投注）",
+            new Item("soccer", "球赛狂欢季(辽宁)", "竞猜任务，攒竞猜票（不代投注）",
                     "https://lyh.lncmcc.com/lyhVue/index.html#/footballGuess"
                             + "?actNo=AC2026DBCQUEZQ1G",
-                    "footballguess", STATE_IMPL, TaskRunner.CMD_SOCCER, false, true),
+                    "footballguess", STATE_IMPL, TaskRunner.CMD_SOCCER, false, false),
 
             // qwhdhub 明文接口：task/list → startBrowse → lotterySafely。
-            new Item("tearbox", "拆一百元礼盒", "做浏览任务加次数 + 拆礼盒",
+            new Item("tearbox", "拆一百元礼盒(活动结束)", "做浏览任务加次数 + 拆礼盒",
                     WX + "/qwhdhub/tearbox/1026102314?A_C_CODE=jtzQwadx30", "1026102314",
-                    STATE_IMPL, TaskRunner.CMD_TEARBOX, false, true),
+                    STATE_IMPL, TaskRunner.CMD_TEARBOX, false, false),
 
             // diy-client 1126086939：每日签到 + 任务 + 抽奖，纯 qwhdhub 接口。
             new Item("sat_game", "周六游戏日", "每日签到 + 任务 + 抽奖",
@@ -241,6 +243,9 @@ final class WelfareCatalog {
     /** v4.10.0-r2 一次性迁移标记：签到抽奖 / 乡友问答改默认关闭。 */
     private static final String KEY_OFF_MIGRATED = "welfare_off_migrated_v410";
 
+    /** r27 一次性迁移标记：鹅蛋 / 球赛 / 拆礼盒改默认关闭。 */
+    private static final String KEY_OFF_MIGRATED_R27 = "welfare_off_migrated_r27";
+
     /**
      * 把「签到抽奖赢好礼(辽宁)」「乡友农业知识问答(辽宁)」显式关一次。
      *
@@ -266,6 +271,35 @@ final class WelfareCatalog {
                     .putBoolean("welfare_signlottery", false)
                     .putBoolean("welfare_quiz", false)
                     .putBoolean(KEY_OFF_MIGRATED, true)
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * r27：把「收鹅蛋 换好礼(辽宁)」「球赛狂欢季(辽宁)」「拆一百元礼盒(活动结束)」
+     * 显式关一次。只改 defaultOn 对老用户无效 —— 他们本地可能已存 {@code true}。
+     *
+     * <p>与 {@link #migrateDefaultOff} 一样只写一次，之后用户自己再打开就保持打开。
+     * 用独立标记，避免和 v4.10 那次迁移互相挡住。
+     */
+    private static void migrateR27DefaultOff(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        if (!HookLog.MODULE_PACKAGE.equals(ctx.getPackageName())) {
+            return;
+        }
+        try {
+            SharedPreferences p = prefs(ctx);
+            if (p.getBoolean(KEY_OFF_MIGRATED_R27, false)) {
+                return;
+            }
+            p.edit()
+                    .putBoolean("welfare_goose", false)
+                    .putBoolean("welfare_soccer", false)
+                    .putBoolean("welfare_tearbox", false)
+                    .putBoolean(KEY_OFF_MIGRATED_R27, true)
                     .apply();
         } catch (Throwable ignored) {
         }
@@ -313,6 +347,12 @@ final class WelfareCatalog {
         return false;
     }
 
+    /** 名字带括号标注（辽宁 / 活动结束）——这类活动沉底且默认关。 */
+    private static boolean tagged(Item it) {
+        return it != null && it.name != null
+                && (it.name.indexOf('(') >= 0 || it.name.indexOf('（') >= 0);
+    }
+
     /**
      * 清单 = 内置表 + 采集发现的新入口。
      *
@@ -321,6 +361,7 @@ final class WelfareCatalog {
      */
     static List<Item> items(Context ctx) {
         migrateDefaultOff(ctx);
+        migrateR27DefaultOff(ctx);
         List<Item> built = new ArrayList<>();
         for (Item one : BUILT_IN) {
             built.add(one);
@@ -378,7 +419,19 @@ final class WelfareCatalog {
                 pending.add(item);
             }
         }
-        List<Item> list = new ArrayList<>(impl);
+        // r27：名字带括号标注的活动（辽宁专属 / 已结束）统一沉到「已接入」组底部，
+        // 不混在主力活动中间。UI 按 state 分组渲染，组内保持这里的顺序。
+        List<Item> list = new ArrayList<>();
+        for (Item it : impl) {
+            if (!tagged(it)) {
+                list.add(it);
+            }
+        }
+        for (Item it : impl) {
+            if (tagged(it)) {
+                list.add(it);
+            }
+        }
         list.addAll(fresh);
         list.addAll(pending);
         list.addAll(manual);
@@ -640,12 +693,14 @@ final class WelfareCatalog {
         if (!runnable(item)) {
             return false;
         }
-        // 签到、砸蛋、鹅蛋跟「功能」页共用同一个开关，避免两处各存一份、互相打架。
+        // 签到、砸蛋跟「功能」页共用同一个开关，避免两处各存一份、互相打架。
+        // r27：鹅蛋已从 sharedKey 解耦（它默认关且带辽宁标注，不该再跟
+        // 「打开页面自动跑」的页面自动化开关共用同一个键），走自己的 welfare_goose。
         String shared = sharedKey(item);
         if (shared != null) {
-            return readFlag(ctx, shared, true);
+            return readFlag(ctx, shared, item.defaultOn);
         }
-        // 内置的已接入活动默认开；采集发现的新活动默认关，等用户自己确认。
+        // 内置的已接入活动按各自 defaultOn；采集发现的新活动默认关，等用户自己确认。
         return readFlag(ctx, "welfare_" + item.key, item.defaultOn);
     }
 
@@ -684,9 +739,9 @@ final class WelfareCatalog {
         if (TaskRunner.CMD_EGG.equals(item.cmd)) {
             return AppPrefs.KEY_PAGE_EGG;
         }
-        if (TaskRunner.CMD_GOOSE.equals(item.cmd)) {
-            return AppPrefs.KEY_PAGE_GOOSE;
-        }
+        // r27：CMD_GOOSE 不再共用 auto_page_goose —— 那个键还代表「打开鹅蛋页
+        // 自动跑」的页面自动化开关，两者语义不同。鹅蛋走独立的 welfare_goose，
+        // 由 defaultOn=false + 一次性迁移决定默认关，用户单独打开不影响页面自动化。
         return null;
     }
 
