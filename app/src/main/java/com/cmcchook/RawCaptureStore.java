@@ -33,8 +33,17 @@ final class RawCaptureStore {
 
     private static final String FILE = "raw-capture.jsonl";
     private static final long MAX_FILE = 24L * 1024 * 1024;
-    /** r14：报告里单条响应体保留上限，超出的部分在 jsonl 原始流里。 */
-    private static final int RESP_KEEP = 8192;
+    /**
+     * 报告里单条响应体保留上限。
+     *
+     * <p>r22：8192 → 65536。8KB 这一刀正好砍在 coc3 的 getGrowthTaskList 上
+     * （完整 23744 字符），截断后的字符串不是合法 JSON，整个响应体解析失败，
+     * 前面那些任务在最需要分析的接口上反而全丢；上游任务列表、活动奖品列表
+     * 普遍在 10–40KB，64KB 能覆盖绝大多数业务接口。
+     */
+    private static final int RESP_KEEP = 65536;
+    /** 超过上限时保留的可读前缀长度。 */
+    private static final int RESP_PREVIEW = 2000;
 
     /** 服务端下发的参数：加活动时要从这里取值，不能硬编码。 */
     private static final String[] PARAMS = {
@@ -364,8 +373,8 @@ final class RawCaptureStore {
             report.put("generated", System.currentTimeMillis());
             report.put("schema", "cmcc-raw-capture/3");
             report.put("count", records.length());
-            report.put("note", "records[] 是分层后的原始流（响应体超过 8KB 只留前 8KB，"
-                    + "全量在 jsonl 文件里）；byAct 只收内置表里真实存在的活动，"
+            report.put("note", "records[] 是分层后的原始流（响应体超过 64KB 换成合法 JSON 占位，"
+                    + "含 __truncated/bytes/preview，全量在 jsonl 文件里）；byAct 只收内置表里真实存在的活动，"
                     + "认不出的按域名归 byHost，按任务窗口归 byTrace（trace 由模块跑任务时写入，"
                     + "比 URL 猜活动准）；每个活动附 scriptJson：GET 带 query、body 用现场活值、"
                     + "末尾有 result，可直接粘进 FastScripts 跑一次；"
@@ -600,16 +609,29 @@ final class RawCaptureStore {
         return "";
     }
 
-    /** 报告里的响应体只留 8KB，超出部分标注清楚；全量在 jsonl 原始流。 */
+    /**
+     * 报告里的响应体超限时，换成一个**合法 JSON** 的占位对象。
+     *
+     * <p>r22：旧实现是 {@code body.substring(0, 8192) + "…[+N 字符]"}，把 JSON
+     * 硬切成半截字符串 —— 解析器直接抛异常，等于这条响应在报告里完全不可用
+     * （getGrowthTaskList 就是这么丢的）。现在超限就替换为
+     * {@code {"__truncated":true,"bytes":…,"preview":…,"note":…}}，仍然是字符串、
+     * 仍然能被 JSON.parse 成功，字段名和字节数都在，预览给前 2000 字符；
+     * 完整原文一条不少地留在 jsonl 原始流里。
+     */
     private static void slimResp(JSONObject o) {
         try {
             String body = o.optString("respBody", "");
-            if (body.length() > RESP_KEEP) {
-                int cut = body.length() - RESP_KEEP;
-                o.put("respCut", cut);
-                o.put("respBody", body.substring(0, RESP_KEEP)
-                        + "…[+" + cut + " 字符，全量在 jsonl 原始流]");
+            if (body.length() <= RESP_KEEP) {
+                return;
             }
+            JSONObject stub = new JSONObject();
+            stub.put("__truncated", true);
+            stub.put("bytes", body.length());
+            stub.put("preview", body.substring(0, RESP_PREVIEW));
+            stub.put("note", "报告只留 " + RESP_PREVIEW + " 字符预览，完整响应体在 jsonl 原始流");
+            o.put("respCut", body.length() - RESP_PREVIEW);
+            o.put("respBody", stub.toString());
         } catch (Throwable ignored) {
         }
     }

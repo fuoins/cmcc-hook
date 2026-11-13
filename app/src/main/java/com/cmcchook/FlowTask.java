@@ -79,7 +79,7 @@ final class FlowTask {
      * 构建指纹。日志第一行会打出来，用来一眼分辨手机里跑的是哪一版 dex ——
      * 前几轮反复出现「装了新包、日志还是旧行为」，靠 DIAG 字段猜太费劲。
      */
-    static final String BUILD = "v4.20.0-r21-20261113";
+    static final String BUILD = "v4.20.0-r22-20261113";
 
     /** 真页登记的有效期：10 分钟内打开过的余量页才直读，太久的内容已经过时。 */
     private static final long REAL_TTL_MS = 10L * 60_000L;

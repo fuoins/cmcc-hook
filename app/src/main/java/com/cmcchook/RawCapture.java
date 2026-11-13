@@ -347,7 +347,12 @@ final class RawCapture {
             }
         }
         String[] noise = {"sensorsdata", "giodata", "/gio/", "umeng",
-                "talkingdata", "bugly", "/monitor/", "beacon."};
+                "talkingdata", "bugly", "/monitor/", "beacon.",
+                // r22：11-13 录制流实证，877 条里这三类占 606 条（69%）纯噪音：
+                // 极光推送统计 jiguang（314）、APM 监控 apm.app.coc（252）、
+                // H5 日志上报 newSendLogForAES（40）。它们既不是业务请求，
+                // 又会把 jsonl 和广播配额撑满，默认不录。
+                "jiguang", "apm.app.coc", "newsendlogforaes"};
         for (String n : noise) {
             if (u.contains(n)) {
                 return false;

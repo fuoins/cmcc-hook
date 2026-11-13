@@ -39,6 +39,17 @@ CODE_KEYS = ("code", "resultCode", "retCode", "rtnCode", "status")
 STATE_KEYS = ("isFinish", "remain", "drawTimes", "finish", "remainingTimes")
 PHONE_RE = re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)")
 
+# r22：埋点/监控域名。11-13 的录制流 877 条里 606 条（69%）是极光推送统计、
+# APM 监控和 H5 日志上报，纯噪音会把接口清单和成功判据候选淹掉。模块侧
+# RawCapture.wanted() 已默认不录；这里再兜一层，老文件也能得到干净结果。
+NOISE_URLS = ("jiguang", "apm.app.coc", "newsendlogforaes", "sensorsdata",
+              "umeng", "giodata", "/gio/", "talkingdata", "bugly", "beacon.")
+
+
+def is_noise(url):
+    u = (url or "").lower()
+    return any(n in u for n in NOISE_URLS)
+
 
 # ----------------------------------------------------------------- 载入
 
@@ -313,8 +324,11 @@ def draft(recs, deps, ifaces, okc, enc, act_id):
 
 # ----------------------------------------------------------------- 报告
 
-def analyze(path, act_id="unnamed"):
+def analyze(path, act_id="unnamed", keep_noise=False):
     recs, bad = load_records(path)
+    total = len(recs)
+    if not keep_noise:
+        recs = [r for r in recs if not is_noise(r.get("url"))]
     ifaces = interfaces(recs)
     deps = dependencies(recs)
     enc = encrypted(recs)
@@ -323,7 +337,7 @@ def analyze(path, act_id="unnamed"):
         "schema": "cmcc-capture-analysis/1",
         "source": path,
         "stats": {
-            "records": len(recs), "badLines": bad,
+            "records": len(recs), "badLines": bad, "noise": total - len(recs),
             "interfaces": len(ifaces), "dependencies": len(deps),
             "encrypted": len(enc), "okCandidates": len(okc),
             "acts": len({r.get("act", "") for r in recs if r.get("act", "")}),
@@ -344,7 +358,7 @@ def render(result, max_rows=40):
         "中国移动 · 录制流离线分析（r20）",
         "=" * 68,
         f"源文件      : {result['source']}",
-        f"请求记录    : {s['records']} 条（坏行 {s['badLines']}）",
+        f"请求记录    : {s['records']} 条（坏行 {s['badLines']}，已过滤埋点 {s.get('noise', 0)} 条）",
         f"接口        : {s['interfaces']} 个  |  参数依赖 {s['dependencies']} 条",
         f"密文域      : {s['encrypted']} 个  |  成功判据候选 {s['okCandidates']} 个",
         f"归属活动    : {s['acts']} 个",
@@ -485,6 +499,8 @@ def main():
     ap.add_argument("--json", dest="json_out", help="把完整结果写成 JSON 文件")
     ap.add_argument("--draft", help="只输出某 id 的活动描述草稿 JSON")
     ap.add_argument("--selftest", action="store_true", help="用内置假数据自验")
+    ap.add_argument("--keep-noise", action="store_true",
+                    help="保留极光/APM 等埋点（默认过滤）")
     args = ap.parse_args()
 
     if args.selftest:
@@ -495,7 +511,7 @@ def main():
         ap.error("给一个 *.jsonl，或用 --selftest")
 
     try:
-        r = analyze(args.file, args.draft or "unnamed")
+        r = analyze(args.file, args.draft or "unnamed", keep_noise=args.keep_noise)
     except OSError as e:
         print("读取失败: %s" % e, file=sys.stderr)
         return 2

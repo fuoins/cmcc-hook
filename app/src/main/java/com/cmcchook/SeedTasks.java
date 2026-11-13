@@ -26,10 +26,15 @@ import org.json.JSONObject;
  * 不需要维护白名单，只排除不能代做的类型，其余全部自动尝试；每项单独记结果，
  * 一个失败不影响其它。
  *
- * <p>请求全部在豆苗真页内发出，优先复用页面自己的 axios 实例（自带 phone /
- * wasmParams 拦截器），兜底 fetch 也带上从页面 XHR 抓到的 phone 头 —— 与
- * {@link CanvasTask} 同一套做法，Java 层不拼风控参数。判定只认服务端复查，
- * 绝不因为「请求发出去了」就记成功。通道不可用时如实回报，由 MiaoTask 回退
+ * <p>请求全部在豆苗真页内发出。r19 优先复用页面 axios（自带 phone / wasmParams
+ * 拦截器），但 r22 实测发现**这个拦截器会把 body 覆盖成当前页面上下文**：876 条
+ * 录制流里 {@code channelCode} 从未出现 P00000011939（全是秒杀页的 P00000153130），
+ * {@code visitUrl} 也被改成 2026dmycj，直播（agzbj）和精选爆品（bpzq）因此要么被
+ * 答「该url不在配置范围内」，要么返回 {@code resultCode=0/data=null} 却根本没记账。
+ * 现在改成**先原生 fetch 原样发 body**（只带 phone / x-token 这类会话级头，不带
+ * 每次现算的 x-sign / wasmParams），业务码不对才回退页面 axios，并回读 XHR 实际
+ * 发出的 body，被改写就在明细里点名；{@code channelCode} 也改成按任务跳转地址取。
+ * 判定只认服务端复查 {@code isFinish=1}，绝不因为「请求发出去了」就记成功。通道不可用时如实回报，由 MiaoTask 回退
  * 原 DOM 点击链路，功能不回退。
  */
 final class SeedTasks {
@@ -41,6 +46,11 @@ final class SeedTasks {
     static final int TASK_LIST_ID = 55;
     static final int ACTIVITY_ID = 17692;
     static final String PAGE_KEY = "2026dmycj";
+    /**
+     * 兜底渠道。r22 起不再直接用它：优先取任务 {@code unfinishRedirectUrl} 里的
+     * channelCode，其次取当前页 URL 的 channelCode。11-13 的录制流里这个常量
+     * 一次都没出现在实际请求中。
+     */
     static final String DEFAULT_CHANNEL = "P00000011939";
 
     static final String P_TASK = "/coc3/coc3-market-activity/cmpp-manage/task/";
@@ -61,19 +71,30 @@ final class SeedTasks {
         int failed;
         int still;
         int gain;
+        /** r22：直发（fetch，body 保真）成功的条数。 */
+        int direct;
+        /** r22：回退页面 axios 才成功的条数（含被拦截器改写 body 的情况）。 */
+        int fallback;
         String reason = "";
 
         @Override
         public String toString() {
             return "清单=" + available + " 待办=" + todo + " 上报=" + accepted
                     + " 确认=" + confirmed + " 待刷新=" + still
-                    + " 跳过=" + skipped + " 失败=" + failed + " 阳光值+" + gain;
+                    + " 跳过=" + skipped + " 失败=" + failed + " 阳光值+" + gain
+                    + " 直发=" + direct + " 回退=" + fallback;
         }
     }
 
     /**
-     * 在豆苗真页里跑一遍服务端通道。最长约 50 秒；任何异常都返回
-     * {@code available=false}，由调用方回退 DOM 链路。
+     * 在豆苗真页里跑一遍服务端通道。
+     *
+     * <p>r22：预算改成按「可自动任务数」动态（每个 8 秒 + 12 秒固定开销，封顶
+     * 180 秒）。r19 固定 38 秒只够发 3 条 visit，剩下十几个任务永远轮不到；
+     * 而 26 个任务里真正可自动的只有 7 个，按 7 个算约 68 秒，既不会漏也不会
+     * 白占一键总时长。Java 侧硬上限 195 秒，防脚本 await 挂死。
+     *
+     * <p>任何异常都返回 {@code available=false}，由调用方回退 DOM 链路。
      */
     static Outcome run(WebPage page, StringBuilder detail) {
         Outcome out = new Outcome();
@@ -84,7 +105,7 @@ final class SeedTasks {
         }
         try {
             page.eval(SEED_START, 6_000L);
-            long deadline = System.currentTimeMillis() + 50_000L;
+            long deadline = System.currentTimeMillis() + 195_000L;
             String raw = null;
             String lastBeat = "";
             while (System.currentTimeMillis() < deadline) {
@@ -112,7 +133,7 @@ final class SeedTasks {
                 sleep(400L);
             }
             if (raw == null) {
-                out.reason = "脚本 50 秒没回报";
+                out.reason = "脚本 195 秒没回报";
                 detail.append("coc3 服务端通道: 超时，回退 DOM 点击链路\n");
                 return out;
             }
@@ -132,6 +153,8 @@ final class SeedTasks {
             out.failed = o.optInt("failed", 0);
             out.still = o.optInt("still", 0);
             out.gain = o.optInt("gain", 0);
+            out.direct = o.optInt("direct", 0);
+            out.fallback = o.optInt("fallback", 0);
             JSONArray lines = o.optJSONArray("lines");
             if (lines != null) {
                 for (int i = 0; i < lines.length(); i++) {
@@ -212,7 +235,20 @@ final class SeedTasks {
      * 注入脚本：异步跑完写 {@code window.__cmcc_seed}，Java 侧轮询取值。
      * 心跳期间写 {@code {beat:1,last:...}}，最终写完整结果（无 beat）。
      *
-     * <p>刻意不使用正则里的反斜杠转义，避免 Java text block 双重转义踩坑。
+     * <p>r22 三处关键改动（依据 11-13 11:21 录制流的实证）：
+     * <ol>
+     *   <li><b>上报走原生 fetch</b>：页面 axios 的请求拦截器会把 body 覆盖成
+     *       当前页面上下文（{@code channelCode} 从 P00000011939 变成 P00000153130、
+     *       {@code visitUrl} 从 bpzq 变成 2026dmycj），服务端因此答「该url不在配置
+     *       范围内」。现在先用 fetch 原样发 body，业务码不对才回退页面 axios，
+     *       并回读 XHR 实际发出的 body，被改写就在明细里点名。</li>
+     *   <li><b>预算动态</b>：{@code 12s + 可自动任务数 × 8s}，封顶 180 秒。
+     *       固定 38 秒时 20 个待办只发得出 3 条。</li>
+     *   <li><b>连续直发失败降级</b>：2 次直发都被业务拒绝就整体切回页面 axios，
+     *       避免每个任务白撞一发。</li>
+     * </ol>
+     *
+     * <p>刻意不使用反斜杠，避免 Java text block 双重转义踩坑。
      */
     private static final String SEED_START = """
             (function(){
@@ -228,8 +264,62 @@ final class SeedTasks {
               var PC='/coc3/coc3-market-activity/api/activity/slgCredits/';
               var LIST_ID=55, ACT_ID=17692, PAGE_KEY='2026dmycj';
               var CHANNEL='P00000011939';
+              var REQ_MS=15000;
 
-              // 页面自己的 axios 实例带 phone / wasmParams 拦截器，优先复用
+              // 页面 XHR 上抓风控头，同时记下「实际发出去的 body」
+              function hookXhr(){
+                try{
+                  var sr=XMLHttpRequest.prototype.setRequestHeader;
+                  XMLHttpRequest.prototype.setRequestHeader=function(k,v){
+                    try{
+                      var lk=String(k).toLowerCase();
+                      // 只留会话级头。x-sign / x-time / x-nonce / wasmParams 是
+                      // 每次请求现算的，拿上一条的会直接验签失败，宁可不要。
+                      if(lk==='phone'||lk==='x-token'||lk==='appsession'){
+                        if(!window.__cmccHdrs) window.__cmccHdrs={};
+                        window.__cmccHdrs[k]=String(v);
+                      }
+                    }catch(e){}
+                    return sr.apply(this,arguments);
+                  };
+                }catch(e){}
+                try{
+                  var ss=XMLHttpRequest.prototype.send;
+                  XMLHttpRequest.prototype.send=function(b){
+                    try{ window.__cmccLastBody=(typeof b==='string')?b:'' }catch(e){}
+                    return ss.apply(this,arguments);
+                  };
+                }catch(e){}
+              }
+              function hdrs(){
+                var out={'Content-Type':'application/json;charset=utf-8'};
+                try{
+                  var h=window.__cmccHdrs||{};
+                  for(var k in h){ if(String(k).toLowerCase()!=='content-type') out[k]=h[k] }
+                }catch(e){}
+                return out;
+              }
+              function timeout(p,ms){
+                return new Promise(function(res,rej){
+                  var t=setTimeout(function(){ rej(new Error('req timeout')) },ms);
+                  p.then(function(v){ clearTimeout(t); res(v) },
+                         function(e){ clearTimeout(t); rej(e) });
+                });
+              }
+              function parsed(t){ try{ return typeof t==='string'?JSON.parse(t):t }catch(e){ return null } }
+
+              // 直发：body 原样出门，绝不过页面拦截器
+              async function fetchJson(path,body){
+                var f=window.fetch;
+                if(!isFn(f)) return {ok:false,err:'页面没有 fetch'};
+                try{
+                  var r=await timeout(f(path,{method:'POST',credentials:'include',
+                    headers:hdrs(),body:JSON.stringify(body)}),REQ_MS);
+                  var t=await r.text();
+                  return {ok:true,data:t,status:r.status};
+                }catch(e){ return {ok:false,err:String(e)} }
+              }
+
               var AX=[];
               function isAxios(o){ try{ return o && isFn(o.post) && isFn(o.get) && o.interceptors && o.interceptors.request }catch(e){ return false } }
               function addAx(o,src){
@@ -261,38 +351,25 @@ final class SeedTasks {
                   }
                 }catch(e){}
               }
-              // 兜底 fetch 需要的 phone 头：从页面自己的 XHR 里原样记下来
-              function hookPhone(){
-                try{
-                  var sr=XMLHttpRequest.prototype.setRequestHeader;
-                  XMLHttpRequest.prototype.setRequestHeader=function(k,v){
-                    try{ if(String(k).toLowerCase()==='phone') window.__cmccPhone=String(v) }catch(e){}
-                    return sr.apply(this,arguments);
-                  };
-                }catch(e){}
-              }
-              async function post(path,body){
+
+              // 页面 axios：风控头齐，但 body 可能被拦截器改写
+              async function postAxios(path,body){
                 var err='';
                 for(var i=0;i<AX.length;i++){
                   try{
+                    window.__cmccLastBody='';
                     var ret=AX[i].i.post(path,body);
-                    if(ret&&isFn(ret.then)) ret=await ret;
-                    return {ok:true,data:(ret&&ret.data!==undefined)?ret.data:ret};
+                    if(ret&&isFn(ret.then)) ret=await timeout(ret,REQ_MS);
+                    return {ok:true,data:(ret&&ret.data!==undefined)?ret.data:ret,
+                            sent:window.__cmccLastBody||''};
                   }catch(e){ err=String(e) }
                 }
                 try{
-                  var ph=''; try{ ph=window.__cmccPhone||'' }catch(e){}
-                  var h={'Content-Type':'application/json;charset=utf-8'};
-                  if(ph) h.phone=ph;
-                  var f=await fetch(path,{method:'POST',credentials:'include',headers:h,body:JSON.stringify(body)});
-                  var t=await f.text();
-                  return {ok:true,data:t};
+                  var r=await fetchJson(path,body);
+                  return {ok:r.ok,data:r.data,sent:'',err:(err?err+' / ':'')+(r.err||'')};
                 }catch(e){ return {ok:false,err:(err?err+' / ':'')+String(e)} }
               }
-              function obj(r){
-                var d=(r&&r.data!==undefined)?r.data:r;
-                try{ return typeof d==='string'?JSON.parse(d):d }catch(e){ return null }
-              }
+              function obj(r){ var d=(r&&r.data!==undefined)?r.data:r; return parsed(d) }
               function codeOf(o){
                 if(!o) return -999;
                 if(o.resultCode!=null) return Number(o.resultCode);
@@ -311,8 +388,21 @@ final class SeedTasks {
                 if(q>=0&&q<end)end=q; if(h>=0&&h<end)end=h; if(s>=0&&s<end)end=s;
                 return rest.slice(0,end).trim();
               }
+              // 从 URL 里取 channelCode
+              function channelOf(u){
+                u=String(u||''); var k='channelCode=';
+                var at=u.indexOf(k);
+                if(at<0) return '';
+                var rest=u.slice(at+k.length), end=rest.length;
+                var amp=rest.indexOf('&'), h=rest.indexOf('#');
+                if(amp>=0&&amp<end)end=amp; if(h>=0&&h<end)end=h;
+                return rest.slice(0,end).trim();
+              }
+              function pageChannel(){
+                try{ return channelOf(String(location.href||'')) }catch(e){ return '' }
+              }
               async function list(){
-                var r=await post(PT+'getGrowthTaskList',{taskListId:LIST_ID});
+                var r=await postAxios(PT+'getGrowthTaskList',{taskListId:LIST_ID});
                 var o=obj(r);
                 if(!okCode(o)) return null;
                 var d=o.data;
@@ -321,21 +411,54 @@ final class SeedTasks {
                 if(!d||typeof d.length!=='number') return null;
                 return d;
               }
+
+              // 上报：先直发（body 保真），业务拒绝再回退页面 axios 并回读实际 body
+              var directTried=0, directFail=0, useDirect=true, directOk=0, fbOk=0;
+              async function postTask(path,body){
+                var want=String(body.visitUrl||'');
+                if(useDirect){
+                  directTried++;
+                  var fr=await fetchJson(path,body), fo=obj(fr);
+                  if(okCode(fo)){ directOk++; return {o:fo,mode:'direct'} }
+                  directFail++;
+                  line('    直发未通过（'+codeOf(fo)+'），改走页面 axios');
+                  if(directFail>=2&&directOk===0){
+                    useDirect=false;
+                    line('    连续 2 次直发被拒，后续任务改走页面 axios');
+                  }
+                }
+                var a=await postAxios(path,body), ao=obj(a);
+                var sent=String(a.sent||'');
+                var rewritten=(want&&sent&&sent.indexOf(want)<0);
+                if(rewritten) line('    ⚠ 页面拦截器改写了 body（visitUrl 不含 '+want+'）');
+                if(okCode(ao)) fbOk++;
+                return {o:ao,mode:rewritten?'fallback-rewritten':'fallback'};
+              }
+
               async function main(){
-                hookPhone(); findAxios();
-                line('通道: axios '+AX.length+' 个 / phone '+(window.__cmccPhone?'已取':'待页面请求时取'));
+                hookXhr(); findAxios();
+                line('通道: axios '+AX.length+' 个 / 风控头 '+(window.__cmccHdrs?'已取':'待页面请求时取'));
                 var t0=Date.now();
                 var tasks=await list();
                 if(tasks===null){
                   done({stage:'no-channel',reason:'getGrowthTaskList 未返回 resultCode=0'});
                   return;
                 }
-                var todo=[];
-                for(var i=0;i<tasks.length;i++){ if(Number(tasks[i].isFinish)===0) todo.push(tasks[i]) }
-                line('任务清单: 共 '+tasks.length+' 个，待办 '+todo.length+' 个');
+                var todo=[], actionable=0;
+                for(var i=0;i<tasks.length;i++){
+                  var t1=tasks[i];
+                  if(Number(t1.isFinish)!==0) continue;
+                  todo.push(t1);
+                  var ty=Number(t1.taskType);
+                  if(ty!==3&&ty!==6&&(ty===1||ty===2||ty===4||ty===5)) actionable++;
+                }
+                var budget=Math.min(180000,12000+actionable*8000);
+                line('任务清单: 共 '+tasks.length+' 个，待办 '+todo.length
+                     +' 个，可自动 '+actionable+' 个');
+                line('预算: '+Math.round(budget/1000)+' 秒');
                 var accepted=[], skipped=0, failed=0;
                 for(var i=0;i<todo.length;i++){
-                  if(Date.now()-t0>38000){ line('总预算到，停止后续任务'); break }
+                  if(Date.now()-t0>budget){ line('预算到，停止后续任务（剩余 '+(todo.length-i)+' 个）'); break }
                   var t=todo[i], tid=t.taskId, tt=Number(t.taskType);
                   var title=String(t.taskMainTitle||('任务'+tid)).slice(0,40);
                   if(tt===3){ line('· '+title+'（需真实办理/订购，跳过）'); skipped++; continue }
@@ -344,14 +467,21 @@ final class SeedTasks {
                   var vurl=tt===2?PAGE_KEY:visitUrlOf(t.unfinishRedirectUrl);
                   if(!vurl){ line('· '+title+'（缺目标页，跳过）'); skipped++; continue }
                   var path=tt===2?'share':'visit';
-                  var body={channelCode:CHANNEL,visitUrl:vurl,taskId:tid};
-                  var r=await post(PT+path,body), o=obj(r), c=codeOf(o), d=o?o.data:null;
+                  // r22：渠道按任务自己的跳转地址取。11-13 录制流里唯一真正生效的那次
+                  // visit 用的是 P00000153856（任务跳转页渠道），而页面上发出去的全是
+                  // 秒杀页的 P00000153130；硬编码的 P00000011939 一次都没出现在请求里。
+                  var ch=channelOf(t.unfinishRedirectUrl)||pageChannel()||CHANNEL;
+                  var body={channelCode:ch,visitUrl:vurl,taskId:tid};
+                  var pr=await postTask(PT+path,body), o=pr.o, c=codeOf(o), d=o?o.data:null;
                   if(d&&typeof d==='string'&&d.indexOf('频繁')>=0){
-                    await wait(3000);
-                    r=await post(PT+path,body); o=obj(r); c=codeOf(o); d=o?o.data:null;
+                    await wait(2500);
+                    pr=await postTask(PT+path,body); o=pr.o; c=codeOf(o); d=o?o.data:null;
                   }
                   if(okCode(o)&&(d===null||d===true||d===undefined||d==='')){
-                    line('✓ '+title+' 已上报（'+path+'）'); accepted.push(tid);
+                    // resultCode=0 只代表「服务端收到了」，不代表任务被记账
+                    // （录制里 3108 传错 visitUrl 也返回 0/null，isFinish 仍是 0），
+                    // 所以这里只记「已上报」，成败一律以复查 isFinish=1 为准。
+                    line('✓ '+title+' 已上报（'+path+'/'+pr.mode+'/渠道 '+ch+'）'); accepted.push(tid);
                   }else if(okCode(o)){
                     line('· '+title+'：'+cut(d,60));
                   }else{
@@ -374,12 +504,12 @@ final class SeedTasks {
                 }
                 var gain=0;
                 try{
-                  var hr=await post(PC+'getSlgCreditsHomePage',{activityId:ACT_ID});
+                  var hr=await postAxios(PC+'getSlgCreditsHomePage',{activityId:ACT_ID});
                   var ho=obj(hr), recs=(ho&&ho.data&&ho.data.unreceivedCreditsVOList)||[];
                   line('待领阳光值: '+recs.length+' 条');
                   for(var k=0;k<recs.length&&k<12;k++){
                     var rec=recs[k];
-                    var gr=await post(PC+'getGrowthBubble',{activityId:ACT_ID,
+                    var gr=await postAxios(PC+'getGrowthBubble',{activityId:ACT_ID,
                       creditsRecordId:rec.recordId,referer:PAGE_KEY,channelNo:CHANNEL});
                     var go=obj(gr);
                     if(go&&okCode(go)){ gain+=Number(rec.showNum||0); }
@@ -387,8 +517,10 @@ final class SeedTasks {
                   }
                   if(gain>0) line('领取阳光值 +'+gain);
                 }catch(e){ line('领阳光值跳过: '+cut(e,60)) }
+                line('上报方式: 直发 '+directOk+' 条 / 回退 '+fbOk+' 条');
                 done({stage:'ok',todo:todo.length,accepted:accepted.length,confirmed:confirmed,
-                      skipped:skipped,failed:failed,still:still,gain:gain});
+                      skipped:skipped,failed:failed,still:still,gain:gain,
+                      direct:directOk,fallback:fbOk});
               }
               main().catch(function(e){ done({stage:'error',msg:String(e)}) });
             })()
