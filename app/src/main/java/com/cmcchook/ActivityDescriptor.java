@@ -51,6 +51,12 @@ import java.util.Set;
  * <p>安全边界：{@code cmd} 不允许覆盖模块已有的 20 个活动命令和诊断命令，
  * 描述执行器只接管「新命令」或显式 {@code desc:} 前缀，避免一条配置把
  * 跑了十几轮的老链路顶掉。{@link #validate} 是纯函数，可在 JVM 上离线自验。
+ *
+ * <p><b>一键自动带上（r21）</b>：{@link TaskRunner#runAll} 在跑完福利页开关后，
+ * 会调 {@link #enabledCmds} 把所有 {@code enabled=true} 且校验通过的描述追加到
+ * 队列末尾（{@code desc:<id>}），并归入最后一轮执行。于是打通一个活动 =
+ * 录制 → 离线分析 → 下发一条 JSON，<b>不改 Java、不发版</b>；{@code enabled=false}
+ * 的草稿永远不跑，零回归边界不变。
  */
 final class ActivityDescriptor {
 
@@ -306,6 +312,59 @@ final class ActivityDescriptor {
         return null;
     }
 
+    /**
+     * 纯函数：从描述数组里挑出「enabled=true 且校验通过」的，转成 {@code desc:<id>}。
+     *
+     * <p>一键把结果追加到命令队列末尾 —— 于是「下发一条描述」就等于「接通一个活动」，
+     * 不用改 Java、不用重新发版。校验不过或 enabled=false 的一律不碰，保证零回归。
+     */
+    static List<String> pickEnabledCmds(JSONArray arr) {
+        List<String> out = new ArrayList<>();
+        if (arr == null) {
+            return out;
+        }
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject d = arr.optJSONObject(i);
+            if (d == null || !d.optBoolean("enabled", false)) {
+                continue;
+            }
+            if (!validate(d).startsWith("PASS")) {
+                continue;
+            }
+            String id = d.optString("id", "");
+            if (id.isEmpty()) {
+                continue;
+            }
+            String c = CMD_DESC + id;
+            if (!out.contains(c)) {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    /** 读描述文件并挑出启用项，供一键调度用。 */
+    static List<String> enabledCmds(Context ctx) {
+        return pickEnabledCmds(load(ctx));
+    }
+
+    /** 把 {@code desc:<id>} 翻成描述里的中文名，日志与汇总表用。 */
+    static String nameOfCmd(Context ctx, String descCmd) {
+        if (descCmd == null || !descCmd.startsWith(CMD_DESC)) {
+            return descCmd;
+        }
+        String id = descCmd.substring(CMD_DESC.length());
+        JSONArray arr = load(ctx);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject d = arr.optJSONObject(i);
+            if (d != null && id.equals(d.optString("id", ""))) {
+                String n = d.optString("name", "");
+                return n.isEmpty() ? id : n;
+            }
+        }
+        return id;
+    }
+
     /** 清单：把外部描述列出来，标注启用状态与校验结果。 */
     static String report(Context ctx) {
         JSONArray arr = load(ctx);
@@ -394,6 +453,18 @@ final class ActivityDescriptor {
         total++;
         if (validateAll(new JSONArray()).indexOf("0/0") < 0) {
             fails.add("空描述集没报「零回归」");
+        }
+        total++;
+        // 一键抽取：只取 enabled=true 且合法的，转成 desc:<id>；disabled 的一条都不能混进来。
+        JSONArray ea = new JSONArray();
+        JSONObject on = goodObj("on1", "x_on");
+        on.put("enabled", true);
+        JSONObject off = goodObj("off1", "x_off");
+        ea.put(on);
+        ea.put(off);
+        List<String> ec = pickEnabledCmds(ea);
+        if (ec.size() != 1 || !(CMD_DESC + "on1").equals(ec.get(0))) {
+            fails.add("enabled 描述抽取错（应只取 enabled=true 并转成 desc:<id>）: " + ec);
         }
 
         if (fails.isEmpty()) {

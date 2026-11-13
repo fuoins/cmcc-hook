@@ -1233,7 +1233,8 @@ final class TaskRunner {
         java.util.List<String> earn = new ArrayList<>();
         java.util.List<String> spend = new ArrayList<>();
         for (String c : cmds) {
-            if (inCmds(SWEEP_CMDS, c)) {
+            // 描述活动多为未验证的新链路，同样归到最后一轮：不抢主力活动的次数。
+            if (inCmds(SWEEP_CMDS, c) || c.startsWith(ActivityDescriptor.CMD_DESC)) {
                 spend.add(c);
             } else {
                 earn.add(c);
@@ -1288,7 +1289,11 @@ final class TaskRunner {
                     "进度: " + (idx + 1) + "/" + cmds.length
                             + "　今日: " + todayLine(HookLog.context()));
             try {
-                Result one = runOne(cmd);
+                // r21：desc:<id> 走描述执行器，其余走原链路。这样描述活动也能复用
+                // 四态汇总、登录态熔断、逐项记账，和内置活动一视同仁。
+                Result one = cmd.startsWith(ActivityDescriptor.CMD_DESC)
+                        ? runDescriptor(cmd.substring(ActivityDescriptor.CMD_DESC.length()))
+                        : runOne(cmd);
                 detail.append("=== ").append(name).append(" ===\n")
                         .append(one.detail == null ? "" : one.detail).append('\n');
                 if (one.skip) {
@@ -1454,9 +1459,21 @@ final class TaskRunner {
             }
         } catch (Throwable ignored) {
         }
+        // r21：把「已启用的活动描述」追加到一键队列。描述存在模块私有文件里，
+        // 下发一条 JSON 就等于接通一个活动 —— 不用改 Java、不用重新发版。
+        // 排在福利页开关之后，且 sortByPhase 会把 desc: 归到消耗阶段最后一轮，
+        // 未验证的新链路不会抢主力活动的次数。
+        try {
+            for (String c : ActivityDescriptor.enabledCmds(HookLog.context())) {
+                if (!cmds.contains(c)) {
+                    cmds.add(c);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         if (cmds.isEmpty()) {
-            return Result.idle("没有打开的活动", "福利页所有开关都关着。",
-                    "到「福利」页把要跑的活动打开。");
+            return Result.idle("没有打开的活动", "福利页开关都关着，也没有启用的活动描述。",
+                    "到「福利」页打开活动，或用「描述清单 / 导入」下发 enabled=true 的描述。");
         }
         return runList(cmds.toArray(new String[0]));
     }
@@ -1734,6 +1751,10 @@ final class TaskRunner {
         if (cmd.startsWith(CMD_DIY)) {
             String name = WelfareCatalog.nameOf(cmd);
             return name == null ? "活动 " + cmd.substring(CMD_DIY.length()) : name;
+        }
+        if (cmd.startsWith(ActivityDescriptor.CMD_DESC)) {
+            // 描述活动没有 WelfareCatalog 条目，名字从描述文件里取。
+            return ActivityDescriptor.nameOfCmd(HookLog.context(), cmd);
         }
         return cmd;
     }
