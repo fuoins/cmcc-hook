@@ -254,6 +254,9 @@
     <string name="raw_capture_desc">打开后，手动在 App 里做一遍活动，每条请求/响应的完整头与正文都会旁路录下来（不过滤、不去重）。导出报告会标出参数来源和哪些域是密文，用来把更多活动收敛成脚本。报告含 Cookie / token，别外传。</string>
     <string name="capture_export">导出采集报告</string>
     <string name="capture_clear">清空采集</string>
+    <string name="capture_record">一键录制（跑完自动导出）</string>
+    <string name="capture_raw">导出原始流</string>
+    <string name="capture_desc">描述清单 / 导入</string>
     <string name="capture_no_data">还没录到请求。先打开「常驻采集」，再到中国移动 App 里手动做一遍活动。</string>
     <string name="capture_export_fail">导出采集报告失败</string>
     <string name="capture_cleared">采集记录已清空</string>

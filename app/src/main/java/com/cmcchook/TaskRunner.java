@@ -8,6 +8,9 @@ import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -83,6 +86,21 @@ final class TaskRunner {
     static final String CMD_CATALOG = "catalog";
     /** r19：离线自验（纯函数，不依赖真机、不发请求）。 */
     static final String CMD_SELFTEST = "selftest";
+    /** r20：列出外部下发的活动描述（只读诊断）。 */
+    static final String CMD_DESCRIPTORS = "descriptors";
+    /** r20：一键录制（模块进程拦截编排，目标进程只负责跑活动）。 */
+    static final String CMD_RECORD = "record";
+    static final String CMD_RECORD_ONE = "record:";
+
+    /**
+     * r20：由 {@code TaskReceiver} 从广播 extra 透传进来的描述 JSON。
+     * 模块私有文件在 Android 15 上跨进程读不到，所以下发走广播直传。
+     */
+    private static volatile String sDescriptorJson = "";
+
+    static void setDescriptorJson(String json) {
+        sDescriptorJson = json == null ? "" : json;
+    }
 
     private static final String STATE_FILE = "cmcc_hook_tasks";
     private static final String KEY_HANDLED_SEQ = "handled_seq";
@@ -605,12 +623,60 @@ final class TaskRunner {
                     ActivityCatalog.report(), ActivityCatalog.summary());
         }
         if (CMD_SELFTEST.equals(cmd)) {
-            String text = ActivityCatalog.selfCheck();
-            String head = text.substring(0, Math.min(60, text.length())).split("\n")[0];
-            if (text.startsWith("PASS")) {
+            // r20：把录制导出 / 描述 schema / 通用执行器 / 会话编排的自验一起跑，
+            // 纯函数、不发请求、不依赖真机，一轮就能验证整套闭环的逻辑正确性。
+            StringBuilder all = new StringBuilder();
+            all.append("== 离线自验（r20 全链路）==\n\n");
+            String[] checks = {
+                    ActivityCatalog.selfCheck(),
+                    ActivityDescriptor.selfCheck(),
+                    DescriptorRunner.selfCheck(),
+                    CaptureExport.selfCheck(),
+                    CaptureSession.selfCheck()
+            };
+            int fail = 0;
+            for (String c : checks) {
+                all.append(c).append("\n\n");
+                if (!c.startsWith("PASS")) {
+                    fail++;
+                }
+            }
+            String text = all.toString();
+            String head = fail == 0
+                    ? "PASS " + checks.length + "/" + checks.length + " 组全通过"
+                    : "FAIL " + fail + "/" + checks.length + " 组未通过";
+            if (fail == 0) {
                 return Result.ok("离线自验 · " + head, text, head);
             }
-            return Result.fail("离线自验 · " + head, text, "把完整日志发我，按失败项修注册表。");
+            return Result.fail("离线自验 · " + head, text, "把完整日志发我，按失败项修。");
+        }
+        if (CMD_DESCRIPTORS.equals(cmd)) {
+            String rep = ActivityDescriptor.report(HookLog.context());
+            String v = ActivityDescriptor.validateAll(ActivityDescriptor.load(HookLog.context()));
+            return Result.ok("活动描述清单 · " + v.split("\n")[0], rep, v.split("\n")[0]);
+        }
+        if (cmd.startsWith(ActivityDescriptor.CMD_DESC)) {
+            return runDescriptor(cmd.substring(ActivityDescriptor.CMD_DESC.length()));
+        }
+        if (CMD_RECORD.equals(cmd) || cmd.startsWith(CMD_RECORD_ONE)) {
+            // 录制编排在模块进程（开关 / 清流 / 导出都在那边），这里只负责把活动真跑一遍。
+            // 若命令是外部广播直接发来的，也照常跑活动，不因缺编排而空转。
+            String inner = cmd.startsWith(CMD_RECORD_ONE)
+                    ? cmd.substring(CMD_RECORD_ONE.length()) : CMD_ALL;
+            if (inner.isEmpty()) {
+                inner = CMD_ALL;
+            }
+            return runOne(inner);
+        }
+        // r20：描述里显式 enabled 且 cmd 命中新命令的，走通用执行器；
+        // 模块原有 20 个命令一个都不在这里，默认零回归。
+        JSONObject wired = ActivityDescriptor.enabledFor(HookLog.context(), cmd);
+        if (wired != null) {
+            StringBuilder detail = new StringBuilder();
+            Result r = DescriptorRunner.run(HookLog.context(), wired, detail);
+            HookLog.log(r.ok ? "DESC" : "DESC-FAIL", wired.optString("name", cmd) + " · " + r.summary,
+                    detail.toString());
+            return r;
         }
         if (CMD_WELFARE.equals(cmd)) {
             return WelfareFeed.discover();
@@ -657,6 +723,73 @@ final class TaskRunner {
         }
         String name = item != null ? item.name : "新入口 · " + frag;
         return LiveProbe.runLive(frag, name, url, new StringBuilder());
+    }
+
+    /**
+     * r20：执行一条外部下发的活动描述。
+     *
+     * <p>描述 JSON 由模块进程在发命令时通过广播 extra 直传（私有文件在 Android 15
+     * 上跨进程读不到）。也兼容从模块进程私有 descriptors.json 里按 id 取。
+     * 只有 {@code enabled=true} 的描述才会真跑，草稿一律拒绝执行，避免假 ✓。
+     */
+    private static Result runDescriptor(String id) {
+        JSONObject d = null;
+        // 1) 优先用广播直传的 JSON（单条或 descriptors 数组）
+        String carried = sDescriptorJson;
+        if (!carried.isEmpty()) {
+            try {
+                JSONObject root = new JSONObject(carried);
+                JSONArray arr = root.optJSONArray("descriptors");
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject one = arr.optJSONObject(i);
+                        if (one != null && id.equals(one.optString("id", ""))) {
+                            d = one;
+                            break;
+                        }
+                    }
+                } else {
+                    d = root;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        // 2) 兜底：从描述文件按 id 找（模块进程内执行时有效）
+        if (d == null) {
+            JSONArray arr = ActivityDescriptor.load(HookLog.context());
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject one = arr.optJSONObject(i);
+                if (one != null && (id.equals(one.optString("id", ""))
+                        || id.equals(one.optString("cmd", "")))) {
+                    d = one;
+                    break;
+                }
+            }
+        }
+        if (d == null) {
+            return Result.fail("描述执行失败：找不到 desc:" + id,
+                    "把完整描述 JSON 通过「导入描述」放进 descriptors.json，或用模块界面下发。",
+                    "描述不从网络拉取，也不编译进 APK。");
+        }
+        String v = ActivityDescriptor.validate(d);
+        String pretty;
+        try {
+            pretty = d.toString(2);
+        } catch (Throwable e) {
+            pretty = d.toString();
+        }
+        if (!v.startsWith("PASS")) {
+            return Result.fail("描述非法 · " + v, pretty, "按 schema 修好再下发。");
+        }
+        if (!d.optBoolean("enabled", false)) {
+            return Result.skip("描述草稿 · " + d.optString("name", id) + " 未启用",
+                    pretty, "核对 jsonl 原文与成功判据后，把 enabled 改成 true 再下发。");
+        }
+        StringBuilder detail = new StringBuilder();
+        Result r = DescriptorRunner.run(HookLog.context(), d, detail);
+        HookLog.log(r.ok ? "DESC" : "DESC-FAIL",
+                d.optString("name", id) + " · " + r.summary, detail.toString());
+        return r;
     }
 
     /**
@@ -1084,8 +1217,40 @@ final class TaskRunner {
         return WebSession.beginFast(key, url, 20_000L);
     }
 
+    /**
+     * r20：阶段排序 —— 把「消耗型」活动（抽奖 / 投喂 / 收蛋）稳定挪到最后。
+     *
+     * <p>学上游 {@code cmcc_extra.run_games}「视频任务 +1 次放抽奖之前」和
+     * {@code cmcc_wed.run}「finish_tasks → draw_all」：靠<b>顺序</b>保证「先挣次数、
+     * 后消耗」，而不是所有活动跑完再回头把消耗型活动整轮重跑一遍。
+     * 各活动内部本来就已把抽奖改到「任务全做完之后、抽到余额 0」（r10 起），
+     * 所以只要消耗型排最后，跨活动补发的次数也能在最后一轮用掉。
+     *
+     * <p>稳定分区：两组内部都保留原顺序，只是把消耗型整体后移；用户 comma 列表
+     * 里手动排的顺序不会被打乱。
+     */
+    private static String[] sortByPhase(String[] cmds) {
+        java.util.List<String> earn = new ArrayList<>();
+        java.util.List<String> spend = new ArrayList<>();
+        for (String c : cmds) {
+            if (inCmds(SWEEP_CMDS, c)) {
+                spend.add(c);
+            } else {
+                earn.add(c);
+            }
+        }
+        if (spend.isEmpty()) {
+            return cmds;
+        }
+        java.util.List<String> sorted = new ArrayList<>(earn.size() + spend.size());
+        sorted.addAll(earn);
+        sorted.addAll(spend);
+        return sorted.toArray(new String[0]);
+    }
+
     /** 按顺序跑指定的几个活动，每个都执行、每个都单独记账。 */
     private static Result runList(String[] cmds) {
+        cmds = sortByPhase(cmds);
         StringBuilder detail = new StringBuilder();
         StringBuilder text = new StringBuilder();
         StringBuilder brief = new StringBuilder();
@@ -1229,48 +1394,27 @@ final class TaskRunner {
                 + (aborted ? " · 登录态熔断，后续 " + (cmds.length - abortedAt) + " 项未跑" : "")
                 + " · " + brief.toString().trim();
 
-        // v4.10.0 一键末尾统一收尾轮：所有活动任务跑完后，对「消耗型」活动按
-        // 最新余额再补一轮抽奖 / 投喂 / 收蛋。做任务常会补发次数或饲料，
-        // 若某活动先抽后做任务，就会剩次数没用掉。登录态熔断时跳过，
-        // 避免风控期继续撞 qwhdsso/login。收尾结果只写明细，不改完成计数。
-        if (!aborted) {
-            boolean any = false;
+        // r20：删掉「一键末尾整轮重跑」。以前所有活动跑完后又对消耗型活动
+        // 逐个 runOne 一遍（重新开页 / 换票 / 走 SSO 登录），只为「按最新余额补抽」。
+        // 但各活动内部从 r10 起就把抽奖改到「任务全做完之后、抽到余额 0」，
+        // 再加上本版 sortByPhase 把消耗型排到最后，任务补发的次数在最后一轮
+        // 就已经用掉了 —— 全局重跑纯属多此一举，还平白多 4 次登录链路，
+        // 风控期尤其危险（旧注释自己都写了「避免撞 qwhdsso/login」）。
+        // 现在改成一句只读说明：不重开页、不换票、不发请求、不改完成计数。
+        if (!aborted && !mainOk.isEmpty()) {
+            int spendN = 0;
             for (String sc : SWEEP_CMDS) {
-                if (!inCmds(cmds, sc)) {
-                    continue;
+                if (mainOk.contains(sc)) {
+                    spendN++;
                 }
-                any = true;
-                break;
             }
-            if (any) {
-                RealPage.closeOwned();
-                StringBuilder sweepDetail = new StringBuilder("\n=== 收尾复查（补抽 / 补喂 / 收蛋到 0）===\n");
-                HookLog.log("TASK", "一键过全部 · 收尾复查开始",
-                        "任务全部跑完，按最新余额补抽 / 补喂 / 收蛋，覆盖做任务后又攒下的次数。");
-                for (String sc : SWEEP_CMDS) {
-                    if (!inCmds(cmds, sc)) {
-                        continue;
-                    }
-                    if (!mainOk.contains(sc)) {
-                        sweepDetail.append("· ").append(label(sc))
-                                .append("：主流程未成功（跳过/失败），本轮不重复复查\n");
-                        continue;
-                    }
-                    RealPage.closeOwned();
-                    try {
-                        Result one = runOne(sc);
-                        sweepDetail.append("· ").append(label(sc)).append("：")
-                                .append(one.summary).append('\n');
-                        if (one.detail != null && !one.detail.isEmpty()) {
-                            sweepDetail.append(tail(one.detail, 700)).append('\n');
-                        }
-                    } catch (Throwable e) {
-                        sweepDetail.append("· ").append(label(sc)).append("：异常 ").append(e).append('\n');
-                    }
-                }
-                RealPage.closeOwned();
-                detail.append(sweepDetail);
-                HookLog.log("TASK", "一键过全部 · 收尾复查完成", sweepDetail.toString());
+            if (spendN > 0) {
+                String note = "\n=== 收尾说明（r20）===\n"
+                        + "消耗型活动已按阶段排在最后执行，抽奖 / 投喂 / 收蛋均在各自"
+                        + "任务完成后抽到余额 0；本版不再全局重跑一轮。\n"
+                        + "本次主流程成功的消耗型活动 " + spendN + " 项，无重复开页 / 换票。\n";
+                detail.append(note);
+                HookLog.log("TASK", "一键过全部 · 收尾（r20 顺序保证，无需重跑）", note);
             }
         }
 

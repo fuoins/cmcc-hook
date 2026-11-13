@@ -435,6 +435,23 @@ public final class MainActivity extends AppCompatActivity {
         if (btnCaptureClear != null) {
             btnCaptureClear.setOnClickListener(v -> clearCapture());
         }
+        // r20：一键录制 / 导出原始流（全量、脱敏）。两个入口都是纯新增。
+        View btnCaptureRecord = findViewById(R.id.btnCaptureRecord);
+        if (btnCaptureRecord != null) {
+            btnCaptureRecord.setOnClickListener(v -> askRecordCapture());
+        }
+        View btnCaptureRaw = findViewById(R.id.btnCaptureRaw);
+        if (btnCaptureRaw != null) {
+            btnCaptureRaw.setOnClickListener(v -> {
+                CaptureSession.exportNow(this, true);
+                Toast.makeText(this, "正在导出全量原始流，产物在 Downloads/CmccHook",
+                        Toast.LENGTH_LONG).show();
+            });
+        }
+        View btnCaptureDesc = findViewById(R.id.btnCaptureDesc);
+        if (btnCaptureDesc != null) {
+            btnCaptureDesc.setOnClickListener(v -> askDescriptorMenu());
+        }
         // v4.10.0-r2：「立即全部跑一次」已挪到福利中心顶部，功能页不再有这个按钮。
 
         // 每次进界面都按当前开关重排一次，版本升级 / 清数据后也能自动恢复。
@@ -1563,6 +1580,159 @@ public final class MainActivity extends AppCompatActivity {
         RawCaptureStore.clear(this);
         refreshCaptureState();
         Toast.makeText(this, R.string.capture_cleared, Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * r20：一键录制 —— 让用户选「录哪个活动」，然后编排
+     * 开采集 → 清旧流 → 跑一次 → TASK_END 自动导出全量原始流。
+     *
+     * <p>之所以要用户选：录制的目的通常是「某个还没打通的活动，手动/自动跑一遍
+     * 把请求序列录下来发我」。一键全跑也留了入口，覆盖「整套链路复现」的场景。
+     */
+    private void askRecordCapture() {
+        final String[][] acts = {
+                {"一键全跑（整套链路）", TaskRunner.CMD_ALL},
+                {"豆苗", TaskRunner.CMD_MIAO}, {"鹅蛋", TaskRunner.CMD_GOOSE},
+                {"周三充值日", TaskRunner.CMD_WED}, {"周六游戏日", TaskRunner.CMD_SATURDAY},
+                {"周周有好礼", TaskRunner.CMD_WEEKLY}, {"签到抽奖", TaskRunner.CMD_SIGNLOTTERY},
+                {"幸运三日签", TaskRunner.CMD_LUCKY3}, {"充值先领券", TaskRunner.CMD_RECHARGE},
+                {"追剧领福利", TaskRunner.CMD_VIDEO}, {"球赛", TaskRunner.CMD_SOCCER}
+        };
+        String[] names = new String[acts.length];
+        for (int i = 0; i < acts.length; i++) {
+            names[i] = acts[i][0];
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("一键录制 · 选一个活动")
+                .setMessage("会临时打开采集、清空旧流、跑一次选中的活动，结束后自动导出"
+                        + "全量原始流（脱敏）到 Downloads/CmccHook。把 *.jsonl 发给我即可离线分析。\n"
+                        + "跑完会自动关掉采集，不影响平时使用。")
+                .setItems(names, (d, which) -> {
+                    String inner = acts[which][1];
+                    String hint = CaptureSession.begin(this, inner, true);
+                    Toast.makeText(this, hint, Toast.LENGTH_LONG).show();
+                    refreshCaptureState();
+                    // 用模块进程现有的命令通道把「跑活动」发出去；
+                    // TASK_END 回来时 CaptureSession 会自动导出并关开关。
+                    runTask(inner, "录制 · " + acts[which][0]);
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    /** r20：描述清单 / 导入 / 跑一条描述。 */
+    private void askDescriptorMenu() {
+        String[] items = {"查看描述清单与校验结果", "导入描述 JSON", "跑一条启用的描述"};
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("活动描述（r20 闭环）")
+                .setItems(items, (d, which) -> {
+                    if (which == 0) {
+                        String rep = ActivityDescriptor.report(this);
+                        HookLog.log("DESC", "活动描述清单", rep);
+                        new MaterialAlertDialogBuilder(this)
+                                .setTitle("描述清单（完整内容已写进日志）")
+                                .setMessage(rep)
+                                .setPositiveButton(android.R.string.ok, null)
+                                .show();
+                    } else if (which == 1) {
+                        askImportDescriptor();
+                    } else {
+                        askRunDescriptor();
+                    }
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    /** 从已保存且启用的描述里挑一条跑，描述 JSON 随命令广播直传到目标进程。 */
+    private void askRunDescriptor() {
+        org.json.JSONArray arr = ActivityDescriptor.load(this);
+        java.util.List<org.json.JSONObject> enabled = new java.util.ArrayList<>();
+        java.util.List<String> names = new java.util.ArrayList<>();
+        for (int i = 0; i < arr.length(); i++) {
+            org.json.JSONObject one = arr.optJSONObject(i);
+            if (one != null && one.optBoolean("enabled", false)) {
+                enabled.add(one);
+                names.add(one.optString("name", one.optString("id", "?")));
+            }
+        }
+        if (enabled.isEmpty()) {
+            Toast.makeText(this, "没有 enabled=true 的描述。先导入，人工核对后再启用。",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("跑哪条描述")
+                .setItems(names.toArray(new String[0]), (d, w) -> {
+                    String id = enabled.get(w).optString("id", "");
+                    String carried = descriptorPayload();
+                    runTaskWithDescriptor(ActivityDescriptor.CMD_DESC + id, carried);
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    /** 把整个 descriptors.json 原样作为 extra 内容，目标进程按 id 自己挑一条。 */
+    private String descriptorPayload() {
+        try {
+            java.io.File f = new java.io.File(getFilesDir(), ActivityDescriptor.FILE);
+            if (!f.exists()) {
+                return "";
+            }
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            byte[] c = new byte[8192];
+            int n;
+            while ((n = in.read(c)) > 0) {
+                buf.write(c, 0, n);
+            }
+            in.close();
+            return new String(buf.toByteArray(), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    /** desc: 命令专用：把描述 JSON 塞进广播 extra，绕过跨进程读不到私有文件的问题。 */
+    private void runTaskWithDescriptor(String cmd, String payload) {
+        AppPrefs.triggerTask(this, cmd);
+        KeepAliveService.start(this);
+        boolean alive = System.currentTimeMillis() - AppPrefs.getLastHeartbeat(this) < 90_000L;
+        if (alive && sendTaskBroadcast(cmd, "desc_json", payload, true)) {
+            Toast.makeText(this, "已下发描述执行，结果看本页顶部", Toast.LENGTH_LONG).show();
+            markRunStarted("描述执行");
+            return;
+        }
+        launchTarget(cmd, "描述执行", "描述执行");
+    }
+
+    /**
+     * r20：导入活动描述。把离线分析产出的 descriptors.json 内容粘进来，
+     * 校验通过后存进模块私有目录；enabled=true 的才接管命令。
+     */
+    private void askImportDescriptor() {
+        EditText input = new EditText(this);
+        input.setHint("粘贴 {\"descriptors\":[...]} JSON");
+        input.setSingleLine(false);
+        input.setMaxLines(10);
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, pad / 2, pad, 0);
+        box.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        new MaterialAlertDialogBuilder(this)
+                .setTitle("导入活动描述")
+                .setView(box)
+                .setNegativeButton(R.string.cancel, null)
+                .setPositiveButton("校验并保存", (d, w) -> {
+                    String r = ActivityDescriptor.save(this, input.getText().toString().trim());
+                    Toast.makeText(this, r, Toast.LENGTH_LONG).show();
+                    HookLog.log("DESC", "导入活动描述 · " + r.split("\n")[0],
+                            r + "\n\n" + ActivityDescriptor.report(this));
+                })
+                .show();
     }
 
     private void exportProbe() {

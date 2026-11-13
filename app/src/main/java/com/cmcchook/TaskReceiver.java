@@ -251,6 +251,9 @@ final class TaskReceiver {
                         return;
                     }
                     ack(context, cmd);
+                    // r20：描述 JSON 随命令直传（模块私有文件跨进程读不到），
+                    // 供 desc:<id> 在目标进程里解析执行。
+                    TaskRunner.setDescriptorJson(intent.getStringExtra("desc_json"));
                     // goAsync 让广播在任务跑完前保持 pending，避免 onReceive 一返回
                     // 进程又被丢回 cached 组、跑到一半被冻住。
                     final BroadcastReceiver.PendingResult pending = goAsync();

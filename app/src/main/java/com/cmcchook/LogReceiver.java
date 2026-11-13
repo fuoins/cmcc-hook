@@ -104,6 +104,12 @@ public final class LogReceiver extends BroadcastReceiver {
             KeepAliveService.stop(context);
             HookLog.log("ALIVE", "保活服务 · 任务已结束，主动停止",
                     "由目标进程的收尾广播触发，不留常驻通知。");
+            // r20：一键录制的收尾 —— 只有当前确实在录制窗口里才会导出并关开关。
+            // 普通跑任务时 active() 为 false，这里什么也不做（零回归）。
+            try {
+                CaptureSession.onTaskEnd(context);
+            } catch (Throwable ignored) {
+            }
             return;
         } else if (ACTION_COUPON_LIST.equals(action)) {
             handleCouponList(context, intent);
