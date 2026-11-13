@@ -294,6 +294,11 @@ final class WedTask {
             detail.append("抽奖: ").append(e.getMessage()).append('\n');
         }
 
+        // ---- 4.5 任务账 ----
+        // v4.31.0：17:55 那轮摘要只写「打卡 1 个」，7 个任务里另外 6 个
+        // 为什么没做、能不能做，全看不出来。用户要的是逐条明细。
+        int[] stat = ledger(tasks, signed, detail);
+
         // ---- 结果 ----
         StringBuilder summary = new StringBuilder("周三充值日 · ");
         if (punched > 0 || drawn > 0 || (!wasSigned && signed)) {
@@ -306,6 +311,17 @@ final class WedTask {
                 summary.append(" · 中 ").append(prize);
             } else if (drawn > 0) {
                 summary.append(" · 抽奖 ").append(drawn).append(" 次");
+            }
+            if (stat[0] > 0) {
+                summary.append("（共 ").append(stat[0]).append(" 个任务：打卡 ")
+                        .append(stat[1]).append(" · 邀请 ").append(stat[2]).append(" 个不代做");
+                if (stat[3] > 0) {
+                    summary.append(" · 充值 ").append(stat[3]).append(" 个需手动");
+                }
+                if (stat[4] > 0) {
+                    summary.append(" · 旧编号 ").append(stat[4]).append(" 个失效");
+                }
+                summary.append("）");
             }
             return TaskRunner.Result.ok(summary.toString(), detail.toString(), summary.toString());
         }
@@ -321,6 +337,54 @@ final class WedTask {
                 "打卡接口回 160030 不是频控：11 月起拼图打卡已下线、改成 7 日打卡，"
                         + "旧的 ljdkN 服务端不收了。v3.92 已改用页面实证的签到任务（llym），"
                         + "再执行一次；仍不行把完整日志发我。");
+    }
+
+    /**
+     * v4.31.0：逐条列出 taskList 的 7 个任务，说明每个为什么做、为什么不做的。
+     *
+     * <p>17:55 那轮只有「打卡 1 个」一句，用户看不出剩下 6 个是漏了还是本来就不做。
+     * 返回 {@code {总数, 打卡, 邀请, 充值, 旧编号}}，供摘要拼一行统计。
+     */
+    private static int[] ledger(JSONArray tasks, boolean signed, StringBuilder detail) {
+        int[] stat = new int[5];
+        if (tasks == null || tasks.length() == 0) {
+            return stat;
+        }
+        StringBuilder rows = new StringBuilder("任务账: 共 ").append(tasks.length()).append(" 个\n");
+        for (int i = 0; i < tasks.length(); i++) {
+            JSONObject t = tasks.optJSONObject(i);
+            if (t == null) {
+                continue;
+            }
+            String id = t.optString("taskId", "");
+            String title = t.optString("title", "");
+            String btn = t.optString("buttontxt", "");
+            String type = t.optString("taskType", "");
+            stat[0]++;
+            String mark;
+            String why;
+            if (btn.contains("邀请") || title.contains("邀请") || "yqyh".equals(id)) {
+                stat[2]++;
+                mark = "—";
+                why = "拉好友，模块不代做";
+            } else if ("3".equals(type) || title.contains("充值")) {
+                stat[3]++;
+                mark = "—";
+                why = "要真花钱，模块不代做";
+            } else if (id.startsWith("ljdk")) {
+                stat[4]++;
+                mark = "—";
+                why = "11 月改版后旧编号已下线，服务端回 160030";
+            } else {
+                stat[1]++;
+                mark = signed ? "✓" : "○";
+                why = signed ? "本次打卡" : "待打卡";
+            }
+            rows.append("  ").append(mark).append(' ').append(title)
+                    .append("（").append(id).append("：").append(why).append("）\n");
+        }
+        detail.append(rows);
+        return stat;
     }
 
     /**

@@ -340,8 +340,11 @@ final class CanvasTask {
                     summary.append("，");
                 }
                 summary.append("抽奖 ").append(drawOk).append(" 次");
-                if (!drawPrize.isEmpty()) {
-                    summary.append("：").append(drawPrize);
+                // v4.31.0：以前只写最后一个奖品，17:57 幸运三日签抽中
+                // 「500MB 流量日包券」和「滴滴出行118元券包」，摘要里只剩后者。
+                String prizeLine = prizeList(draw, drawPrize);
+                if (!prizeLine.isEmpty()) {
+                    summary.append("：").append(prizeLine);
                 }
             }
             return TaskRunner.Result.ok(summary.toString(), detail.toString(), summary.toString());
@@ -357,8 +360,20 @@ final class CanvasTask {
         // 次数为 0 不是失败：活动今天/本周本来就没机会。
         // 周周有好礼这类要先做浏览任务，任务数也一并报出来。
         if ((drawSeen > 0 && drawLeft <= 0) || drawNoChance > 0) {
-            String summary = name + (drawTasks > 0
-                    ? " · 翻牌机会 0，还有 " + drawTasks + " 个浏览任务没做"
+            int taskTotal = draw == null ? 0 : draw.optInt("tasksTotal", 0);
+            int taskDone = draw == null ? 0 : draw.optInt("tasksDone", 0);
+            // v4.31.0：0 次有两种原因，得分开说 ——
+            //   浏览任务全做完 = 今天已经做完了（○）；
+            //   还有没做的任务 = 本轮确实没拿到次数（–）。
+            String summary;
+            if (taskTotal > 0 && drawTasks <= 0) {
+                summary = name + " · 今天已做完（" + taskDone + "/" + taskTotal
+                        + " 个浏览任务已完成，翻牌机会已用完）";
+                detail.append("判定: 浏览任务全部完成、翻牌机会 0（v4.31.0 按「今天已做完」计）\n");
+                return TaskRunner.Result.idle(summary, detail.toString(), summary);
+            }
+            summary = name + (drawTasks > 0
+                    ? " · 翻牌机会 0，还剩 " + drawTasks + " 个浏览任务没做"
                     : " · 今天没有抽奖次数");
             return TaskRunner.Result.idle(summary, detail.toString(), summary);
         }
@@ -422,6 +437,34 @@ final class CanvasTask {
         if (chunk.length() > 0) {
             HookLog.log("CANVAS", name + " 页面明细 " + part, chunk.toString());
         }
+    }
+
+    /**
+     * v4.31.0：把这一轮抽到的奖品全列出来，而不是只留最后一个。
+     *
+     * <p>17:57 幸运三日签一轮抽了 2 次，先中「500MB 流量日包券」、再中
+     * 「滴滴出行118元券包」，JS 里 {@code draw.prize} 每次覆盖，
+     * 摘要只剩后者，看着像只中了一个。
+     */
+    private static String prizeList(JSONObject draw, String last) {
+        StringBuilder sb = new StringBuilder();
+        JSONArray names = draw == null ? null : draw.optJSONArray("names");
+        if (names != null) {
+            for (int i = 0; i < names.length() && sb.length() < 60; i++) {
+                String one = names.optString(i, "");
+                if (one.isEmpty() || sb.indexOf(one) >= 0) {
+                    continue;
+                }
+                if (sb.length() > 0) {
+                    sb.append('、');
+                }
+                sb.append(one);
+            }
+        }
+        if (sb.length() == 0 && last != null && !last.isEmpty()) {
+            sb.append(last);
+        }
+        return sb.toString();
     }
 
     private static String netBrief(JSONArray net) {
@@ -1368,8 +1411,11 @@ final class CanvasTask {
                 return null;
               }
               async function remainOf(id){
-                var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/residueLotteryCount',
-                           '/coc3-market-activity/cmpp-manage/lottery/residueLotteryCount'];
+                // v4.31.0：以前还挂了一条不带 /coc3 前缀的路径当 fallback，
+                // 页面 origin 是 dev.coc.10086.cn，拼出来直接 404 Route Not Found，
+                // 白白在「网络证据」里留下一条看着像故障的记录。日志实证只有
+                // /coc3/coc3-market-activity 这条是通的，删掉那条。
+                var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/residueLotteryCount'];
                 for(var i=0;i<paths.length;i++){
                   var r=await post(paths[i],{activityId:id});
                   if(r.ok && codeOf(r.data)==='200'){
@@ -1596,8 +1642,8 @@ final class CanvasTask {
                 return {ok:false,code:'',msg:'页面没发抽奖请求',risk:false,via:'page'};
               }
               async function lotteryOnce(id){
-                var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/lottery',
-                           '/coc3-market-activity/cmpp-manage/lottery/lottery'];
+                // v4.31.0：同 remainOf，去掉 404 的短路径。
+                var paths=['/coc3/coc3-market-activity/cmpp-manage/lottery/lottery'];
                 for(var i=0;i<paths.length;i++){
                   var r=await post(paths[i],ctxBody(id));
                   if(!r.ok) continue;
@@ -2131,10 +2177,18 @@ final class CanvasTask {
                         if(rem>=0) line('奖池 '+id+' 剩余(页面文案): '+rem);
                       }
                       if(rem===0){
-                        // 真的 0 次：说明「浏览任务」还没记上。任务现在统一在 Java 侧
-                        // 点「去逛逛」完成，这里不再直发 task/visit —— 11-11 12:39 那 9 发
-                        // 全部返回 923「手机号码非法」，纯噪音。
+                        // 真的 0 次：说明「浏览任务」还没记上，或者今天已经全做完。
+                        // 任务现在统一在 Java 侧点「去逛逛」完成，这里不再直发
+                        // task/visit —— 11-11 12:39 那 9 发全回 923「手机号码非法」，纯噪音。
+                        //
+                        // v4.31.0：以前这里直接 continue，seen/left 都没记，于是
+                        // Java 侧看到 drawSeen=0、drawLeft=0，落到「动作发了但没成功」，
+                        // 把「今天翻牌机会已经用完」记成 FAIL（18:01 周周有好礼就是这样：
+                        // 首屏明写「您有 0 次翻牌机会」、3 个浏览任务全 (1/1) 已完成）。
+                        // 现在记一笔 seen，让 Java 侧走 idle 分支。
                         line('  次数为 0：浏览任务可能还没记上，本轮不抽');
+                        draw.seen++;
+                        draw.rems.push(id+':0');
                         continue;
                       }
                       if(rem>=0){ draw.seen++; draw.left+=rem; draw.rems.push(id+':'+rem) }
@@ -2193,7 +2247,11 @@ final class CanvasTask {
                         }
                         draw.apiOk=(draw.apiOk||0)+1;
                         var pz=prizeOf(r.data);
-                        if(pz){ draw.prize=pz; line('  抽奖 '+id+' 中: '+pz) }
+                        if(pz){
+                          draw.prize=pz;
+                          if(draw.names.indexOf(pz)<0) draw.names.push(pz);
+                          line('  抽奖 '+id+' 中: '+pz);
+                        }
                         else line('  抽奖 '+id+' OK');
                         await wait(900);
                       }
@@ -2271,11 +2329,23 @@ final class CanvasTask {
                       if(code!=='60000') continue;
                       netOk++;
                       var pz2=prizeOf(d||b);
-                      if(pz2) draw.prize=pz2;
+                      if(pz2){ draw.prize=pz2; if(draw.names.indexOf(pz2)<0) draw.names.push(pz2) }
                     }catch(e){}
                   }
                   draw.ok=Math.max(draw.apiOk||0, netOk, draw.remainDrop||0);
                   var t1=btext();
+                  // v4.31.0：数一遍页面上的浏览任务进度「(n/m) 已完成」。
+                  // 周周有好礼这种「次数为 0」有两种完全不同的原因：
+                  //   ① 浏览任务还没做 → 本轮没抽是漏，得说清还剩几个；
+                  //   ② 浏览任务全 (1/1) 已完成、机会用完 → 今天已经做完了。
+                  // 以前两种情况摘要都写「今天没有抽奖次数」，看不出区别。
+                  try{
+                    var tp={total:0,done:0,left:0};
+                    var tre=/\\(\\s*(\\d+)\\s*\\/\\s*(\\d+)\\s*\\)/g, tm;
+                    while((tm=tre.exec(t1))){ tp.total++; if(parseInt(tm[1],10)>=parseInt(tm[2],10)) tp.done++; }
+                    tp.left=Math.max(tp.total-tp.done,0);
+                    draw.tasks=tp.left; draw.tasksTotal=tp.total; draw.tasksDone=tp.done;
+                  }catch(e){}
                   done({stage:'done',title:document.title||'',text:t0,text1:t1,
                         comps:comps.length,ax:AX.length,sign:sign,draw:draw,
                         sdk:sdk,loginWait:loginWait,net:NET.slice(0,12),
