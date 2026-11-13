@@ -84,6 +84,25 @@ final class WebFetch {
     static Resp send(WebPage page, String method, String url, String body,
                      String referer, String contentType, Map<String, String> extra,
                      long timeoutMs) {
+        return send(page, method, url, body, referer, contentType, extra, timeoutMs, false);
+    }
+
+    /**
+     * v4.20.0-r33：{@code noFollow} 专给「只登记、不落地」的接口用。
+     *
+     * <p>diyTask/startBrowse 与 task/startBrowse 都是 302 到外域落地页
+     * （游戏页、咪咕、wx 短链…）。fetch 默认 follow，跟到外域时对方不给
+     * CORS 头，浏览器直接抛 TypeError，模块这边看到的就是 HTTP -1 ——
+     * 可服务端在 302 之前就已经把任务登记了，次数也加了。
+     *
+     * <p>16:45 周六游戏日实测：3 个 startBrowse 全是 -1，复查时 2 个变 DONE、
+     * 只有「登录王者云游戏领奖」还是 UNDO。所以 -1 完全不能当判据，
+     * 这次索性改成 no-cors + redirect:manual，只把请求发出去，不跟跳转，
+     * 也就不会因为跨域抛异常。
+     */
+    static Resp send(WebPage page, String method, String url, String body,
+                     String referer, String contentType, Map<String, String> extra,
+                     long timeoutMs, boolean noFollow) {
         if (page == null || page.raw() == null) {
             return new Resp(-1, "页面不可用");
         }
@@ -118,6 +137,10 @@ final class WebFetch {
                 + "    method:" + JSONObject.quote(method) + ","
                 + "    credentials:'include',"
                 + "    cache:'no-store',"
+                // 只加 redirect:manual，不能加 mode:'no-cors' ——
+                // no-cors 会把 login-check / X-Requested-With 这类自定义头
+                // 直接拒掉，服务端就不认这条请求了。
+                + (noFollow ? "    redirect:'manual'," : "")
                 + "    headers:{" + hs + "},"
                 + (body == null ? "" : "    body:" + JSONObject.quote(body) + ",")
                 // 只有带 token 的活动页 URL 才显式覆盖 Referer；否则沿用页面
@@ -125,7 +148,13 @@ final class WebFetch {
                 // 的 referer 冲掉会话。
                 + "    referrer:" + (referer != null && referer.contains("token=")
                         ? JSONObject.quote(referer) : "location.href")
-                + "  }).then(function(r){return r.text().then(function(t){"
+                + "  }).then(function(r){"
+                // redirect:manual 拿到的是 opaqueredirect：status 0 且 body 不可读，
+                // 直接 r.text() 会抛错。这种情况按「请求已发出」记，不要当失败。
+                + "    if(r.type==='opaqueredirect'||r.status===0){"
+                + "      window[id]=JSON.stringify({s:0,t:'redirect 未跟随'});return;\n"
+                + "    }"
+                + "    return r.text().then(function(t){"
                 + "    window[id]=JSON.stringify({s:r.status,t:t});"
                 + "  })}).catch(function(e){"
                 + "    window[id]=JSON.stringify({s:-1,t:'fetch: '+String(e)});"

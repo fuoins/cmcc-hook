@@ -49,6 +49,16 @@ final class DiyTask {
     private static final int MAX_DRAW = 40;
     private static final int MAX_COMPONENTS = 3;
 
+    /**
+     * v4.20.0-r33：抽奖环节的「这个组件根本没抽奖接口」标记。
+     *
+     * <p>16:45 周六游戏日实证：3 个 actPlayMethod 里只有「签到区按钮玩法」
+     * 是真抽奖（remain 2、lotterySafely 有响应）；「秒杀组件」remain 回
+     * FAILED 查询失败、「个性化奖品」remain 回 98 且 lotterySafely 回
+     * 「插件不存在」。旧版一律当作「抽奖停止 FAILED」，日志看着像抽挂了。
+     */
+    private static final String DRAW_SKIP = "__NO_LOTTERY__";
+
     private DiyTask() {
     }
 
@@ -102,6 +112,9 @@ final class DiyTask {
             // 全部任务做完之后，再统一遍历环节抽奖到剩余 0 次。
             // 用户实证：先抽奖再做任务，任务又发下新的抽奖次数，结果「抽了但有剩」。
             List<String> allComps = new ArrayList<>();
+            List<java.util.Map<String, String>> stageBefore = new ArrayList<>();
+            // taskId → 任务名，复查确认 UNDO→DONE 后补进摘要用。
+            java.util.Map<String, String> taskNames = new java.util.HashMap<>();
             for (int i = 0; i < methods.length() && comps < MAX_COMPONENTS; i++) {
                 JSONObject pm = methods.optJSONObject(i);
                 JSONObject ap = pm == null ? null : pm.optJSONObject("actPlayMethod");
@@ -118,18 +131,28 @@ final class DiyTask {
                 JSONArray tasks = taskList(comp, referer);
                 int undo = 0;
                 int waitReceive = 0;
+                // v4.20.0-r33：记下做之前的 taskStage，复查时按 UNDO→DONE 的真实
+                // 变化算完成数。startBrowse 的 HTTP 状态完全不能当判据 ——
+                // 16:45 那轮 3 个 -1 里 2 个复查时是 DONE，1 个仍 UNDO。
+                java.util.Map<String, String> beforeStage = new java.util.HashMap<>();
                 for (int t = 0; t < tasks.length(); t++) {
                     JSONObject task = tasks.optJSONObject(t);
                     if (task == null) {
                         continue;
                     }
                     String stage = task.optString("taskStage", "");
+                    String tid = task.optString("taskId", "");
+                    if (!tid.isEmpty()) {
+                        beforeStage.put(tid, stage);
+                        taskNames.put(tid, task.optString("name", tid));
+                    }
                     if ("UNDO".equals(stage)) {
                         undo++;
                     } else if ("WAIT_RECEIVE".equals(stage)) {
                         waitReceive++;
                     }
                 }
+                stageBefore.add(beforeStage);
                 undoTasks += undo;
                 detail.append("   任务 ").append(tasks.length())
                         .append(" 个，待做 ").append(undo)
@@ -169,6 +192,9 @@ final class DiyTask {
                     if ("OK".equals(result)) {
                         doneTasks++;
                         text.append(name).append("·").append(taskName).append('\n');
+                    } else if ("SENT".equals(result)) {
+                        // 已发出、服务端登记，但这里不下结论：等复查看 taskStage。
+                        detail.append("   任务「").append(taskName).append("」已发出，等复查\n");
                     } else {
                         detail.append("   任务「").append(taskName).append("」跳过: ")
                                 .append(result).append('\n');
@@ -189,6 +215,7 @@ final class DiyTask {
 
             // ---- 复查：做完再拉一遍，确认真的变成 DONE ----
             int left = 0;
+            int verifiedDone = 0;
             for (int i = 0, c = 0; i < methods.length() && c < MAX_COMPONENTS; i++) {
                 JSONObject pm = methods.optJSONObject(i);
                 JSONObject ap = pm == null ? null : pm.optJSONObject("actPlayMethod");
@@ -196,14 +223,34 @@ final class DiyTask {
                 if (comp.isEmpty()) {
                     continue;
                 }
+                java.util.Map<String, String> before =
+                        c < stageBefore.size() ? stageBefore.get(c) : null;
                 c++;
                 JSONArray after = taskList(comp, referer);
                 for (int t = 0; t < after.length(); t++) {
                     JSONObject task = after.optJSONObject(t);
-                    if (task != null && "UNDO".equals(task.optString("taskStage"))) {
+                    if (task == null) {
+                        continue;
+                    }
+                    String stage = task.optString("taskStage", "");
+                    if ("UNDO".equals(stage)) {
                         left++;
+                    } else if ("DONE".equals(stage) && before != null
+                            && "UNDO".equals(before.get(task.optString("taskId", "")))) {
+                        // 做之前是 UNDO、复查是 DONE —— 这才是真的做成了。
+                        verifiedDone++;
+                        String nm = taskNames.get(task.optString("taskId", ""));
+                        if (nm != null) {
+                            text.append(name).append("·").append(nm).append('\n');
+                        }
                     }
                 }
+            }
+            if (verifiedDone > doneTasks) {
+                detail.append("复查校正: 接口回执算 ").append(doneTasks)
+                        .append(" 个，实际 UNDO→DONE ").append(verifiedDone)
+                        .append(" 个，按实际计\n");
+                doneTasks = verifiedDone;
             }
             detail.append("复查: 仍待做 ").append(left).append(" 个\n");
             detail.append("结果: 完成 ").append(doneTasks)
@@ -217,13 +264,24 @@ final class DiyTask {
                 summary += " · 抽 " + drawTimes + " 次";
             }
             if (left > 0) {
-                summary += " · 还剩 " + left + " 个要真实操作";
+                summary += " · 还剩 " + left + " 个没做上";
             }
             boolean idle = doneTasks == 0 && drawTimes == 0 && undoTasks == 0
                     && clockWins == 0 && videoSign == 0;
             if (idle) {
                 return TaskRunner.Result.idle(name + " · 今天已做完",
                         detail.toString(), summary);
+            }
+            // v4.20.0-r33：有活、但一个都没做上时不能再报 OK。
+            // 16:45 那轮 5 个待做里 4 个其实成功了，旧版只算 2 个；
+            // 反过来的情况（全挂）旧版会报「完成 0 个任务」还带 OK 标记。
+            if (doneTasks == 0 && drawTimes == 0 && clockWins == 0 && videoSign == 0
+                    && undoTasks > 0) {
+                String why = "活动有 " + undoTasks + " 个待做，但一个都没做上";
+                detail.append("判定: ").append(why).append("，不记完成\n");
+                return TaskRunner.Result.skip(name + " · " + why, detail.toString(),
+                        "任务接口是通的，但这轮全部没登记成功（startBrowse 回执异常）。\n"
+                                + "建议在 App 里手动打开这个活动页，点一个任务看看能不能正常跳转，再回来重试。");
             }
             return TaskRunner.Result.ok(summary, detail.toString(),
                     text.length() == 0 ? summary : text.toString().trim());
@@ -275,15 +333,39 @@ final class DiyTask {
                              StringBuilder text, StringBuilder detail) {
         int drawn = 0;
         JSONObject first = remain(comp, referer);
-        int serverLeft = first == null ? -1 : first.optInt("remain", -1);
+        if (first == null) {
+            detail.append("   环节 ").append(comp).append(" 没有抽奖接口（剩余次数读不到），跳过\n");
+            return 0;
+        }
+        int serverLeft = first.optInt("remain", -1);
+        if (serverLeft < 0) {
+            detail.append("   环节 ").append(comp)
+                    .append(" 没有可用抽奖次数（remain 字段缺失），跳过\n");
+            return 0;
+        }
+        if (serverLeft > MAX_DRAW) {
+            // 「个性化奖品」这类组件 remain 会回库存数（实测 98），不是抽奖次数。
+            // 按次数抽会把库存当次数打空，直接按脏值跳过。
+            detail.append("   环节 ").append(comp).append(" 剩余次数异常（").append(serverLeft)
+                    .append("），不是抽奖次数，跳过\n");
+            return 0;
+        }
+        if (serverLeft == 0) {
+            detail.append("   环节 ").append(comp).append(" 抽奖前剩余: 0，跳过\n");
+            return 0;
+        }
         // 服务端给了明确剩余次数就以它为上限（+2 余量）；读不到则靠 draw 停手 + 硬上限。
-        int cap = serverLeft > 0 ? Math.min(serverLeft + 2, MAX_DRAW) : MAX_DRAW;
+        int cap = Math.min(serverLeft + 2, MAX_DRAW);
         detail.append("   环节 ").append(comp).append(" 抽奖前剩余: ")
-                .append(serverLeft < 0 ? "读不到" : serverLeft).append('\n');
+                .append(serverLeft).append('\n');
         int lastLeft = -2;
         int stall = 0;
         for (int i = 0; i < cap; i++) {
             String prize = draw(comp, referer, detail);
+            if (DRAW_SKIP.equals(prize)) {
+                detail.append("   环节 ").append(comp).append(" 该组件没有抽奖玩法\n");
+                break;
+            }
             if (prize == null) {
                 detail.append("   环节 ").append(comp).append(" 抽奖接口停手\n");
                 break;
@@ -310,21 +392,36 @@ final class DiyTask {
                 lastLeft = left;
             }
         }
+        if (drawn == 0) {
+            // 一次都没抽成时补一句，否则日志里只剩「抽 0 次」，看不出是没次数还是接口挂了。
+            detail.append("   环节 ").append(comp).append(": 本次一次都没抽成\n");
+        }
         return drawn;
     }
 
-    /** 抽一次，返回奖品描述；返回 null 表示该停手了。 */
+    /** 抽一次，返回奖品描述；返回 null 表示该停手了，{@link #DRAW_SKIP} 表示组件没抽奖玩法。 */
     private static String draw(String comp, String referer, StringBuilder detail) {
         try {
             JSONObject resp = TaskApi.get("/qwhdhub/diyLottery/lotterySafely/" + comp, referer);
             String code = resp.optString("code");
-            if ("NOT_WON".equals(code)) {
+            String msg = resp.optString("msg", "");
+            // v4.20.0-r33：未中奖的 code 有两种写法。
+            //   砸金蛋：{"code":"NOT_WON"}  周六游戏日：{"code":"NO_WON"}
+            // 旧版只认 NOT_WON，周六那轮第一次（NO_WON）就被当成「该停手」，
+            // 抽了 1 次却记「抽 0 次」，剩 1 次也没再抽。
+            if ("NOT_WON".equals(code) || "NO_WON".equals(code) || "NOTWON".equals(code)
+                    || "NOT_WON".equals(resp.optString("status"))) {
                 detail.append("   抽奖: 未中奖\n");
                 return "未中奖";
             }
             if (!"SUCCESS".equals(code)) {
+                if (msg.contains("插件不存在") || msg.contains("查询失败")) {
+                    detail.append("   抽奖: 该组件没有抽奖玩法（")
+                            .append(code).append(' ').append(msg).append("）\n");
+                    return DRAW_SKIP;
+                }
                 detail.append("   抽奖停止: ").append(code).append(' ')
-                        .append(resp.optString("msg")).append('\n');
+                        .append(msg).append('\n');
                 return null;
             }
             JSONArray data = resp.optJSONArray("data");
@@ -355,11 +452,16 @@ final class DiyTask {
             // 实测：browse / business 的任务 url 都是 startBrowse/{id}?…，
             // 服务端在 302 之前就登记完成。按 url 走比按类型猜端点准。
             if (url.contains("/startBrowse/")) {
-                TaskNet.Resp resp = TaskNet.get(TaskNet.BASE + url, referer,
-                        TaskApi.eggHeaders());
-                detail.append("   startBrowse ").append(id).append(": HTTP ")
-                        .append(resp.status).append('\n');
-                return resp.status > 0 ? "OK" : "HTTP " + resp.status;
+                // v4.20.0-r33：不跟随 302。startBrowse 一律跳到外域落地页，
+                // fetch 跟过去会被 CORS 拦成 TypeError，模块只看到 HTTP -1；
+                // 但服务端已经登记了。这里只负责「把请求发出去」，
+                // 真实结果交给复查阶段看 taskStage 有没有 UNDO→DONE。
+                String full = url.startsWith("http") ? url : TaskNet.BASE + url;
+                TaskNet.Resp resp = TaskNet.getNoFollow(full, referer, TaskApi.eggHeaders());
+                detail.append("   startBrowse ").append(id).append(": ")
+                        .append(resp.status == 0 ? "已发出（302 登记，不跟落地页）"
+                                : "HTTP " + resp.status).append('\n');
+                return "SENT";
             }
             if ("browse".equals(type)) {
                 JSONObject resp = TaskApi.get("/qwhdhub/diyTask/finishBrowse/" + id, referer);

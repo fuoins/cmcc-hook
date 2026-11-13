@@ -93,10 +93,13 @@ final class EggTask {
                     // startBrowse 会 302 到外域落地页，服务端在 302 之前就已经
                     // 登记任务并 +1 次。fetch 跟随重定向可能被跨域拦，HTTP 状态
                     // 不代表登记结果，所以不靠单次状态判定，统一在下面复查次数。
-                    TaskNet.Resp resp = TaskNet.get(TaskNet.BASE + url, referer,
+                    // v4.20.0-r33：改成不跟跳转（redirect:manual），拿到的状态是 0，
+                    // 不再出现「HTTP -1」这种看着像失败、其实已经登记成功的日志。
+                    TaskNet.Resp resp = TaskNet.getNoFollow(TaskNet.BASE + url, referer,
                             TaskApi.eggHeaders());
-                    detail.append("任务 ").append(name).append(": 已触发 startBrowse（HTTP ")
-                            .append(resp.status).append("）\n");
+                    detail.append("任务 ").append(name).append(": 已发出 startBrowse（")
+                            .append(resp.status == 0 ? "302 登记，不跟落地页"
+                                    : "HTTP " + resp.status).append("）\n");
                     triggered++;
                 } catch (Throwable e) {
                     detail.append("任务 ").append(name).append(" 异常: ").append(e).append('\n');

@@ -105,12 +105,29 @@ final class TaskNet {
      */
     private static Resp request(String method, String url, String body, String referer,
                                 Map<String, String> extra) {
+        return request(method, url, body, referer, extra, false);
+    }
+
+    /**
+     * v4.20.0-r33：给「只登记、不落地」的接口用（startBrowse 系列）。
+     *
+     * <p>这类接口 302 到外域落地页，fetch 跟随会被跨域拦成 TypeError，
+     * 于是模块只看到 HTTP -1，而服务端其实已经登记成功。改成不跟随重定向后，
+     * 拿到的是 opaqueredirect（status 0），不会再抛异常。
+     * 状态 0 表示「请求已发出」，不是失败 —— 真实结果一律看复查。
+     */
+    static Resp getNoFollow(String url, String referer, Map<String, String> extra) {
+        return request("GET", url, null, referer, extra, true);
+    }
+
+    private static Resp request(String method, String url, String body, String referer,
+                                Map<String, String> extra, boolean noFollow) {
         WebPage page = WebSession.current();
         if (page == null) {
             return new Resp(-1, "活动页没有打开，请求没有发出", "");
         }
         WebFetch.Resp resp = WebFetch.send(page, method, url, body, referer,
-                null, extra, 25_000L);
+                null, extra, 25_000L, noFollow);
         if (resp.status == -1 || resp.status == -2) {
             return new Resp(-1, resp.body, "");
         }
