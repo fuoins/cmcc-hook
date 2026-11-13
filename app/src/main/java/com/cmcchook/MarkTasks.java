@@ -52,6 +52,8 @@ final class MarkTasks {
      */
     private static volatile int lastTodo = -1;
     private static volatile String lastTodoNames = "";
+    /** 最近一次任务账的汇总（「已完成 22/28，待做 0」），给结果摘要用。 */
+    private static volatile String lastLedgerHead = "";
 
     static int lastTodo() {
         return lastTodo;
@@ -59,6 +61,10 @@ final class MarkTasks {
 
     static String lastTodoNames() {
         return lastTodoNames;
+    }
+
+    static String lastLedgerHead() {
+        return lastLedgerHead;
     }
 
     private MarkTasks() {
@@ -170,6 +176,10 @@ final class MarkTasks {
             }
             pause();
         }
+
+        // 4) 任务账：逐条列出每个任务的真实状态。
+        //    以前到这里只回一句「任务完成」，用户看不到哪些真做了、哪些本来就不做。
+        d.append(ledger(tasks2 != null ? tasks2 : tasks));
 
         String head = "任务编排 · 共" + total + " / 待办" + todo + " / 外部合作区跳过" + ext
                 + " / 不代做" + blocked + " / 补领" + awarded + " / 二礼" + second
@@ -544,6 +554,111 @@ final class MarkTasks {
             }
         }
         return false;
+    }
+
+    /**
+     * 真页做完后重拉一次清单，出「做完之后」的最终账。
+     *
+     * <p>快路径那边由 {@code fast:markTodo} 的回调负责；真页链路没有复查请求，
+     * 不补这一次的话账还停在「做之前」，会显示一堆待做其实都已经做掉了。
+     */
+    static String reLedger(String referer) {
+        JSONObject root = post(P_LIST, "{}", referer, new StringBuilder(), "任务账复查");
+        JSONArray tasks = root == null ? null : data(root).optJSONArray("tasks");
+        if (tasks == null) {
+            return "";
+        }
+        String s = ledger(tasks);
+        HookLog.log("TASK", "签到有礼 · 任务账（做完复查）", s);
+        return s;
+    }
+
+    /**
+     * 逐条任务账。
+     *
+     * <p>用户反馈：跑完只看到一句「签到任务完成」，不知道哪些真做了、哪些本来就不做。
+     * 这里按分区把每条任务的状态列出来；第三方导流那 37 个只给计数，不逐条刷屏。
+     *
+     * <p>status 口径：0 待做 / 1 已完成待领 / 2 已完成（首礼已领）。
+     */
+    static String ledger(JSONArray tasks) {
+        if (tasks == null || tasks.length() == 0) {
+            return "[任务账] 清单为空，没有可列的\n";
+        }
+        java.util.LinkedHashMap<String, int[]> cnt = new java.util.LinkedHashMap<>();
+        java.util.LinkedHashMap<String, StringBuilder> rows = new java.util.LinkedHashMap<>();
+        for (int i = 0; i < tasks.length(); i++) {
+            JSONObject t = tasks.optJSONObject(i);
+            if (t == null) {
+                continue;
+            }
+            String cls = t.optString("taskClasifiName", "").trim();
+            if (cls.isEmpty()) {
+                cls = "未分区";
+            }
+            boolean isExt = cls.contains("外部合作");
+            int st = t.optInt("status", -1);
+            int[] c = cnt.get(cls);
+            if (c == null) {
+                c = new int[3];     // 0 总数 / 1 已完成 / 2 待做
+                cnt.put(cls, c);
+                rows.put(cls, new StringBuilder());
+            }
+            c[0]++;
+            String mark;
+            String note = "";
+            if (st == 2) {
+                c[1]++;
+                mark = "✓";
+            } else if (st == 1) {
+                c[1]++;
+                mark = "✓";
+                note = "（已完成待领）";
+            } else if (st == 0) {
+                if (isExt) {
+                    // 第三方导流：模块代做没有意义，别算进「待做」让账永远降不到 0。
+                    mark = "—";
+                    note = "（第三方）";
+                } else if (hardBlocked(name(t))) {
+                    mark = "—";
+                    note = "（不代做）";
+                } else {
+                    c[2]++;
+                    mark = "○";
+                    note = "（待做）";
+                }
+            } else {
+                mark = "?";
+                note = "（状态 " + st + "）";
+            }
+            if (isExt) {
+                continue;
+            }
+            rows.get(cls).append("  ").append(mark).append(' ').append(name(t)).append(note).append('\n');
+        }
+        int all = 0, doneAll = 0, todoAll = 0;
+        for (int[] c : cnt.values()) {
+            all += c[0];
+            doneAll += c[1];
+            todoAll += c[2];
+        }
+        lastLedgerHead = "已完成 " + doneAll + "/" + all + (todoAll > 0 ? "，待做 " + todoAll : "");
+        StringBuilder out = new StringBuilder("[任务账] ").append(lastLedgerHead).append('\n');
+        for (java.util.Map.Entry<String, int[]> e : cnt.entrySet()) {
+            String cls = e.getKey();
+            int[] c = e.getValue();
+            out.append("━━ ").append(cls).append(" · ").append(c[0]).append(" 个")
+                    .append("（已完成 ").append(c[1]).append(" / 待做 ").append(c[2]).append("）");
+            if (cls.contains("外部合作")) {
+                out.append("　第三方导流，不代做，不逐条列");
+            }
+            out.append('\n');
+            StringBuilder body = rows.get(cls);
+            if (body != null && body.length() > 0) {
+                out.append(body);
+            }
+        }
+        return out.toString();
     }
 
     /**

@@ -136,6 +136,10 @@ final class SignTask {
         // 的浏览任务逐个点掉 —— 点「去完成」→ 跳落地页 → 停留 5 秒 → 回来复查。
         // 不做接口直发、不开离屏：用户实证这些任务服务端按真实落地页停留记账。
         int liveDone = MarkTasks.runLiveTasks(WebSession.current(), referer, detail);
+        if (liveDone > 0) {
+            // 真页做完后补一次复查账：不补的话账还停在「做之前」，一堆待做其实已经做掉了。
+            MarkTasks.reLedger(referer);
+        }
 
         // v4.20.0-r30：SCRIPT 最后一行是无条件 ok —— 只要流程走完就报「签到任务完成」，
         // 待办还剩几个完全看不出来。实测 15:37 那轮接口侧待办 2 个、真页一个都没做上，
@@ -154,6 +158,10 @@ final class SignTask {
             return base;
         }
         String summary = base.summary + " · 功能体验区 " + liveDone + " 个";
+        String ledger = MarkTasks.lastLedgerHead();
+        if (!ledger.isEmpty()) {
+            summary += " · " + ledger;
+        }
         if (todoLeft > liveDone) {
             summary += "，还剩 " + (todoLeft - liveDone) + " 个未完成" + restNames;
         }

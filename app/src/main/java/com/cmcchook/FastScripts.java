@@ -74,6 +74,9 @@ final class FastScripts {
                         todo++;
                     }
                 }
+                // 这里是「做完之后」重拉的清单，正好拿它出最终账：
+                // 快路径命中时不会再进真页链路，不在这里打就没有任务账可看。
+                HookLog.log("TASK", "签到有礼 · 任务账（做完复查）", MarkTasks.ledger(tasks));
                 return String.valueOf(todo);
             } catch (Throwable e) {
                 return "-1";

@@ -92,7 +92,10 @@ final class FastPath {
             return null;
         }
 
-        String summary = "快路径命中 · 签到有礼（纯请求编排，未点页面、未逐个停留）";
+        String ledger = MarkTasks.lastLedgerHead();
+        String summary = "快路径命中 · 签到有礼"
+                + (ledger.isEmpty() ? "" : " · " + ledger)
+                + "（纯请求编排，未逐个停留）";
         detail.append("验收: 状态接口复查通过，功能体验区待办归零\n");
         HookLog.log("TASK", summary, detail.toString());
         return TaskRunner.Result.ok(summary, detail.toString(), summary);
