@@ -1137,6 +1137,21 @@ final class GooseTask {
             String submitPaths = groupText(by);
             String queryPaths = joinPaths(out.optJSONArray("queryPaths"));
 
+            // r29：今天本来就做完了，不是失败。15:29 那轮页面返回 6 个任务、
+            // isComplete 全是 2、「待做任务 0 个」，因为 todo==0 根本没进 runTaskLoop
+            //（上面只在 todo>0 时调用），于是 submitN / changed / taskDoneReal 全是 0，
+            // 被下面的零提交判据记成 FAIL，用户看到 ✗ 以为点击坏了。
+            // 只有「数据确实就绪」才敢这么记：页面没加载完时 total 也可能是 0。
+            if (total > 0 && todo == 0 && dataReady) {
+                String idle = "收鹅蛋 · 今天 " + total + " 个任务已全部完成";
+                detail.append("判定(r29): 共 ").append(total).append(" 个任务，待做 0，")
+                        .append("业务数据就绪 → 今日任务已完成，不空转、不记失败\n");
+                return TaskRunner.Result.idle(idle, detail.toString(),
+                        "今天没有待做任务：页面返回 " + total + " 个任务，全部已完成。\n"
+                                + "这不是点击失败，模块不会重复点，也不会记失败次数。\n"
+                                + "明天任务刷新后正常执行即可。");
+            }
+
             if (submitN == 0 && !changed && taskDoneReal == 0) {
                 // 零提交 + 数据没变 = 一个任务都没做。绝不能记完成。
                 String why = !dataReady ? "页面业务数据未就绪"
