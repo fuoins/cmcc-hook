@@ -36,7 +36,8 @@ final class WelfareToken {
      * <p>旧值直接开 {@code /rr/dwz/0EL7vw}，少了 ssoJump 这一层，落地永远没有
      * {@code h5token}；而 ssoJump 必须在 App 真页里开（要带 App 的 SSO 会话与来源）。
      */
-    static final String SHORT_LINK = "https://rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0EL7vw";
+    // r40：与鹅蛋 / 球赛统一收进 SsoShortLink 登记表（值不变，仍是 0EL7vw）。
+    static final String SHORT_LINK = SsoShortLink.WISDOM_LINK;
 
     /** 签到抽奖裸入口：短链也不通时最后试一次，页面自己可能补 SSO。 */
     static final String SIGN_ENTRY =

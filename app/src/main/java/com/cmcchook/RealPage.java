@@ -107,12 +107,14 @@ final class RealPage {
         if (url == null) {
             return "";
         }
-        // 鹅蛋的卡片短链：打开的是 rr.ln139.cn 的 ssoJump，1 秒后 302 到
-        // lyh.lncmcc.com/lyhVue/index.html#/bgIndex?actNo=goose2025&pc=…
-        // 跨域跳转后地址与入口完全不同，按入口算 key 会一直等不到页面。
-        // 这里直接按落地页算，await 才能命中。
-        if (url.contains("ssoJump.html") && url.contains("dwzCode=0AnebE")) {
-            return "https://lyh.lncmcc.com/lyhVue/index.html";
+        // r40：短链入口统一按「落地页」算 await 的 key。
+        // 以前这里只对鹅蛋 dwzCode=0AnebE 硬编码，其它活动即便配了短链，
+        // 跨域跳转后地址与入口不同，await 仍会一直等不到页面 —— 这正是
+        // 「鹅蛋能自开真页、其它活动非得用户提前打开」的技术根因之一。
+        // 现在查 SsoShortLink 登记表，任何登记短链都按落地页算。
+        String landing = SsoShortLink.landingKey(url);
+        if (landing != null) {
+            return landing;
         }
         String base = url;
         String hash = "";
@@ -552,6 +554,11 @@ final class RealPage {
      */
     private static String preferBetter(String url) {
         if (url == null || url.isEmpty() || RealEntry.hasChannel(url)) {
+            return url;
+        }
+        // r40：门户 SSO 短链本身不带渠道参数，别被下面的「裸地址换带渠道地址」
+        // 逻辑误替换成内置裸路由 —— 那会把刚配好的短链自开链路掐断。
+        if (SsoShortLink.isShortLink(url)) {
             return url;
         }
         String act = RealEntry.actOf(url);

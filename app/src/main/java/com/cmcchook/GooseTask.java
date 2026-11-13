@@ -80,8 +80,8 @@ final class GooseTask {
      * 真页打开后自己会跳 {@code lyhVue/index.html#/bgIndex?actNo=goose2025&pc=…&pk=…}，
      * 落地即活动页。pc/pk 必须由它现场换，模块拼不出来。
      */
-    private static final String SHORT_LINK =
-            "https://rr.ln139.cn/rr/lnwd/ssoJump.html?dwzCode=0AnebE";
+    // r40：短链常量统一收进 SsoShortLink 登记表，鹅蛋 / 球赛 / wisdom 同源管理。
+    private static final String SHORT_LINK = SsoShortLink.GOOSE;
 
     /** 一轮最多点几个浏览任务。每点一个要等跳转 + 回跳 + 页面重载，约 20 秒。 */
     private static final int TASK_TRIES = 8;
@@ -225,8 +225,10 @@ final class GooseTask {
         HookLog.log("GOOSE", "收鹅蛋脚本 " + FlowTask.BUILD + " 已装载 · 短链中转页放行 + 逐任务点(按提交回执验收) + 任务后投喂收蛋",
                 "判定尺子: 只认 doTask/signIn/feedGoose/harvestEgg/claimTravelReward 的真实提交回执；\n"
                         + "零提交一律不算完成、不记失败次数；业务数据未就绪时不空跑动作链。\n"
-                        + "v3.97 补三处: ①点页面自己的出游奖励弹窗领取按钮(不拼加密请求) "
-                        + "②投喂/收蛋改收敛循环(饲料涨了继续喂) ③新产鹅蛋继续收，回执逐条验收。");
+                        + "r40 修出游奖励领取: ①只点 .travelRewardDiv .claimBtn「立即领取」，"
+                        + "不再误点 cardSub2「别忘了领取哦~」/rewardBox「x2」/IMG:rewardFeed；"
+                        + "②fireEl 补 touches/changedTouches，页面 Vue 不再抛 reading '0'；"
+                        + "③去掉点满 2 个就 return；④摘要只认 claimTravelReward 回执，不再用点击次数冒充结果。");
         WebPage page = WebSession.current();
         if (page == null || page.raw() == null) {
             // 这里以前会去 PageAuto.load() 操作用户当前打开的页面，等于把任务变回半自动：
@@ -669,8 +671,8 @@ final class GooseTask {
         // 第二级：卡片短链现场换票。pc/pk 是门户后端按登录态签发的密文，模块拼不出来，
         // 只能让 ssoJump 走一遍 uniTokenValidate 再跳到 lyhVue。落地地址就是带票的活动页。
         String cur = page.url();
-        if (cur == null || !cur.contains("dwzCode=0AnebE")) {
-            detail.append("登录: 用卡片短链换票（dwzCode=0AnebE）\n");
+        if (cur == null || !SsoShortLink.isShortLink(cur)) {
+            detail.append("登录: 用卡片短链换票（" + SsoShortLink.describe(SHORT_LINK) + "）\n");
             if (page.navigate(SHORT_LINK, budget(deadline, 25_000L)) && waitLogged(page, budget(deadline, 20_000L))) {
                 String landed = page.url();
                 if (landed != null && landed.contains("pc=")) {
@@ -917,8 +919,10 @@ final class GooseTask {
         if (travelItems > 0 || travelClaims > 0) {
             detail.append("  出游归来领取: ").append(travelClaims > 0
                             ? "已确认（claimTravelReward " + travelClaims + " 条）"
-                            : "未确认（本轮没有 claimTravelReward 回执，弹窗按钮没点到或已无待领）")
-                    .append(" · 点击 ").append(out.optInt("travelTap", 0)).append(" 次\n");
+                            : "未确认（本轮没有 claimTravelReward 回执，领取按钮没点到或已无待领）")
+                    .append(" · 待领 ").append(travelItems)
+                    .append(" 项 · 找到领取按钮 ").append(out.optInt("travelMatched", 0))
+                    .append(" 个\n");
         }
     }
 
@@ -1071,13 +1075,16 @@ final class GooseTask {
             }
             int done = out.optInt("taskDone", 0) + taskDoneReal;
             int travelItems = out.optInt("travelItems", 0);
-            int travelTap = out.optInt("travelTap", 0);
-            int travelBoxes = out.optInt("travelBoxes", 0);
+            int travelMatched = out.optInt("travelMatched", 0);
             String travelLabels = joinPaths(out.optJSONArray("travelLabels"));
-            if (travelItems > 0) {
-                lines.append("出游奖励: ").append(travelItems)
-                        .append(" 项 · 弹窗容器 ").append(travelBoxes)
-                        .append(" 个 · 页面领取按钮点了 ").append(travelTap).append(" 次");
+            // r40：验收只认 claimTravelReward 的真实回执，不再拿「点了几次」当结果。
+            int travelClaims = submitGroups(page).optInt("claimTravelReward", 0);
+            if (travelItems > 0 || travelClaims > 0) {
+                lines.append("出游归来领取: ").append(travelClaims > 0
+                                ? "已确认（claimTravelReward " + travelClaims + " 条）"
+                                : "未确认（本轮没有 claimTravelReward 回执）")
+                        .append(" · 待领 ").append(travelItems)
+                        .append(" 项 · 找到领取按钮 ").append(travelMatched).append(" 个");
                 if (!travelLabels.isEmpty()) {
                     lines.append(" [").append(travelLabels).append("]");
                 }
@@ -1945,13 +1952,53 @@ final class GooseTask {
                   var r=e.getBoundingClientRect();
                   var cx=r.left+r.width/2, cy=r.top+r.height/2;
                   var mk=function(){return {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}};
+                  // r40：页面 Vue 的 touch 指令会读 e.touches[0] / e.changedTouches[0]。
+                  // 旧版派的是空 Event('touchstart')，一点就抛
+                  // "Cannot read properties of undefined (reading '0')"，事件链当场断掉，
+                  // claimTravelReward 根本发不出去。这里补齐触摸点，页面指令才拿得到坐标。
+                  var touch=null;
+                  try{
+                    if(typeof Touch==='function'){
+                      touch=new Touch({identifier:1,target:e,clientX:cx,clientY:cy,
+                                       pageX:cx,pageY:cy,screenX:cx,screenY:cy});
+                    }
+                  }catch(x){}
+                  // 没有 Touch 构造器时也给出带坐标的模拟触点对象：页面读
+                  // touches[0].clientX / touches.length 都不会再是 undefined。
+                  var fake={identifier:1,target:e,clientX:cx,clientY:cy,
+                            pageX:cx,pageY:cy,screenX:cx,screenY:cy};
+                  var tl=function(){return [touch?touch:fake]};
+                  var touchInit=function(type){
+                    var down=type!=='touchend';
+                    var o=mk();
+                    o.touches=down?tl():[];
+                    o.targetTouches=down?tl():[];
+                    o.changedTouches=tl();
+                    return o;
+                  };
                   var ts=['pointerdown','touchstart','mousedown','pointerup','touchend','mouseup'];
                   for(var i=0;i<ts.length;i++){
                     try{
                       var ev;
-                      if(ts[i].indexOf('pointer')===0 && typeof PointerEvent==='function') ev=new PointerEvent(ts[i],mk());
-                      else if(ts[i].indexOf('touch')===0) ev=new Event(ts[i],{bubbles:true,cancelable:true});
-                      else ev=new MouseEvent(ts[i],mk());
+                      if(ts[i].indexOf('pointer')===0 && typeof PointerEvent==='function'){
+                        ev=new PointerEvent(ts[i],mk());
+                      }else if(ts[i].indexOf('touch')===0){
+                        if(typeof TouchEvent==='function'){
+                          ev=new TouchEvent(ts[i],touchInit(ts[i]));
+                        }else{
+                          ev=new Event(ts[i],{bubbles:true,cancelable:true});
+                          var ti=touchInit(ts[i]);
+                          try{
+                            Object.defineProperty(ev,'touches',{value:ti.touches});
+                            Object.defineProperty(ev,'targetTouches',{value:ti.targetTouches});
+                            Object.defineProperty(ev,'changedTouches',{value:ti.changedTouches});
+                            Object.defineProperty(ev,'clientX',{value:cx});
+                            Object.defineProperty(ev,'clientY',{value:cy});
+                          }catch(x){}
+                        }
+                      }else{
+                        ev=new MouseEvent(ts[i],mk());
+                      }
                       e.dispatchEvent(ev);
                     }catch(x){}
                   }
@@ -1968,42 +2015,62 @@ final class GooseTask {
                   return s.display!=='none'&&s.visibility!=='hidden'&&Number(s.opacity||1)>0.05;
                 }catch(x){return false}
               }
-              // 只扫出游/奖励弹窗容器内的领取按钮，不乱点任务列表里的「去领取」。
+              // r40：11-13 用户抓包实证，真正会发 claimTravelReward 的按钮是
+              //   DIV.claimBtn「立即领取」 < DIV.rewardCard < DIV.travelRewardDiv
+              // 点它 0.2 秒后就 POST claimTravelReward → 200 →「饲料已领取成功」。
+              // 旧版用宽松文本 WORD 把 cardSub2「别忘了领取哦~」、rewardBox「x2」、
+              // IMG:rewardFeed 都当按钮，点满 2 个就 return，claimBtn 根本没轮到；
+              // 再叠加 fireEl 的空 touchstart 让页面 JS 抛异常，整轮零 claimTravelReward。
+              // 现在只点领取按钮本身，且按可见性逐个点完，不提前收工。
               function tapTravel(){
-                var r={clicked:0,labels:[],boxes:0};
-                var WORD=/开心收下|立即领取|一键领取|全部领取|领取饲料|收下|领取/;
-                var SKIP=/已领取|已收下|已获得|去领取|去逛逛|去完成|去查看|规则|说明/;
-                // 先扫出游/奖励专属弹窗，再退到通用 popup，避免误点任务弹窗里的「去领取」。
-                var groups=[
-                  '[class*=travel],[class*=reward],[class*=Travel],[class*=Reward]',
-                  '[class*=popup],[class*=Popup],.van-popup'
-                ];
+                var r={clicked:0,labels:[],boxes:0,matched:0};
                 var seen=[];
-                for(var g=0;g<groups.length;g++){
-                  var boxes=document.querySelectorAll(groups[g]);
-                  for(var b=0;b<boxes.length;b++){
-                    var box=boxes[b];
-                    if(!visEl(box)) continue;
-                    if(g===0) r.boxes++;
-                    var inner=box.querySelectorAll('button,a,div,span,img,i');
-                    for(var i=0;i<inner.length;i++){
-                      var e=inner[i];
-                      if(!visEl(e)||seen.indexOf(e)>=0) continue;
-                      seen.push(e);
-                      var t=String(e.innerText||e.alt||'').replace(/ /g,'').slice(0,16);
-                      var cls=String(e.className||'');
-                      if(t&&SKIP.test(t)) continue;
-                      var hitw=t?WORD.test(t):false;
-                      var imgBtn=(e.tagName==='IMG')&&/travel|reward|btn|get|ling|claim|shou/i.test(cls+' '+String(e.src||''));
-                      if(!hitw&&!imgBtn) continue;
-                      if(fireEl(e)){
-                        r.clicked++;
-                        r.labels.push(t||('IMG:'+cls.slice(0,24)));
-                        if(r.clicked>=2) return r;
-                      }
+                // 只在出游奖励弹窗内找，避免点到任务列表里的「去领取 / 立即领取」。
+                var scopes=document.querySelectorAll(
+                    '.travelRewardDiv,[class*=travelReward],[class*=TravelReward]');
+                // 精确优先：页面自己的领取按钮类名；类名再兜一层「立即领取」文本。
+                var SEL='[class*=claimBtn],[class*=ClaimBtn],[class*=claimbtn],'
+                      + 'button,[class*=btnGet],[class*=btnReceive]';
+                function isClaimBtn(e){
+                  if(!visEl(e)||seen.indexOf(e)>=0) return false;
+                  if(e.tagName==='IMG') return false;              // 图片不是按钮
+                  var cls=String(e.className||'');
+                  var t=String(e.innerText||'').replace(/ /g,'').slice(0,16);
+                  // 提示文案 / 数量角标 / 卡片容器一律排除。
+                  if(/cardSub|cardsub|rewardBox|rewardbox|rewardCard|rewardcard|cardTip|cardText/i.test(cls)) return false;
+                  if(/别忘|已领取|已收下|已获得|去领取|去逛逛|去完成|去查看|规则|说明/.test(t)) return false;
+                  if(/claim|btnget|btnreceive/i.test(cls)) return true;
+                  return /^(立即领取|一键领取|全部领取|开心收下|领取饲料|收下)$/.test(t);
+                }
+                for(var s=0;s<scopes.length;s++){
+                  var box=scopes[s];
+                  if(!visEl(box)) continue;
+                  r.boxes++;
+                  var els=box.querySelectorAll(SEL);
+                  for(var i=0;i<els.length;i++){
+                    var e=els[i];
+                    if(!isClaimBtn(e)) continue;
+                    seen.push(e);
+                    r.matched++;
+                    if(fireEl(e)){
+                      r.clicked++;
+                      var t=String(e.innerText||'').replace(/ /g,'').slice(0,16);
+                      r.labels.push(t||('BTN:'+String(e.className||'').slice(0,20)));
                     }
                   }
-                  if(r.clicked>0) return r;  // 出游弹窗里点到了就不再扫通用 popup
+                }
+                // 类名改版兜底：整个弹窗内文本严格等于领取口令、且自身是可点元素。
+                if(r.matched===0){
+                  var all=document.querySelectorAll('.travelRewardDiv *,[class*=travelReward] *');
+                  for(var j=0;j<all.length;j++){
+                    var b=all[j];
+                    if(!isClaimBtn(b)) continue;
+                    var bt=String(b.innerText||'').replace(/ /g,'').slice(0,16);
+                    if(!/^(立即领取|一键领取|全部领取|开心收下|领取饲料|收下)$/.test(bt)) continue;
+                    seen.push(b);
+                    r.matched++;
+                    if(fireEl(b)){ r.clicked++; r.labels.push(bt) }
+                  }
                 }
                 return r;
               }
@@ -2076,8 +2143,11 @@ final class GooseTask {
                     await wait(900);
                     var tp=tapTravel();
                     out.travelTap=tp.clicked; out.travelLabels=tp.labels; out.travelBoxes=tp.boxes;
-                    out.actions.push('出游奖励: '+out.travelItems+' 项 · 弹窗容器 '+tp.boxes
-                                     +' 个 · 领取按钮点了 '+tp.clicked+' 次'
+                    out.travelMatched=tp.matched;
+                    // r40：点了几下不是结果。这里只记「找到几个领取按钮」这个事实，
+                    // 领没领到由下面 claimTravelReward 的真实回执说了算。
+                    out.actions.push('出游奖励: '+out.travelItems+' 项 · 找到领取按钮 '+tp.matched
+                                     +' 个（弹窗 '+tp.boxes+' 个）'
                                      +(tp.labels.length?' ['+tp.labels.join('/')+']':''));
                     if(tp.clicked>0) await wait(1800);  // 留时间给页面自己发 claimTravelReward
                   }

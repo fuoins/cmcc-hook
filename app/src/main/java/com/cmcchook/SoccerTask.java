@@ -82,20 +82,26 @@ final class SoccerTask {
     }
 
     static String entryUrl() {
+        // r40：和收鹅蛋一样支持「不提前打开也能跑」。
+        // 缓存里有带 pc/pk 的落地页（用户手动打开过）就复用那张真页，最快；
+        // 没有就走门户短链 0ELdax，由页面自己走完 SSO 现场换票落地 ——
+        // 以前这里回退的是裸地址 ACT_SOCCER，URL 上没有 pc，页面被识别成游客，
+        // 于是「没提前打开过活动就执行不行」。
         Context ctx = HookLog.context();
         if (ctx == null) {
-            return ACT_SOCCER;
+            return SsoShortLink.SOCCER;
         }
         try {
             SharedPreferences p = AccountScope.prefs(ctx, PREFS);
             String url = p.getString(KEY_ENTRY, "");
             long at = p.getLong(KEY_ENTRY_AT, 0L);
-            if (url.isEmpty() || System.currentTimeMillis() - at > ENTRY_TTL) {
-                return ACT_SOCCER;
+            if (!url.isEmpty() && System.currentTimeMillis() - at <= ENTRY_TTL
+                    && url.contains("pc=")) {
+                return url;   // 复用已有真页
             }
-            return url;
+            return SsoShortLink.SOCCER;   // 短链自开
         } catch (Throwable e) {
-            return ACT_SOCCER;
+            return SsoShortLink.SOCCER;
         }
     }
 

@@ -1123,6 +1123,21 @@ final class TaskRunner {
                             + "说明: 用户手动打开的签到页已登录、已布局，本次直接在它上面跑脚本。\n");
             login.append("现场: 复用 App 前台真页（跳过离屏开页）\n");
         }
+        // r40：把「这次用什么入口开的页」写清楚，好对照「没提前打开也能跑」。
+        // 短链入口由页面自己走完 SSO 现场换票，落地地址带 pc/pk 或 h5token；
+        // 复用真页则是用上一次学到的带票落地页。两者都不依赖用户先手动进活动页。
+        if (!frontWisdom) {
+            String mode = SsoShortLink.isShortLink(url)
+                    ? "短链自开真页（不依赖提前打开，门户现场换票）"
+                    : (url.contains("pc=") || url.contains("h5token=") || url.contains("token=")
+                        ? "复用已学到的带票落地页" : "内置 / 采集地址开真页");
+            HookLog.log("TASK", "入口方式 · " + label(cmd),
+                    "方式: " + mode + "\n"
+                            + "入口: " + briefUrl(url) + "\n"
+                            + SsoShortLink.describe(url) + "\n"
+                            + "说明: 短链由页面自己走完 uniTokenValidate → rr/dwz → 落地页，"
+                            + "模块不解密、不拼加密参数。");
+        }
         if (!frontWisdom && !beginSessionFast(key, url)) {
             HookLog.log("TASK", "活动页没起来 · " + label(cmd),
                     "URL: " + briefUrl(url) + "\n" + login);
