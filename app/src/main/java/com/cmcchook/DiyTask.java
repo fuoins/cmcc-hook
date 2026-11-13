@@ -59,6 +59,12 @@ final class DiyTask {
      */
     private static final String DRAW_SKIP = "__NO_LOTTERY__";
 
+    /**
+     * v4.30.0：抽奖接口存在，但今天不开放（追剧「抽奖时间为周日」）。
+     * 这种不是失败，次数要保留着，日志里得写清楚剩几次、什么时候再来。
+     */
+    private static final String DRAW_CLOSED = "__NOT_OPEN__";
+
     private DiyTask() {
     }
 
@@ -94,8 +100,11 @@ final class DiyTask {
             }
             // 追剧领福利：视频日自己的签到接口，和 diyTask 体系分开。
             int videoSign = 0;
+            int videoTask = 0;
             if (ACT_VIDEO_DAY.equals(actId)) {
                 videoSign = signVideoDay(referer, detail, text, name);
+                // v4.30.0：视频日还有一条独立下发的每日任务（不在 diyTask/list 里）。
+                videoTask = videoDayTask(referer, detail, text, name);
             }
 
             JSONArray methods = data.optJSONArray("playMethodInfos");
@@ -235,15 +244,23 @@ final class DiyTask {
 
             // ---- v4.10.0 收尾阶段：所有环节的任务/补领都做完，再统一抽到 0 ----
             detail.append("▶ 抽奖收尾（任务全部完成后，一律抽到剩余次数 0）\n");
+            int drawPending = 0;
             for (String comp : allComps) {
-                int drawn = drain(comp, referer, name, text, detail);
-                drawTimes += drawn;
-                detail.append("   环节 ").append(comp).append(": 抽 ").append(drawn).append(" 次\n");
+                int[] r = drain(comp, referer, name, text, detail);
+                drawTimes += r[0];
+                drawPending += r[1];
+                detail.append("   环节 ").append(comp).append(": 抽 ").append(r[0]).append(" 次");
+                if (r[1] > 0) {
+                    detail.append("（保留 ").append(r[1]).append(" 次，未到开放时间）");
+                }
+                detail.append('\n');
             }
 
             // ---- 复查：做完再拉一遍，确认真的变成 DONE ----
             int left = 0;
             int verifiedDone = 0;
+            int totalAll = 0;
+            int doneAll = 0;
             for (int i = 0, c = 0; i < methods.length() && c < MAX_COMPONENTS; i++) {
                 JSONObject pm = methods.optJSONObject(i);
                 JSONObject ap = pm == null ? null : pm.optJSONObject("actPlayMethod");
@@ -255,12 +272,16 @@ final class DiyTask {
                         c < stageBefore.size() ? stageBefore.get(c) : null;
                 c++;
                 JSONArray after = taskList(comp, referer);
+                totalAll += after.length();
                 for (int t = 0; t < after.length(); t++) {
                     JSONObject task = after.optJSONObject(t);
                     if (task == null) {
                         continue;
                     }
                     String stage = task.optString("taskStage", "");
+                    if ("DONE".equals(stage)) {
+                        doneAll++;
+                    }
                     if ("UNDO".equals(stage)) {
                         if (outsideIds.contains(task.optString("taskId", ""))) {
                             // 外域任务永远做不上，不算进「没做上」。
@@ -294,30 +315,64 @@ final class DiyTask {
             if (outsideTasks > 0) {
                 detail.append("，外域不代做 ").append(outsideTasks).append(" 个");
             }
+            if (drawPending > 0) {
+                detail.append("，保留 ").append(drawPending).append(" 次待开放");
+            }
             detail.append('\n');
-
-            // v4.20.0-r34：「完成 0 个任务」配上 OK 时读起来像全挂了，
-            // 有外域任务时把原因写进摘要，一眼能分清是没做成还是本来就不做。
-            String summary;
-            if (doneTasks == 0 && outsideTasks > 0) {
-                summary = name + " · 任务 0 个（" + outsideTasks + " 个外域落地页不代做）";
-            } else {
-                summary = name + " · 完成 " + doneTasks + " 个任务";
-                if (outsideTasks > 0) {
-                    summary += "（" + outsideTasks + " 个外域不代做）";
+            // 任务账：把「一共几个、已完成几个、还剩几个、几个不代做」摆出来。
+            // 旧版摘要只写「完成 0 个任务」，而环节行写「任务 8 个」，
+            // 点进去看全是 DONE，读日志的人会以为模块漏做了 8 个。
+            if (totalAll > 0) {
+                detail.append("任务账: ").append(totalAll).append(" 个")
+                        .append("（已完成 ").append(doneAll);
+                if (left > 0) {
+                    detail.append(" / 待做 ").append(left);
                 }
+                if (outsideTasks > 0) {
+                    detail.append(" / 外域不代做 ").append(outsideTasks);
+                }
+                detail.append("）");
+                if (doneTasks > 0) {
+                    detail.append("，本轮 +").append(doneTasks);
+                }
+                detail.append('\n');
+            }
+
+            // v4.30.0：摘要按「总数 / 已完成 / 待做 / 外域」写，不再只报本轮做了几个。
+            String summary;
+            if (totalAll > 0) {
+                summary = name + " · 任务 " + totalAll + " 个：已完成 " + doneAll;
+                if (left > 0) {
+                    summary += " · 待做 " + left;
+                }
+                if (outsideTasks > 0) {
+                    summary += " · 外域不代做 " + outsideTasks;
+                }
+            } else if (outsideTasks > 0) {
+                summary = name + " · 没有可做任务（" + outsideTasks + " 个外域落地页不代做）";
+            } else {
+                summary = name + " · 没有任务";
+            }
+            if (doneTasks > 0) {
+                summary += " · 本轮 +" + doneTasks;
             }
             if (clockWins > 0 || videoSign > 0) {
                 summary += " · 签到到账";
             }
+            if (videoTask > 0) {
+                summary += " · 视频任务 +" + videoTask;
+            }
             if (drawTimes > 0) {
                 summary += " · 抽 " + drawTimes + " 次";
+            }
+            if (drawPending > 0) {
+                summary += " · " + drawPending + " 次待开放";
             }
             if (left > 0) {
                 summary += " · 还剩 " + left + " 个没做上";
             }
             boolean idle = doneTasks == 0 && drawTimes == 0 && undoTasks == 0
-                    && clockWins == 0 && videoSign == 0;
+                    && clockWins == 0 && videoSign == 0 && videoTask == 0;
             if (idle) {
                 return TaskRunner.Result.idle(name + " · 今天已做完",
                         detail.toString(), summary);
@@ -326,7 +381,7 @@ final class DiyTask {
             // 16:45 那轮 5 个待做里 4 个其实成功了，旧版只算 2 个；
             // 反过来的情况（全挂）旧版会报「完成 0 个任务」还带 OK 标记。
             if (doneTasks == 0 && drawTimes == 0 && clockWins == 0 && videoSign == 0
-                    && undoTasks > 0) {
+                    && videoTask == 0 && undoTasks > 0) {
                 String why = "活动有 " + undoTasks + " 个待做，但一个都没做上";
                 detail.append("判定: ").append(why).append("，不记完成\n");
                 return TaskRunner.Result.skip(name + " · " + why, detail.toString(),
@@ -378,31 +433,32 @@ final class DiyTask {
      *   <li>服务端剩余次数连续几轮不再下降，或达到 {@link #MAX_DRAW} 硬上限
      *       （防接口异常时空转）。</li>
      * </ol>
+     * @return {抽了几次, 因未开放而保留的次数}
      */
-    private static int drain(String comp, String referer, String name,
-                             StringBuilder text, StringBuilder detail) {
+    private static int[] drain(String comp, String referer, String name,
+                               StringBuilder text, StringBuilder detail) {
         int drawn = 0;
         JSONObject first = remain(comp, referer);
         if (first == null) {
             detail.append("   环节 ").append(comp).append(" 没有抽奖接口（剩余次数读不到），跳过\n");
-            return 0;
+            return new int[]{0, 0};
         }
         int serverLeft = first.optInt("remain", -1);
         if (serverLeft < 0) {
             detail.append("   环节 ").append(comp)
                     .append(" 没有可用抽奖次数（remain 字段缺失），跳过\n");
-            return 0;
+            return new int[]{0, 0};
         }
         if (serverLeft > MAX_DRAW) {
-            // 「个性化奖品」这类组件 remain 会回库存数（实测 98），不是抽奖次数。
-            // 按次数抽会把库存当次数打空，直接按脏值跳过。
-            detail.append("   环节 ").append(comp).append(" 剩余次数异常（").append(serverLeft)
-                    .append("），不是抽奖次数，跳过\n");
-            return 0;
+            // 「个性化奖品」「视频日签到个性化奖品」这类组件 remain 回的是库存/积分
+            // （实测 98、99），不是抽奖次数。按次数抽会把库存当次数打空，直接跳过。
+            detail.append("   环节 ").append(comp).append(" 不是抽奖环节（remain=")
+                    .append(serverLeft).append("，是库存/积分），不抽\n");
+            return new int[]{0, 0};
         }
         if (serverLeft == 0) {
             detail.append("   环节 ").append(comp).append(" 抽奖前剩余: 0，跳过\n");
-            return 0;
+            return new int[]{0, 0};
         }
         // 服务端给了明确剩余次数就以它为上限（+2 余量）；读不到则靠 draw 停手 + 硬上限。
         int cap = Math.min(serverLeft + 2, MAX_DRAW);
@@ -419,6 +475,13 @@ final class DiyTask {
             if (prize == null) {
                 detail.append("   环节 ").append(comp).append(" 抽奖接口停手\n");
                 break;
+            }
+            if (DRAW_CLOSED.equals(prize)) {
+                // 次数是真实存在的，只是今天不开。保留下来，别写成「没抽成」。
+                int keep = Math.max(serverLeft - drawn, 0);
+                detail.append("   环节 ").append(comp).append(" 抽奖未开放，保留 ")
+                        .append(keep).append(" 次\n");
+                return new int[]{drawn, keep};
             }
             drawn++;
             text.append(name).append("·抽奖 ").append(prize).append('\n');
@@ -446,7 +509,7 @@ final class DiyTask {
             // 一次都没抽成时补一句，否则日志里只剩「抽 0 次」，看不出是没次数还是接口挂了。
             detail.append("   环节 ").append(comp).append(": 本次一次都没抽成\n");
         }
-        return drawn;
+        return new int[]{drawn, 0};
     }
 
     /** 抽一次，返回奖品描述；返回 null 表示该停手了，{@link #DRAW_SKIP} 表示组件没抽奖玩法。 */
@@ -470,6 +533,15 @@ final class DiyTask {
                             .append(code).append(' ').append(msg).append("）\n");
                     return DRAW_SKIP;
                 }
+                // v4.30.0：追剧的抽奖只在周日开，服务端回
+                // 「FAILED 抽奖时间为周日，请确认~」。旧版当成「接口停手」，
+                // 于是 8 次机会一次没抽、摘要还写「抽 0 次」，看着像坏了。
+                if (msg.contains("周日") || msg.contains("未开放")
+                        || msg.contains("不在活动时间") || msg.contains("活动未开始")
+                        || msg.contains("未到时间")) {
+                    detail.append("   抽奖未开放: ").append(msg).append('\n');
+                    return DRAW_CLOSED;
+                }
                 detail.append("   抽奖停止: ").append(code).append(' ')
                         .append(msg).append('\n');
                 return null;
@@ -491,12 +563,17 @@ final class DiyTask {
     }
 
     /**
-     * v4.20.0-r34：任务的落地页是不是外部域名；是则返回域名，否则 null。
+     * 任务的落地页是不是「真第三方」域名；是则返回域名，否则 null。
      *
      * <p>任务 url 形如 {@code /qwhdhub/diyTask/startBrowse/{id}?targetUrl=https%3A%2F%2F...}。
      * 站内落地页（{@code *.10086.cn}）服务端在 302 之前就登记，发一次 startBrowse 就够；
-     * 外域落地页（例如 {@code h5.igame.qq.com}）要真进页面、由对方回调才算，
-     * 模块只能发个 GET，发多少次都是 UNDO。这类直接判「不代做」，不再白撞。
+     * 真第三方（{@code h5.igame.qq.com}、{@code rr.ln139.cn}）要真进页面、由对方回调
+     * 才算，模块只能发个 GET，发多少次都是 UNDO。这类直接判「不代做」，不再白撞。
+     *
+     * <p>v4.30.0：{@code cmcc-cs.cn} 是移动自己的内容域（视频日「关注优质作者」
+     * 落的是 {@code v.cmcc-cs.cn/cmlive/livegray/feed}），不是第三方。旧版把它
+     * 和腾讯、咪咕一起判成外域，追剧每天白白少做 1 个 +1 次的任务。
+     * 现在放行自有域，真发 startBrowse，再由复查决定到底算不算完成。
      */
     private static String outsideHost(JSONObject task) {
         String url = task.optString("url", "");
@@ -514,6 +591,10 @@ final class DiyTask {
             }
             host = host.toLowerCase();
             if (host.equals("10086.cn") || host.endsWith(".10086.cn")) {
+                return null;
+            }
+            // 自有内容域：活动素材、视频播放页都在这上面，服务端认 startBrowse。
+            if (host.equals("cmcc-cs.cn") || host.endsWith(".cmcc-cs.cn")) {
                 return null;
             }
             return host;
@@ -618,6 +699,86 @@ final class DiyTask {
             return count;
         } catch (Throwable e) {
             detail.append("签到异常: ").append(e).append('\n');
+            return 0;
+        }
+    }
+
+    /**
+     * 追剧领福利（视频日活动）的每日视频任务。
+     *
+     * <p>v4.30.0 新增。11-13 17:44 抓包实证：任务不在 {@code diyTask/list} 里，
+     * 而是 {@code GET /qwhdhub/api/diyVideoDayRedesign/task/queryDiyVideoTask}
+     * 单独下发，形如
+     * <pre>
+     * {"doneDayCount":0,"canDayCount":1,"doneWeekCount":0,"canWeekCount":8,
+     *  "undoTodayTaskList":[{"name":"视频非周日五","url":"/qwhdhub/diyTask/startBrowse/…&amp;jtToken=…"}]}
+     * </pre>
+     * 旧版只跑 diyTask/list，所以这个「每天 1 次、每周 8 次」的机会一次都没领过，
+     * 追剧的抽奖次数一直比别人少。
+     *
+     * <p>做法：取第一条待做任务的 url 直接发 startBrowse（带 jtToken），
+     * 再用 doneDayCount 有没有 +1 判定，不靠 HTTP 状态。
+     *
+     * @return 1 表示今天这条视频任务这次真做上了
+     */
+    private static int videoDayTask(String referer, StringBuilder detail, StringBuilder text,
+                                    String actName) {
+        try {
+            JSONObject before = TaskApi.get(
+                    "/qwhdhub/api/diyVideoDayRedesign/task/queryDiyVideoTask", referer);
+            JSONObject data = before.optJSONObject("data");
+            if (data == null) {
+                detail.append("视频日任务: 接口无 data（").append(before.optString("code"))
+                        .append("）\n");
+                return 0;
+            }
+            int doneBefore = data.optInt("doneDayCount", 0);
+            int can = data.optInt("canDayCount", 0);
+            JSONArray undo = data.optJSONArray("undoTodayTaskList");
+            int undoCount = undo == null ? 0 : undo.length();
+            detail.append("视频日任务: 今日已完成 ").append(doneBefore)
+                    .append(" / 可做 ").append(can)
+                    .append("，待做 ").append(undoCount).append(" 条\n");
+            if (undoCount == 0 || can <= doneBefore) {
+                return 0;
+            }
+            JSONObject task = undo.optJSONObject(0);
+            String url = task == null ? "" : task.optString("url", "");
+            String taskName = task == null ? "" : task.optString("name", "视频任务");
+            if (url.isEmpty()) {
+                detail.append("视频日任务: 「").append(taskName).append("」没有 url，跳过\n");
+                return 0;
+            }
+            String full = url.startsWith("http") ? url : TaskNet.BASE + url;
+            TaskNet.Resp resp = TaskNet.getNoFollow(full, referer, TaskApi.eggHeaders());
+            detail.append("视频日任务「").append(taskName).append("」: startBrowse ")
+                    .append(resp.status == 0 ? "已发出（302 登记）" : "HTTP " + resp.status)
+                    .append('\n');
+            sleep(1_200);
+            // 服务端登记有延迟，1.2 秒读不到就再等两轮，别一次没读到就判「没记上」。
+            int doneAfter = doneBefore;
+            for (int i = 0; i < 3; i++) {
+                JSONObject after = TaskApi.get(
+                        "/qwhdhub/api/diyVideoDayRedesign/task/queryDiyVideoTask", referer);
+                JSONObject afterData = after.optJSONObject("data");
+                doneAfter = afterData == null ? doneAfter
+                        : afterData.optInt("doneDayCount", doneAfter);
+                if (doneAfter > doneBefore) {
+                    break;
+                }
+                sleep(1_200);
+            }
+            detail.append("视频日任务复查: 今日完成 ").append(doneBefore).append(" → ")
+                    .append(doneAfter).append('\n');
+            if (doneAfter > doneBefore) {
+                text.append(actName).append("·").append(taskName).append('\n');
+                return 1;
+            }
+            detail.append("视频日任务「").append(taskName)
+                    .append("」没记上（服务端未认，明天自动再试）\n");
+            return 0;
+        } catch (Throwable e) {
+            detail.append("视频日任务异常: ").append(e).append('\n');
             return 0;
         }
     }

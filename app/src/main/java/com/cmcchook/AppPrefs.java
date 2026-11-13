@@ -129,11 +129,24 @@ final class AppPrefs {
     /** r15 P2：idle 单独存一份，不改 task_state_ 的 OK/FAIL 前缀。 */
     static void setTaskState(Context context, String cmd, String day,
                              boolean ok, boolean idle, String summary, int attempts) {
+        setTaskState(context, cmd, day, ok, idle, ok, summary, attempts);
+    }
+
+    /**
+     * v4.30.0：done 表示「当天成功过」，供文件头诊断摘要判「重跑失败但仍算达成」。
+     *
+     * <p>旧版摘要只看最近一次是 OK 还是 FAIL，于是「14:50 成功、15:29 重跑失败」
+     * 会在抬头显示 ✗，文件尾的「今日」行却显示 OK，同一份日志两句话打架。
+     */
+    static void setTaskState(Context context, String cmd, String day,
+                             boolean ok, boolean idle, boolean done,
+                             String summary, int attempts) {
         long now = System.currentTimeMillis();
         status(context).edit()
                 .putString(taskKey("task_state_", cmd, day, context),
                         (ok ? "OK " : "FAIL ") + (summary == null ? "" : summary))
                 .putBoolean(taskKey("task_idle_", cmd, day, context), idle)
+                .putBoolean(taskKey("task_done_", cmd, day, context), done || ok)
                 .putInt(taskKey("task_attempt_", cmd, day, context), attempts)
                 // v4.10.0-r7：模块侧记一份「本次结果时间」，供福利页条目展示。
                 // 目标进程里那份 result_at_<cmd> 模块读不到，这里在收到 STATE 广播时
@@ -248,6 +261,11 @@ final class AppPrefs {
     /** r15 P2：这次结果是「无需操作」吗。头部诊断摘要据此显示 ○。 */
     static boolean getTaskIdle(Context context, String cmd, String day) {
         return status(context).getBoolean(taskKey("task_idle_", cmd, day, context), false);
+    }
+
+    /** v4.30.0：当天是否成功过。头部诊断摘要据此把「重跑失败」仍画成 ✓。 */
+    static boolean getTaskDone(Context context, String cmd, String day) {
+        return status(context).getBoolean(taskKey("task_done_", cmd, day, context), false);
     }
 
     static long getLastTick(Context context) {

@@ -279,27 +279,25 @@ final class LogExporter {
         for (int i = 0; i < cmds.length; i++) {
             String state = AppPrefs.getTaskState(context, cmds[i], day);
             int attempts = AppPrefs.getTaskAttempts(context, cmds[i], day);
-            // r15 P2：与一键汇总表统一成四态。以前 idle 也记成 OK，
-            // 头部写「7日打卡分百万 ✓ 完成」，汇总表却写「○ 无需操作」。
-            boolean idle = AppPrefs.getTaskIdle(context, cmds[i], day);
-            String mark;
-            if (state.isEmpty()) {
-                mark = "–";
-            } else if (idle) {
-                mark = "○";
-            } else if (state.startsWith("OK")) {
-                mark = "✓";
-            } else if (state.startsWith("FAIL")) {
-                mark = attempts > 1 ? "✗" + attempts : "✗";
-            } else {
-                mark = "–";
-            }
+            // v4.30.0：和文末「今日」行、一键汇总表共用同一套四态判定。
+            // 旧版这里自己算：没跑 → –、idle → ○、OK → ✓、FAIL → ✗，
+            // 而文末那份把「没跑」画成 ○、「今天已做完」画成 ✓，
+            // 同一份日志抬头和结尾各说各话（收鹅蛋 ✗ / OK 就是这么来的）。
+            boolean done = AppPrefs.getTaskDone(context, cmds[i], day);
+            String mark = StatusMark.of(state, attempts, done);
             line.append(names[i]).append(' ').append(mark);
             if (i < cmds.length - 1) {
                 line.append(i % 4 == 3 ? "　\n　　　" : "　");
             }
             if (!state.isEmpty()) {
-                rows.append(names[i]).append(": ").append(state);
+                // v4.30.0：当天成功过、最近一次重跑失败时，符号画 ✓，
+                // 文字也必须跟着改成「已成功过」，否则一行里还是「✓ … FAIL …」。
+                String shown = state;
+                if (done && state.startsWith("FAIL ")) {
+                    shown = "OK（今天已成功过；最后一次重跑："
+                            + state.substring(5).trim() + "）";
+                }
+                rows.append(names[i]).append(": ").append(shown);
                 if (attempts > 0) {
                     rows.append("（失败 ").append(attempts).append(" 次）");
                 }

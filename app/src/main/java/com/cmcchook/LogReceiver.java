@@ -402,6 +402,7 @@ public final class LogReceiver extends BroadcastReceiver {
                 day,
                 intent.getBooleanExtra("ok", false),
                 intent.getBooleanExtra("idle", false),
+                intent.getBooleanExtra("done", false),
                 intent.getStringExtra("summary"),
                 intent.getIntExtra("attempts", 0));
     }

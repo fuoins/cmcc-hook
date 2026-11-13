@@ -85,22 +85,43 @@ final class EggTask {
                 String stage = task.optString("taskStage", "");
                 int todayRemain = task.optInt("todayRemain", 0);
                 String url = task.optString("url", "");
+                String id = task.optString("taskId", "");
                 String name = task.optString("name", "任务" + i);
                 if (!"UNDO".equals(stage) || todayRemain <= 0 || url.isEmpty()) {
                     continue;
                 }
                 try {
-                    // startBrowse 会 302 到外域落地页，服务端在 302 之前就已经
-                    // 登记任务并 +1 次。fetch 跟随重定向可能被跨域拦，HTTP 状态
-                    // 不代表登记结果，所以不靠单次状态判定，统一在下面复查次数。
-                    // v4.20.0-r33：改成不跟跳转（redirect:manual），拿到的状态是 0，
-                    // 不再出现「HTTP -1」这种看着像失败、其实已经登记成功的日志。
-                    TaskNet.Resp resp = TaskNet.getNoFollow(TaskNet.BASE + url, referer,
-                            TaskApi.eggHeaders());
-                    detail.append("任务 ").append(name).append(": 已发出 startBrowse（")
-                            .append(resp.status == 0 ? "302 登记，不跟落地页"
-                                    : "HTTP " + resp.status).append("）\n");
-                    triggered++;
+                    // v4.30.0：按任务类型分流。
+                    // browse / business（url 带 startBrowse）→ GET，服务端在 302 前登记；
+                    // share_view / share（url 带 finish）→ 必须 POST，用 GET 会回 405。
+                    // 11-13 17:48 充值先领券实证：「邀请好友参与活动」type=share_view、
+                    // url=/qwhdhub/task/finish/…，旧版一律按 GET 发 startBrowse，
+                    // 服务端回 405，于是 2 个任务只到账 1 次。
+                    if (url.contains("/finish/")) {
+                        String path = url.startsWith("http") ? "/qwhdhub/task/finish/" + id : url;
+                        JSONObject resp = TaskApi.eggPost(path, "{}", referer);
+                        String code = resp.optString("code");
+                        detail.append("任务 ").append(name).append(": finish ")
+                                .append(code);
+                        if ("SUCCESS".equals(code)) {
+                            triggered++;
+                        } else {
+                            detail.append(' ').append(resp.optString("msg"));
+                        }
+                        detail.append('\n');
+                    } else {
+                        // startBrowse 会 302 到外域落地页，服务端在 302 之前就已经
+                        // 登记任务并 +1 次。fetch 跟随重定向可能被跨域拦，HTTP 状态
+                        // 不代表登记结果，所以不靠单次状态判定，统一在下面复查次数。
+                        // v4.20.0-r33：改成不跟跳转（redirect:manual），拿到的状态是 0，
+                        // 不再出现「HTTP -1」这种看着像失败、其实已经登记成功的日志。
+                        TaskNet.Resp resp = TaskNet.getNoFollow(TaskNet.BASE + url, referer,
+                                TaskApi.eggHeaders());
+                        detail.append("任务 ").append(name).append(": 已发出 startBrowse（")
+                                .append(resp.status == 0 ? "302 登记，不跟落地页"
+                                        : "HTTP " + resp.status).append("）\n");
+                        triggered++;
+                    }
                 } catch (Throwable e) {
                     detail.append("任务 ").append(name).append(" 异常: ").append(e).append('\n');
                 }
@@ -124,6 +145,11 @@ final class EggTask {
         detail.append("任务: 共 ").append(taskCount).append(" 个，触发 ").append(triggered)
                 .append(" 个，次数 ").append(base).append(" → ").append(remain)
                 .append("（到账 +").append(gained).append("）\n");
+        if (triggered > gained) {
+            // v4.30.0：把差额写出来，别让人以为「触发几个就到账几次」。
+            detail.append("说明: ").append(triggered - gained)
+                    .append(" 个任务没登记（外域落地页要真打开停留几秒才算）\n");
+        }
         if (triggered > 0) {
             lines.add("触发 " + triggered + " 个浏览任务，次数到账 +" + gained);
         }

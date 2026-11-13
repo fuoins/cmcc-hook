@@ -155,6 +155,15 @@ final class HookLog {
     /** r15 P2：idle 单独带一个标记，摘要据此显示「○ 无需操作」。 */
     static void state(String cmd, boolean ok, boolean idle, String summary,
                       int attempts, String day) {
+        state(cmd, ok, idle, ok, summary, attempts, day);
+    }
+
+    /**
+     * v4.30.0：done 表示「当天成功过」。重跑失败时 ok=false、done=true，
+     * 模块进程据此把当天结果仍显示成 ✓，不再出现抬头 ✗ / 文末 OK 两套说法。
+     */
+    static void state(String cmd, boolean ok, boolean idle, boolean done,
+                      String summary, int attempts, String day) {
         Context ctx = context();
         if (ctx == null || cmd == null || cmd.isEmpty()) {
             return;
@@ -168,6 +177,7 @@ final class HookLog {
             intent.putExtra("cmd", cmd);
             intent.putExtra("ok", ok);
             intent.putExtra("idle", idle);
+            intent.putExtra("done", done);
             intent.putExtra("summary", cut(summary, 160));
             intent.putExtra("attempts", attempts);
             intent.putExtra("day", day);

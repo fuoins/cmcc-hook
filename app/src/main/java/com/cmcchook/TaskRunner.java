@@ -1833,7 +1833,11 @@ final class TaskRunner {
             putString(ctx, KEY_PREFIX_RESULT + key + "_" + dayKey(), text);
             putLong(ctx, KEY_PREFIX_RESULT_AT + key, System.currentTimeMillis());
             // 结果同时回传模块进程，首页「今日」才能显示出来。
-            HookLog.state(key, passedToday, idle, text, attemptsToday(ctx, key), dayKey());
+            // v4.30.0：广播只发「本次是否成功 + 当天是否成功过 + 原始 summary」，
+            // 前缀由接收端按 ok 拼一次。旧版这里发的是已经带 "OK "/"FAIL " 的 text，
+            // 接收端又拼一次，摘要里就出现了「OK OK 快路径命中」「FAIL FAIL …」。
+            HookLog.state(key, ok, idle, passedToday, summary,
+                    attemptsToday(ctx, key), dayKey());
         }
     }
 
@@ -1936,52 +1940,29 @@ final class TaskRunner {
      */
     private static String displayMark(Result one) {
         if (one.skip) {
-            return "–";
+            return StatusMark.NONE;
         }
-        if (!one.ok) {
-            return "✗";
+        String state = (one.ok ? "OK " : "FAIL ")
+                + (one.summary == null ? "" : one.summary);
+        String mark = StatusMark.of(state, 0, false);
+        // 文案没写明「无需操作」、但结果对象自己标了 idle 的，仍然画 ○。
+        if (StatusMark.DONE.equals(mark) && one.idle) {
+            return StatusMark.IDLE;
         }
-        if (one.idle) {
-            return "○";
-        }
-        String s = one.summary == null ? "" : one.summary;
-        // 抽奖真的抽到次数了，就不能因为「任务 0 个」把它标成「没做成」。
-        boolean hasDraw = s.contains("抽 ") && !s.contains("抽 0 次");
-        if (s.contains("还剩") || s.contains("没到账") || s.contains("未确认")
-                || (s.contains("完成 0 个任务") && !hasDraw)
-                || (s.contains("任务 0 个") && !hasDraw)
-                || s.contains("仍待做") || s.contains("没找到可做的按钮")) {
-            return "–";
-        }
-        if (s.contains("无需重复") || s.contains("今天已经做过")
-                || s.contains("已领完") || s.contains("没有抽奖次数")
-                || s.contains("没有拆礼盒次数")) {
-            return "○";
-        }
-        return "✓";
+        return mark;
     }
 
+    /**
+     * 文末「今日」行的标记。
+     *
+     * <p>v4.30.0：与文件头诊断摘要、一键汇总表共用 {@link StatusMark}。
+     * 旧版这里读 {@code task_idle_}，可那个标记只写在模块进程，目标进程读不到，
+     * 于是「今天已做完」的活动全被画成 ✓；而没跑过的活动又走
+     * {@code result != null ? "✗" : "○"} 的兜底，被画成 ○（无需操作）。
+     */
     private static String dayMark(Context ctx, String cmd) {
-        String result = resultToday(ctx, cmd);
-        int times = attemptsToday(ctx, cmd);
-        if (result != null && result.startsWith("OK")) {
-            // r16：r15 已经把 idle 单独存进 task_idle_，头部诊断摘要读它显示 ○；
-            // 但进度条和文件尾部「--- 今日 ---」走的还是这里，只要 OK 就画 ✓，
-            // 于是同一份日志出现两套口径。这里补上 idle 判定，三处统一。
-            return AppPrefs.getTaskIdle(ctx, cmd, dayKey()) ? "○" : "✓";
-        }
-        // v4.20.0-r34：当天成功过、后来手动重跑失败时，done 标记还在，
-        // 策略上也不再重跑 —— 这时按「今天已达成」画 ✓，
-        // 别让同一天同时出现「已完成」和「✗」两种说法。
-        if (isDoneToday(ctx, cmd)) {
-            return "✓";
-        }
-        // 以前是 times > 1 才显示次数，失败 1 次时显示成 ○（没跑过），
-        // 于是「跑过但失败」和「压根没跑」在界面上长得一样，排查时白绕。
-        if (times >= 1) {
-            return "✗" + times;
-        }
-        return result != null ? "✗" : "○";
+        return StatusMark.of(resultToday(ctx, cmd), attemptsToday(ctx, cmd),
+                isDoneToday(ctx, cmd));
     }
 
     /** 逐活动写出今天最近一次结果，配合 {@link #todayLine} 看，不用再翻几百行日志。 */
