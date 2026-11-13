@@ -320,18 +320,46 @@ final class SeedTasks {
                   var h=window.__cmccHdrs||{};
                   for(var k in h){ if(String(k).toLowerCase()!=='content-type') out[k]=h[k] }
                 }catch(e){}
+                // r25：页面存储里的 phone 优先补齐，不再依赖「页面发请求时顺手抓到」
+                if(!out['phone']){ var ph=phoneHeader(); if(ph) out['phone']=ph }
                 return out;
+              }
+              // r25：phone 头就在页面自己的存储里，不用等 XHR。
+              // 12:36 日志实证 localStorage.canvasworkbenchweb_auth.user_info.phone
+              // 是 36 位串，和 11:21 原始流里 phone 头的 len=36 完全对得上。
+              // 之前一直「还没抓到 phone 头」，是因为注入时页面早把请求发完了。
+              function storedAuth(){
+                var keys=['canvasworkbenchweb_auth'], stores=[];
+                try{ stores.push(window.localStorage) }catch(e){}
+                try{ stores.push(window.sessionStorage) }catch(e){}
+                for(var s=0;s<stores.length;s++){
+                  for(var k=0;k<keys.length;k++){
+                    try{
+                      var raw=stores[s].getItem(keys[k]);
+                      if(!raw) continue;
+                      var d=JSON.parse(raw);
+                      if(d&&d.user_info&&d.user_info.phone) return d;
+                    }catch(e){}
+                  }
+                }
+                return null;
+              }
+              function phoneHeader(){
+                var d=storedAuth();
+                try{
+                  var p=d&&d.user_info&&d.user_info.phone;
+                  if(p&&String(p).length>8) return String(p);
+                }catch(e){}
+                try{
+                  var h=window.__cmccHdrs||{};
+                  for(var k in h){ if(String(k).toLowerCase()==='phone'&&String(h[k]).length>8) return String(h[k]) }
+                }catch(e){}
+                return '';
               }
               // r23：11-13 原始流实证 —— coc3 业务接口的会话头只有 phone 一个
               //（36 位，Accept/Content-Type 之外再无 x-token/x-sign）。
               // 没抓到 phone 就直发，等于空手敲门，白白触发「连续 2 次被拒整体降级」。
-              function hasPhone(){
-                try{
-                  var h=window.__cmccHdrs||{};
-                  for(var k in h){ if(String(k).toLowerCase()==='phone') return String(h[k]).length>0 }
-                }catch(e){}
-                return false;
-              }
+              function hasPhone(){ return phoneHeader().length>0 }
               function timeout(p,ms){
                 return new Promise(function(res,rej){
                   var t=setTimeout(function(){ rej(new Error('req timeout')) },ms);
@@ -487,12 +515,21 @@ final class SeedTasks {
                 return {tasks:d,src:src};
               }
               async function list(){
+                // r25：有 phone 就直发优先 —— 页面 axios 这条路在 12:25 / 12:36
+                // 两轮都固定回 -102，先撞一次纯属浪费。
+                if(hasPhone()){
+                  var d0=await listOnce(true);
+                  if(d0.tasks){ line('清单: 直发取回（phone 头来自页面存储）'); return d0.tasks }
+                  listWhy.push(d0.err);
+                }
                 var a=await listOnce(false);
                 if(a.tasks){ if(a.src.indexOf('已解包')>=0) line('清单: '+a.src); return a.tasks }
                 listWhy.push(a.err);
-                var b=await listOnce(true);
-                if(b.tasks){ listWhy.push('清单改直发取回'); line('清单: 页面 axios 取不到，改直发取回'); return b.tasks }
-                if(b.err) listWhy.push(b.err);
+                if(!hasPhone()){
+                  var b=await listOnce(true);
+                  if(b.tasks){ listWhy.push('清单改直发取回'); line('清单: 页面 axios 取不到，改直发取回'); return b.tasks }
+                  if(b.err) listWhy.push(b.err);
+                }
                 return null;
               }
 

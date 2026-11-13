@@ -797,6 +797,10 @@ final class MiaoTask {
                   if(/已领取|已签到|已打卡|已完成|明天再来|已领/.test(t)) continue;
                   // 说明文字不是按钮：「每日可签到1次~」「签到奖励记录」这类点上去没反应。
                   if(/可签到|签到1次|每日|规则|说明|记录|剩余|我的阳光/.test(t)) continue;
+                  // r25：12:36 实测点「领取本月福袋」会跳到 zero（铂金/PLUS 大福袋）页，
+                  // 页面 JS 上下文被销毁，脚本永远等不到回报，最后报「页面脚本超时」。
+                  // 这类是跳转入口不是领取按钮，豆苗里不点。
+                  if(/福袋|本月|礼包|大礼|专题/.test(t)) continue;
                   var ok=false;
                   for(var j=0;j<words.length;j++){
                     if(t.indexOf(words[j])>=0){ ok=true; break }
@@ -877,11 +881,18 @@ final class MiaoTask {
                   for(var p=0;p<plan.length;p++){
                     for(var k=0;k<plan[p].n;k++){
                       netMark=NET.length;
+                      // r25：点完先看 URL 有没有变。12:36 点「领取本月福袋」后跳到
+                      // zero 页，后续 await 全部悬空，最后只能报「脚本超时」。
+                      var href0=location.href;
                       var got=hit(plan[p].w,1);
                       if(!got) break;
                       tryN++;
                       acts.push(got);
                       await wait(1400);
+                      if(location.href!==href0){
+                        line('  点击后页面已跳走（'+cut(location.href,80)+'），停止后续点击');
+                        break;
+                      }
                       closePop();
                       await wait(400);
                       if(NET.length>netMark){
