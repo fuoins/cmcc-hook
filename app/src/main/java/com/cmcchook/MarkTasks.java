@@ -43,6 +43,24 @@ final class MarkTasks {
     /** 功能体验区最多 9 个任务，留一点余量防页面重排。 */
     private static final int LIVE_TRIES = 14;
 
+    /**
+     * 上一轮接口侧统计出的「模块真能代做」的待办数，以及其中做不了的前几个名字。
+     *
+     * <p>v4.20.0-r30 起用它给 {@link SignTask} 判定结果：以前 SCRIPT 最后一行
+     * 无条件返回 ok，只要流程走完就报「签到任务完成」，待办还剩几个也看不出来。
+     * 任务串行执行，只有一条线程读写。
+     */
+    private static volatile int lastTodo = -1;
+    private static volatile String lastTodoNames = "";
+
+    static int lastTodo() {
+        return lastTodo;
+    }
+
+    static String lastTodoNames() {
+        return lastTodoNames;
+    }
+
     private MarkTasks() {
     }
 
@@ -55,13 +73,19 @@ final class MarkTasks {
         StringBuilder d = new StringBuilder();
         int total = 0, todo = 0, ext = 0, blocked = 0;
         int awarded = 0, second = 0;
+        StringBuilder todoNames = new StringBuilder();
+        StringBuilder blockedNames = new StringBuilder();
 
         JSONObject root = post(P_LIST, "{}", referer, d, "任务清单");
         if (root == null || !"SUCCESS".equals(root.optString("code"))) {
+            lastTodo = -1;
+            lastTodoNames = "";
             return "任务编排: 清单获取失败，本次不领奖也不统计\n" + d;
         }
         JSONArray tasks = data(root).optJSONArray("tasks");
         if (tasks == null) {
+            lastTodo = -1;
+            lastTodoNames = "";
             return "任务编排: 清单里没有 tasks\n" + d;
         }
         total = tasks.length();
@@ -74,6 +98,15 @@ final class MarkTasks {
             }
             String id = t.optString("taskId", "");
             if (id.isEmpty()) {
+                continue;
+            }
+            // 分享 / 邀好友 / 公众号这类服务端根本不给补：实测 5156「邀好友得补签卡」
+            // 连续两轮都是 FAILED 分享任务发奖失败，每轮白撞一次还占 200ms+。
+            // 直接归到「不代做」，不再发请求。
+            if (hardBlocked(name(t))) {
+                blocked++;
+                d.append("[补领跳过] ").append(name(t)).append('(').append(id)
+                        .append(") → 邀好友/分享类，服务端不补\n");
                 continue;
             }
             String r = award(id, P_AWARD, referer);
@@ -98,13 +131,19 @@ final class MarkTasks {
             }
             if (hardBlocked(name(t))) {
                 blocked++;
+                if (blockedNames.length() < 3) {
+                    blockedNames.append(blockedNames.length() == 0 ? "" : "、").append(name(t));
+                }
                 continue;
             }
             todo++;
+            if (todoNames.length() < 3) {
+                todoNames.append(todoNames.length() == 0 ? "" : "、").append(name(t));
+            }
         }
         if (todo > 0) {
             d.append("[待办] ").append(todo)
-                    .append(" 个留给真页「去完成」（本版不接口直发）\n");
+                    .append(" 个留给真页「去完成」（本版不接口直发）: ").append(todoNames).append('\n');
         }
 
         // 3) 重拉清单，领第二重礼（首礼领完后才解锁）。
@@ -133,7 +172,11 @@ final class MarkTasks {
         }
 
         String head = "任务编排 · 共" + total + " / 待办" + todo + " / 外部合作区跳过" + ext
-                + " / 不代做" + blocked + " / 补领" + awarded + " / 二礼" + second;
+                + " / 不代做" + blocked + " / 补领" + awarded + " / 二礼" + second
+                + (todo > 0 ? " / 待办名 " + todoNames : "");
+        // 交给 SignTask 判定「真做完」还是「还剩几个没做」，别再无条件报 OK。
+        lastTodo = todo;
+        lastTodoNames = (todo > 0 ? todoNames : blockedNames).toString();
         HookLog.log("TASK", "任务编排 · 补领与统计", head + "\n" + d);
         return head + "\n" + d;
     }
@@ -483,9 +526,17 @@ final class MarkTasks {
         return r.optString("code", "?") + " " + r.optString("msg", "");
     }
 
-    /** 真消费、邀好友、助力、公众号：这些不是模块能代做的，不猜、不试。 */
+    /**
+     * 真消费、邀好友、助力、公众号、外部 App：这些不是模块能代做的，不猜、不试。
+     *
+     * <p>v4.20.0-r30 补两条实测漏网：
+     * 「7日打卡 充值8折」要先真实充值才能打折，属真消费——注意只匹配「充值8折」，
+     * 不能宽到「充值」，否则会把「浏览充值先领券活动」(5423) 一起挡掉，那个是能做的；
+     * 「登录咪咕视频领好礼」要拉起外部 App 并登录，模块跳过去也拿不到完成。
+     */
     private static boolean hardBlocked(String name) {
-        String[] words = {"给自己充", "充10元", "充话费", "邀好友", "邀当日", "助力",
+        String[] words = {"给自己充", "充10元", "充话费", "充值8折", "咪咕视频",
+                "邀好友", "邀当日", "助力",
                 "公众号", "分享给", "补签卡", "受邀"};
         for (String w : words) {
             if (name.contains(w)) {
@@ -493,6 +544,26 @@ final class MarkTasks {
             }
         }
         return false;
+    }
+
+    /**
+     * 该任务是否属于「模块能代做、且还没做」的待办。
+     *
+     * <p>v4.20.0-r30 统一口径：快路径的 {@code fast:markTodo} 原来只跳过
+     * 「外部合作区」和「充10元」，剩下「7日打卡 充值8折」「登录咪咕视频领好礼」
+     * 永远算待办，于是每轮复查都返回 2、必然判「快路径未过」、回退真页；
+     * 真页又做不了这两个，最后照样报 OK —— 等于每轮白跑一整条真页链路。
+     * 现在两边共用这一个判据，快路径真的做完了就不会再回退。
+     */
+    static boolean isTodo(JSONObject t) {
+        if (t == null || t.optInt("status", -1) != 0) {
+            return false;
+        }
+        String cls = t.optString("taskClasifiName", "");
+        if (cls.contains("外部合作")) {
+            return false;
+        }
+        return !hardBlocked(name(t));
     }
 
     private static String name(JSONObject t) {

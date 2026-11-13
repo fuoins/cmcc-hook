@@ -136,10 +136,27 @@ final class SignTask {
         // 的浏览任务逐个点掉 —— 点「去完成」→ 跳落地页 → 停留 5 秒 → 回来复查。
         // 不做接口直发、不开离屏：用户实证这些任务服务端按真实落地页停留记账。
         int liveDone = MarkTasks.runLiveTasks(WebSession.current(), referer, detail);
+
+        // v4.20.0-r30：SCRIPT 最后一行是无条件 ok —— 只要流程走完就报「签到任务完成」，
+        // 待办还剩几个完全看不出来。实测 15:37 那轮接口侧待办 2 个、真页一个都没做上，
+        // 结果照样是 OK，跟豆苗 r22 的假 OK 是同一类。
+        // 现在接口侧统计的待办数与真页实际记上的数对不上时，如实降级并写明剩什么。
+        int todoLeft = MarkTasks.lastTodo();
+        String todoNames = MarkTasks.lastTodoNames();
+        String restNames = todoNames.isEmpty() ? "" : "（" + todoNames + "）";
         if (liveDone <= 0) {
+            if (base.ok && !base.idle && todoLeft > 0) {
+                // 一个都没做上：不报 OK，报 idle，别让人以为今天已经干完了。
+                String text = "签到完成 · 还剩 " + todoLeft + " 个未完成"
+                        + restNames + "，真页没做上";
+                return TaskRunner.Result.idle(text, detail.toString(), text);
+            }
             return base;
         }
         String summary = base.summary + " · 功能体验区 " + liveDone + " 个";
+        if (todoLeft > liveDone) {
+            summary += "，还剩 " + (todoLeft - liveDone) + " 个未完成" + restNames;
+        }
         String body = detail.toString();
         if (base.ok && !base.idle) {
             return TaskRunner.Result.ok(summary, body, summary);

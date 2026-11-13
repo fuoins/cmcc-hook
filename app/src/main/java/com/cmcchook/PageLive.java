@@ -26,21 +26,32 @@ final class PageLive {
         return value == null || value.isEmpty() ? "现场无响应" : value;
     }
 
-    /** 同步返回 JSON：域、readyState、标题、Vue、正文长度、任务卡片数。 */
+    /**
+     * 同步返回 JSON：域、readyState、标题、Vue、正文长度、任务按钮数。
+     *
+     * <p>v4.20.0-r30：原来的 {@code .task-card,.task-group} 是猜的 class 名，
+     * 这个页面是 uni-app 渲染、class 带随机后缀，实测 42KB HTML 却返回
+     * {@code cards:0 / go:0}，真页据此判「没有待做」，剩下两个待办从没被点过。
+     * 改成按叶子文本数按钮，不依赖任何 class 名。
+     */
     private static final String JS_SCAN = String.join("",
             "(function(){try{",
-            "var cs=document.querySelectorAll('.task-card,.task-group');",
-            "var go=0,award=0,done=0;",
-            "for(var i=0;i<cs.length;i++){",
-            "var t=(cs[i].innerText||'').replace(/\\s+/g,' ');",
-            "if(t.indexOf('去完成')>=0)go++;",
-            "if(t.indexOf('领奖励')>=0)award++;",
-            "if(t.indexOf('已完成')>=0)done++;}",
+            "function N(el){try{return (el.innerText||'').replace(/\\s+/g,'')}catch(e){return ''}}",
+            "function leafCount(w){",
+            "var n=0,all=document.querySelectorAll('*');",
+            "for(var i=0;i<all.length;i++){",
+            "var el=all[i];",
+            "if(N(el)!==w)continue;",
+            "var dup=false;",
+            "for(var j=0;j<el.children.length;j++){if(N(el.children[j])===w){dup=true;break}}",
+            "if(!dup)n++;}",
+            "return n;}",
+            "var go=leafCount('去完成'),award=leafCount('领奖励'),done=leafCount('已完成');",
             "return JSON.stringify({",
             "url:location.href,hash:location.hash,title:document.title||'',",
             "ready:document.readyState,",
             "html:document.body?document.body.innerHTML.length:0,",
-            "cards:cs.length,go:go,award:award,done:done,",
+            "cards:go+award+done,go:go,award:award,done:done,",
             "txt:(document.body?document.body.innerText:'').replace(/\\s+/g,' ').slice(0,90)",
             "});}catch(e){return JSON.stringify({err:String(e)})}})()");
 }

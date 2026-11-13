@@ -67,16 +67,12 @@ final class FastScripts {
                 }
                 int todo = 0;
                 for (int i = 0; i < tasks.length(); i++) {
-                    JSONObject t = tasks.optJSONObject(i);
-                    if (t == null || t.optInt("status", -1) != 0) {
-                        continue;
+                    // v4.20.0-r30：口径统一到 MarkTasks.isTodo。
+                    // 这里原来只判「外部合作区 / 充10元」，把「充值8折」「咪咕视频」
+                    // 这类做不了的也算进待办，导致复查永远不为 0、每轮都白回退真页。
+                    if (MarkTasks.isTodo(tasks.optJSONObject(i))) {
+                        todo++;
                     }
-                    String cls = t.optString("taskClasifiName", "");
-                    String nm = t.optString("taskName", "");
-                    if (cls.contains("外部合作") || nm.contains("充10元")) {
-                        continue;
-                    }
-                    todo++;
                 }
                 return String.valueOf(todo);
             } catch (Throwable e) {
