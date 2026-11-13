@@ -327,7 +327,7 @@ public final class LogReceiver extends BroadcastReceiver {
         boolean on;
         try {
             on = AppPrefs.settings(context)
-                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, true);
         } catch (Throwable e) {
             on = false;
         }

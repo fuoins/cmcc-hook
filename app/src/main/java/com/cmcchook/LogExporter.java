@@ -212,7 +212,7 @@ final class LogExporter {
                 sb.append("常驻采集: ").append(raw)
                         .append(" 条原始请求已落盘（导出「采集报告」看 byAct 与 scriptDraft）\n");
             } else if (AppPrefs.settings(context)
-                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, false)) {
+                    .getBoolean(AppPrefs.KEY_RAW_CAPTURE, true)) {
                 sb.append("常驻采集: 开关已开但 0 条 —— 目标进程可能还没重启，"
                         + "或这段时间内没有任何请求\n");
             }

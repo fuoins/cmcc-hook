@@ -238,7 +238,7 @@ public final class MainActivity extends AppCompatActivity {
     private boolean loading;
     private int generation;
     private boolean pendingExport;
-    private int exportMode = LogExporter.MODE_BRIEF;
+    private int exportMode = LogExporter.MODE_FULL;
 
     private final Runnable statusTick = new Runnable() {
         @Override
@@ -419,7 +419,11 @@ public final class MainActivity extends AppCompatActivity {
         // 流量子页用「一键查询」、优惠券子页用「一键扫描」，各管各的，合并按钮反而绕。
         selectFlowSub(true); // 默认落在流量子页
 
-        bindSwitch(R.id.switchApiOnly, AppPrefs.KEY_API_ONLY);
+        // r39：三个默认值对老用户也生效 —— prefs 里已存的旧值会盖住新 default，
+        // 必须在读开关之前显式迁移一次（只写一次，之后用户自己改就保持）。
+        AppPrefs.migrateR39Defaults(this);
+        // r39：「只抓业务接口」默认关，埋点/广告/静态资源也照常记，抓包更全。
+        bindSwitch(R.id.switchApiOnly, AppPrefs.KEY_API_ONLY, false);
         bindSwitch(R.id.switchH5, AppPrefs.KEY_CAPTURE_H5);
         bindSwitch(R.id.switchNative, AppPrefs.KEY_CAPTURE_NATIVE);
         bindSwitch(R.id.switchUi, AppPrefs.KEY_CAPTURE_UI);
@@ -431,9 +435,10 @@ public final class MainActivity extends AppCompatActivity {
         bindSwitch(R.id.switchAdBlock, AppPrefs.KEY_AD_BLOCK);
         bindSwitch(R.id.switchAutoSign, AppPrefs.KEY_AUTO_SIGN);
         bindSwitch(R.id.switchKeepAlive, AppPrefs.KEY_KEEPALIVE);
-        // r8：快路径默认开（失败自动兜底），常驻采集默认关（含敏感头，按需打开）。
+        // r39：快路径默认开（失败自动兜底）；常驻采集默认开，手动做一遍活动
+        // 就能录到全量原始请求，不用每次先去功能页拨开关。
         bindSwitch(R.id.switchFastPath, AppPrefs.KEY_FAST_PATH, true);
-        bindSwitch(R.id.switchRawCapture, AppPrefs.KEY_RAW_CAPTURE, false);
+        bindSwitch(R.id.switchRawCapture, AppPrefs.KEY_RAW_CAPTURE, true);
         refreshCaptureState();
         View btnCaptureExport = findViewById(R.id.btnCaptureExport);
         if (btnCaptureExport != null) {
@@ -471,8 +476,8 @@ public final class MainActivity extends AppCompatActivity {
                     .edit().remove("login_lost_day").apply();
         } catch (Throwable ignored) {
         }
-        // 导出范围沿用上次选择，省得每次都要点两下。
-        exportMode = AppPrefs.getExportMode(this);
+        // r39：日志导出只保留「完整」，不再弹范围选择框，也不再沿用上次选择。
+        exportMode = LogExporter.MODE_FULL;
 
         setupLogPage();
         LogReceiver.setCouponWatcher(this::onCouponEvent);
@@ -1673,7 +1678,7 @@ public final class MainActivity extends AppCompatActivity {
         if (tv == null) {
             return;
         }
-        boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+        boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, true);
         int n = RawCaptureStore.count(this);
         long at = RawCaptureStore.lastAt(this);
         String when = at > 0
@@ -1686,7 +1691,7 @@ public final class MainActivity extends AppCompatActivity {
         refreshCaptureState();
         int n = RawCaptureStore.count(this);
         if (n == 0) {
-            boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, false);
+            boolean on = AppPrefs.settings(this).getBoolean(AppPrefs.KEY_RAW_CAPTURE, true);
             Toast.makeText(this, on ? R.string.capture_no_data_on : R.string.capture_no_data_off,
                     Toast.LENGTH_LONG).show();
             return;
@@ -3114,21 +3119,10 @@ public final class MainActivity extends AppCompatActivity {
             Toast.makeText(this, R.string.export_empty, Toast.LENGTH_SHORT).show();
             return;
         }
-        final String[] items = {
-                getString(R.string.export_mode_brief),
-                getString(R.string.export_mode_task),
-                getString(R.string.export_mode_full),
-        };
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.export_choose_title)
-                .setSingleChoiceItems(items, exportMode, (dialog, which) -> {
-                    exportMode = which;
-                    AppPrefs.setExportMode(this, which);
-                    dialog.dismiss();
-                    ensurePermissionThenExport();
-                })
-                .setNegativeButton(R.string.cancel, null)
-                .show();
+        // r39：日志导出只保留「完整」一种。去掉原来的「导出哪些内容」三选一弹框，
+        // 点导出直接产出完整日志（含请求/响应与 Cookie），少一步选择、也不会导错精简版。
+        exportMode = LogExporter.MODE_FULL;
+        ensurePermissionThenExport();
     }
 
     private void ensurePermissionThenExport() {

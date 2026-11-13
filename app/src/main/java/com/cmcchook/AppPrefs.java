@@ -35,7 +35,7 @@ final class AppPrefs {
     static final String KEY_KEEP_GAP = "keep_gap";
     /** r8：快路径（页面上下文纯请求编排）总开关，默认开；失败自动回退旧链路。 */
     static final String KEY_FAST_PATH = "fast_path";
-    /** r8：常驻采集旁路开关，默认关；用户手动做一遍活动时才打开录全量请求。 */
+    /** r39：常驻采集旁路开关，默认开；手动做一遍活动就录到全量原始请求。 */
     static final String KEY_RAW_CAPTURE = "raw_capture";
 
     private AppPrefs() {
@@ -80,6 +80,39 @@ final class AppPrefs {
 
     private static String nullToEmpty(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * r39 一次性迁移：把「只抓业务接口」「常驻采集」「日志导出范围」三个默认值
+     * 对老用户显式落一次。
+     *
+     * <p>只改代码里的 default 对已装版本无效 —— settings.xml 里早就存了
+     * {@code api_only=true} / {@code raw_capture=false}，{@code getBoolean(key, def)}
+     * 会优先返回已存值。覆盖安装后必须显式改写一次，用户之后自己拨开关就保持。
+     *
+     * <p>只在模块进程执行，用独立标记保证只跑一次，不碰其它开关。
+     */
+    static void migrateR39Defaults(Context context) {
+        if (context == null) {
+            return;
+        }
+        try {
+            if (!HookLog.MODULE_PACKAGE.equals(context.getPackageName())) {
+                return;
+            }
+            SharedPreferences p = settings(context);
+            if (p.getBoolean("defaults_migrated_r39", false)) {
+                return;
+            }
+            p.edit()
+                    .putBoolean(KEY_API_ONLY, false)
+                    .putBoolean(KEY_RAW_CAPTURE, true)
+                    .putBoolean("defaults_migrated_r39", true)
+                    .commit();
+            status(context).edit().putInt("export_mode", 2).commit();
+            worldReadable(context);
+        } catch (Throwable ignored) {
+        }
     }
 
     static boolean getBool(Context context, String key) {
@@ -223,7 +256,7 @@ final class AppPrefs {
 
     /** 日志导出范围（0 精简 / 1 只看任务 / 2 完整），记住上次选择。 */
     static int getExportMode(Context context) {
-        return status(context).getInt("export_mode", 0);
+        return status(context).getInt("export_mode", 2);
     }
 
     static void setExportMode(Context context, int mode) {

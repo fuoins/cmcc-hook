@@ -14,14 +14,14 @@ final class HookPrefs {
     private static volatile boolean secondary = false;
     private static volatile boolean h5Noise = true;
     private static volatile boolean verboseRaw = true;
-    private static volatile boolean apiOnly = true;
+    private static volatile boolean apiOnly = false;
     private static volatile boolean autoSign = true;
     private static volatile boolean pageSign = true;
     private static volatile boolean pageEgg = true;
     private static volatile boolean pageGoose = true;
     private static volatile boolean autoTrigger;
     /** r10：常驻采集旁路开关。跟着 reload 的 1.5s 缓存走，别每请求读一次文件。 */
-    private static volatile boolean rawCapture;
+    private static volatile boolean rawCapture = true;
 
     private HookPrefs() {
     }
@@ -127,10 +127,10 @@ final class HookPrefs {
     /**
      * r12：采集开关的「三态」读法，返回 null 表示**根本读不到**模块 prefs。
      *
-     * <p>为什么需要三态：{@code raw_capture} 默认是 false，而其余开关默认 true。
-     * 一旦 XSharedPreferences 在目标进程读不到文件（Android 15 上文件权限 /
-     * SELinux 都可能挡），默认开的钩子照常工作，把故障完全掩盖；只有默认关的
-     * 采集会永远返回 false，表现就是「开了也一条都录不到」，且没有任何报错。
+     * <p>为什么需要三态：r39 起 {@code raw_capture} 也默认开。一旦
+     * XSharedPreferences 在目标进程读不到文件（Android 15 上文件权限 /
+     * SELinux 都可能挡），靠静态默认值兜底虽然能跑，但和模块进程的实际开关
+     * 可能不一致，故障会被完全掩盖且查不出来。
      *
      * <p>所以这里显式区分：能读到 → 按值；读不到 → null，由调用方按「照发，
      * 交给模块进程判定」处理。
@@ -236,13 +236,13 @@ final class HookPrefs {
             secondary = p.getBoolean("hook_secondary", false);
             h5Noise = p.getBoolean("filter_h5_noise", true);
             verboseRaw = p.getBoolean("verbose_raw", true);
-            apiOnly = p.getBoolean("api_only", true);
+            apiOnly = p.getBoolean("api_only", false);
             autoSign = p.getBoolean("auto_sign", true);
             pageSign = p.getBoolean("auto_page_sign", true);
             pageEgg = p.getBoolean("auto_page_egg", true);
             pageGoose = p.getBoolean("auto_page_goose", true);
             autoTrigger = p.getBoolean("auto_trigger", false);
-            rawCapture = p.getBoolean("raw_capture", false);
+            rawCapture = p.getBoolean("raw_capture", true);
         } catch (Throwable e) {
             HookLog.logcat("reload prefs failed: " + e);
         }
