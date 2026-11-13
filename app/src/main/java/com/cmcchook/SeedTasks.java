@@ -268,10 +268,21 @@ final class SeedTasks {
 
               // 页面 XHR 上抓风控头，同时记下「实际发出去的 body」
               function hookXhr(){
+                // r24：记下真实 URL 与全部请求头名。12:25 那轮只报「-102 参数错误」，
+                // 没有 URL 也没法判断是不是打错了实例/拼错了 baseURL。
+                try{
+                  var op=XMLHttpRequest.prototype.open;
+                  XMLHttpRequest.prototype.open=function(m,u){
+                    try{ window.__cmccLastUrl=(typeof u==='string')?u:String(u) }catch(e){}
+                    return op.apply(this,arguments);
+                  };
+                }catch(e){}
                 try{
                   var sr=XMLHttpRequest.prototype.setRequestHeader;
                   XMLHttpRequest.prototype.setRequestHeader=function(k,v){
                     try{
+                      if(!window.__cmccHdrKeys) window.__cmccHdrKeys={};
+                      window.__cmccHdrKeys[k]=String(v).length;
                       var lk=String(k).toLowerCase();
                       // 只留会话级头。x-sign / x-time / x-nonce / wasmParams 是
                       // 每次请求现算的，拿上一条的会直接验签失败，宁可不要。
@@ -290,6 +301,18 @@ final class SeedTasks {
                     return ss.apply(this,arguments);
                   };
                 }catch(e){}
+              }
+              function hdrKeys(){
+                try{
+                  var h=window.__cmccHdrKeys||{}, out=[];
+                  for(var k in h) out.push(k+'('+h[k]+')');
+                  return out.join(',');
+                }catch(e){ return '' }
+              }
+              function diag(tag){
+                line('    ['+tag+'] url='+cut(window.__cmccLastUrl||'?',90)
+                     +' body='+cut(window.__cmccLastBody||'?',90)
+                     +' hdr='+cut(hdrKeys()||'?',90));
               }
               function hdrs(){
                 var out={'Content-Type':'application/json;charset=utf-8'};
@@ -362,9 +385,12 @@ final class SeedTasks {
                 }catch(e){}
               }
 
-              // 页面 axios：风控头齐，但 body 可能被拦截器改写
+              // 页面 axios：风控头齐，但 body 可能被拦截器改写。
+              // r24：遍历全部实例，取第一个业务码通过的。r23 只要第一个实例不抛异常
+              // 就直接 return（-102 也算「正常响应」），后面两个从来没被试过；
+              // 12:25 实测第一个返回 -102「参数错误」，很可能不是页面主实例。
               async function postAxios(path,body){
-                var err='';
+                var err='', last=null, tried=[];
                 for(var i=0;i<AX.length;i++){
                   try{
                     window.__cmccLastBody='';
@@ -375,14 +401,20 @@ final class SeedTasks {
                     //（成功时是 null）当成整个响应，于是一路判成业务码 -999。
                     var rawAxios=!!(ret&&ret.data!==undefined&&
                         (ret.status!==undefined||ret.config!==undefined||ret.headers!==undefined));
-                    return {ok:true,via:'axios',
-                            data:rawAxios?ret.data:ret,
-                            sent:window.__cmccLastBody||''};
-                  }catch(e){ err=String(e) }
+                    var data=rawAxios?ret.data:ret;
+                    var o=parsed(data), c=codeOf(o);
+                    tried.push('#'+i+':'+c);
+                    var one={ok:true,via:'axios',data:data,sent:window.__cmccLastBody||'',
+                             tries:tried.join(' '),err:''};
+                    if(okCode(o)) return one;
+                    last=one;
+                  }catch(e){ err=String(e); tried.push('#'+i+':异常') }
                 }
+                if(last) return last;
                 try{
                   var r=await fetchJson(path,body);
-                  return {ok:r.ok,via:'fetch',data:r.data,sent:'',err:(err?err+' / ':'')+(r.err||'')};
+                  return {ok:r.ok,via:'fetch',data:r.data,sent:'',tries:tried.join(' '),
+                          err:(err?err+' / ':'')+(r.err||'')};
                 }catch(e){ return {ok:false,via:'fetch',err:(err?err+' / ':'')+String(e)} }
               }
               function obj(r){ var d=(r&&r.data!==undefined)?r.data:r; return parsed(d) }
@@ -432,19 +464,26 @@ final class SeedTasks {
                 }else{
                   r=await postAxios(path,body); src=(r.via==='fetch')?'页面fetch':'页面axios';
                 }
-                if(!r.ok) return {err:src+' 调用异常: '+short(r.err||'')};
-                if(r.data===null||r.data===undefined||r.data==='')
-                  return {err:src+' 返回空（响应体没有内容）'};
+                if(!r.ok){ diag(src); return {err:src+' 调用异常: '+short(r.err||'')}; }
+                if(r.data===null||r.data===undefined||r.data===''){
+                  diag(src); return {err:src+' 返回空（响应体没有内容）'};
+                }
                 var o=parsed(r.data);
-                if(o===null) return {err:src+' 返回不是 JSON: '+short(r.data)};
+                if(o===null){ diag(src); return {err:src+' 返回不是 JSON: '+short(r.data)}; }
                 // 有的 axios 实例响应拦截器已经解过包，ret 直接就是数组
                 if(o instanceof Array) return {tasks:o,src:src+'（已解包）'};
                 var c=codeOf(o);
-                if(!okCode(o)) return {err:src+' 业务码 '+c+': '+short(r.data)};
+                if(!okCode(o)){
+                  diag(src);
+                  return {err:src+' 业务码 '+c+' ['+short(r.tries||'')+']: '+short(r.data)};
+                }
                 var d=o.data;
                 // 清单必须是数组；拿到 null 说明服务端这次没给清单，按「通道不可用」
                 // 如实回报，由 Java 侧回退 DOM，绝不把空值当成「任务已全部完成」。
-                if(!d||typeof d.length!=='number') return {err:src+' 业务码 0 但 data 不是数组: '+short(r.data)};
+                if(!d||typeof d.length!=='number'){
+                  diag(src);
+                  return {err:src+' 业务码 0 但 data 不是数组: '+short(r.data)};
+                }
                 return {tasks:d,src:src};
               }
               async function list(){

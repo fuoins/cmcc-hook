@@ -755,6 +755,26 @@ final class MiaoTask {
                 return null;
               }
 
+              // r24：12:25 实测「领取本月福袋」点到的是 <DIV task-item> 容器，
+              // 页面一条请求都没发 —— 监听不在容器上，真正可点的是卡片里的
+              // 「去领取」小按钮。先在卡片内找它，找不到再退回 targetOf。
+              function nearButton(e){
+                var scope=e;
+                for(var d=0; d<3 && scope; d++){
+                  var bs=scope.querySelectorAll('button,a,span,div,i,p');
+                  var best=null;
+                  for(var i=0;i<bs.length;i++){
+                    var b=bs[i];
+                    if(!visible(b)) continue;
+                    var t=(b.innerText||'').replace(/\\s+/g,' ').trim();
+                    if(!/^(去领取|立即领取|领取|去完成|去浏览|去看看|去签到)$/.test(t)) continue;
+                    if(!best||best.contains(b)) best=b;
+                  }
+                  if(best) return best;
+                  scope=scope.parentElement;
+                }
+                return null;
+              }
               // 按文案找页面上的真实按钮。只点一次，不点「已领取/已签到」。
               function hit(words, max){
                 // v3.93：签到词优先走 sign-box 精确目标（22:08 用户手动实证有效）。
@@ -782,7 +802,7 @@ final class MiaoTask {
                     if(t.indexOf(words[j])>=0){ ok=true; break }
                   }
                   if(!ok) continue;
-                  var el=targetOf(e);
+                  var el=nearButton(e)||targetOf(e);
                   try{
                     fire(el);
                     n++;
