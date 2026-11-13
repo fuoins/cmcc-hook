@@ -12,6 +12,8 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_LOG = "com.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.cmcchook.action.HEARTBEAT";
     static final String ACTION_STATE = "com.cmcchook.action.STATE";
+    /** v4.32.0：目标进程同步脚本凭证，模块进程落盘供「提取」按钮复制。 */
+    static final String ACTION_CRED = HookLog.ACTION_CRED;
     /** 目标进程盘点完福利中心，把新入口列表发回来。 */
     static final String ACTION_WELFARE = "com.cmcchook.action.WELFARE";
     /** 目标进程探路完，把整份报告发回来。 */
@@ -89,6 +91,15 @@ public final class LogReceiver extends BroadcastReceiver {
             handleLog(context, intent);
         } else if (ACTION_STATE.equals(action)) {
             handleState(context, intent);
+        } else if (ACTION_CRED.equals(action)) {
+            // v4.32.0：目标进程把 SsoLogin / CookieStore 的静态值推过来，
+            // 这里在模块进程落盘。心跳每 45 秒推一次，所以值会自己更新。
+            AppPrefs.setCredentials(context,
+                    intent.getStringExtra("app_token"),
+                    intent.getStringExtra("phone"),
+                    intent.getStringExtra("province_code"),
+                    intent.getStringExtra("city_code"),
+                    intent.getStringExtra("cookie"));
         } else if (ACTION_WELFARE.equals(action)) {
             handleWelfare(context, intent);
         } else if (ACTION_PROBE.equals(action)) {

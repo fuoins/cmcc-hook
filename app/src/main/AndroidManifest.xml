@@ -86,6 +86,8 @@
                 <action android:name="com.cmcchook.action.LOG" />
                 <action android:name="com.cmcchook.action.HEARTBEAT" />
                 <action android:name="com.cmcchook.action.STATE" />
+                <!-- v4.32.0 目标进程同步脚本凭证 -->
+                <action android:name="com.cmcchook.action.CRED" />
                 <action android:name="com.cmcchook.action.WELFARE" />
                 <action android:name="com.cmcchook.action.PROBE" />
                 <action android:name="com.cmcchook.action.PROBE_ACT" />

@@ -297,6 +297,14 @@ public final class MainActivity extends AppCompatActivity {
         navLog = findViewById(R.id.navLog);
         navCoupon = findViewById(R.id.navCoupon);
 
+        // v4.32.0：顶部框 5 个凭证「提取」按钮 —— 点一下复制该字段当前值。
+        // 值由目标进程通过 ACTION_CRED 广播同步，冷启动后最多 45 秒到位。
+        bindCredButton(R.id.btnCredAppToken, "app_token");
+        bindCredButton(R.id.btnCredPhone, "phone");
+        bindCredButton(R.id.btnCredProvince, "province_code");
+        bindCredButton(R.id.btnCredCity, "city_code");
+        bindCredButton(R.id.btnCredCookie, "cookie");
+
         homeDot = findViewById(R.id.homeDot);
         homeStatus = findViewById(R.id.homeStatus);
         homeHeartbeat = findViewById(R.id.homeHeartbeat);
@@ -368,12 +376,8 @@ public final class MainActivity extends AppCompatActivity {
         btnCouponUse.setOnClickListener(v -> couponUse());
         // v4.0.8：券页只留「一键扫描」，删掉 v4.0.7 的「打开卡券中心」前置入口。
         // 扫描改为纯离屏，AppBridges 已把真页的私有 JS 桥装回离屏页。
-        // v4.0.4：小米 / HyperOS 的「验证码安全保护」是系统开关，模块不能代改，
-        // 只能把自检步骤摆到券页。点入口弹说明，可一键把说明写进日志页。
-        TextView smsHelp = findViewById(R.id.smsHelpEntry);
-        if (smsHelp != null) {
-            smsHelp.setOnClickListener(v -> showSmsHelp());
-        }
+        // v4.32.0：删掉「小米 / HyperOS 读不到验证码？点这里看自检步骤」入口，
+        // 换成券页里一条静态说明（LSPosed 推荐应用全点开，验证码自动填写）。
         cbCouponSort = findViewById(R.id.cbCouponSort);
         cbCouponHide = findViewById(R.id.cbCouponHide);
         if (cbCouponSort != null) {
@@ -1354,6 +1358,33 @@ public final class MainActivity extends AppCompatActivity {
         }, 4_000L);
     }
 
+    /** v4.32.0：绑定一个「提取」按钮，点击把对应凭证复制到剪贴板。 */
+    private void bindCredButton(int viewId, String key) {
+        View button = findViewById(viewId);
+        if (button == null) {
+            return;
+        }
+        button.setOnClickListener(v -> copyCredential(key));
+    }
+
+    private void copyCredential(String key) {
+        String value = AppPrefs.credential(this, key);
+        if (value == null || value.isEmpty()) {
+            Toast.makeText(this, getString(R.string.cred_empty, key), Toast.LENGTH_LONG).show();
+            return;
+        }
+        try {
+            ClipboardManager manager = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+            if (manager == null) {
+                return;
+            }
+            manager.setPrimaryClip(ClipData.newPlainText(key, value));
+            Toast.makeText(this, getString(R.string.cred_copied, key, value.length()),
+                    Toast.LENGTH_SHORT).show();
+        } catch (Throwable ignored) {
+        }
+    }
+
     private void copyLink(String url) {
         try {
             ClipboardManager manager = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
@@ -1920,8 +1951,9 @@ public final class MainActivity extends AppCompatActivity {
                     : getString(R.string.coupon_at, time));
             couponAt.setVisibility(View.VISIBLE);
         } else {
-            couponAt.setText(R.string.coupon_never);
-            couponAt.setVisibility(View.VISIBLE);
+            // v4.32.0：删掉「还没刷新，点刷新读取卡券页」这句提示。
+            // couponAt 改由扫描时刻专用，没扫过就整行不显示。
+            couponAt.setVisibility(View.GONE);
         }
         refreshCouponBar();
     }
@@ -2417,29 +2449,14 @@ public final class MainActivity extends AppCompatActivity {
 
     private final Runnable showCodeDialogRunnable = this::showCodeDialog;
 
-    // ---------------------------------------------------- v4.0.4 小米短信自检引导
+    // ---------------------------------------------------- 短信验证码诊断
 
     /**
-     * 券页「小米读不到验证码」入口。
+     * 把短信自检说明写进模块日志页（导出完整日志后可逐条核对）。
      *
-     * <p>小米的「验证码安全保护」是系统级开关，模块不代改、也不该代改；
-     * 把 XposedSmsCode 的原理和用户在系统上必须做的几步摆清楚，
-     * 并提供「写入诊断日志」，让导出的完整日志能自证哪一步没落地。
+     * <p>v4.32.0：券页那个「小米 / HyperOS 读不到验证码？点这里看自检步骤」
+     * 入口已按用户要求删除，这里只保留「自动读码超时」时的兜底诊断。
      */
-    private void showSmsHelp() {
-        new MaterialAlertDialogBuilder(this)
-                .setTitle(R.string.sms_help_title)
-                .setMessage(R.string.sms_help_message)
-                .setNegativeButton(R.string.sms_help_close, null)
-                .setPositiveButton(R.string.sms_help_log, (d, w) -> {
-                    logSmsDiag(getString(R.string.sms_help_title),
-                            getString(R.string.sms_help_message));
-                    Toast.makeText(this, R.string.sms_help_logged, Toast.LENGTH_SHORT).show();
-                })
-                .show();
-    }
-
-    /** 把短信自检说明写进模块日志页（导出完整日志后可逐条核对）。 */
     private void logSmsDiag(String summary, String detail) {
         try {
             LogStore.append(this, new LogEntry(System.currentTimeMillis(),

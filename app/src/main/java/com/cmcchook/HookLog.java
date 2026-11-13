@@ -46,6 +46,10 @@ final class HookLog {
     static final String ACTION_LOG = "com.cmcchook.action.LOG";
     static final String ACTION_HEARTBEAT = "com.cmcchook.action.HEARTBEAT";
     static final String ACTION_STATE = "com.cmcchook.action.STATE";
+    /** v4.32.0：目标进程把脚本凭证（app_token/phone/province_code/city_code/cookie）
+     *  推给模块界面，供顶部「提取」按钮复制。目标进程与模块进程内存不共享，
+     *  SsoLogin / CookieStore 的静态值只能这样带过去。 */
+    static final String ACTION_CRED = "com.cmcchook.action.CRED";
     /** v4.2.0：刷新 / 抢券的实时步骤，界面上滚动显示。 */
     static final String ACTION_PROGRESS = "com.cmcchook.action.PROGRESS";
     private static final String RECEIVER = "com.cmcchook.LogReceiver";
@@ -252,8 +256,47 @@ final class HookLog {
             intent.putExtra("uid", AccountScope.uid());
             intent.putExtra("phone", SsoLogin.maskedPhone());
             ctx.sendBroadcast(intent);
+            // v4.32.0：心跳是目标进程最稳的节拍，顺带把 5 个凭证推给界面。
+            // Cookie 会随会话刷新，每次心跳重取一次，界面点「提取」拿到的是最新值。
+            pushCredentials(ctx);
         } catch (Throwable e) {
             logcat("heartbeat failed: " + e);
+        }
+    }
+
+    /**
+     * v4.32.0：把脚本要用的 5 个凭证同步到模块进程。
+     *
+     * <ul>
+     *   <li>{@code app_token} —— {@code appTokenLogin} 请求体的 token 字段，
+     *       即 getUserInfo 回包那串会话串（{@code JSESSIONID=…; UID=…; ticketID=…}）；</li>
+     *   <li>{@code phone} —— 本人明文号码；</li>
+     *   <li>{@code province_code} / {@code city_code} —— getUserInfo 的真实值；</li>
+     *   <li>{@code cookie} —— wx.10086.cn 请求的整条 Cookie 请求头
+     *       （含 cmccssotoken / QWHD_SESSION_TOKEN / HLWHD_SESSION_TOKEN）。</li>
+     * </ul>
+     *
+     * <p>只在目标进程调用：模块进程里 SsoLogin / CookieStore 的静态字段是空的，
+     * 发过去只会把界面已存的值覆盖成空串。
+     */
+    static void pushCredentials(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(ACTION_CRED);
+            intent.setComponent(new ComponentName(MODULE_PACKAGE, RECEIVER));
+            intent.setPackage(MODULE_PACKAGE);
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                    | Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.putExtra("app_token", SsoLogin.appToken());
+            intent.putExtra("phone", SsoLogin.plainPhone());
+            intent.putExtra("province_code", SsoLogin.provinceCode());
+            intent.putExtra("city_code", SsoLogin.cityCode());
+            intent.putExtra("cookie", CookieStore.header("https://wx.10086.cn/qwhdhub/"));
+            ctx.sendBroadcast(intent);
+        } catch (Throwable e) {
+            logcat("credentials broadcast failed: " + e);
         }
     }
 

@@ -245,6 +245,21 @@ final class SsoLogin {
         return city;
     }
 
+    /**
+     * v4.32.0：脚本凭证用 —— {@code appTokenLogin} 请求体里的 {@code token} 字段，
+     * 也就是 {@code getUserInfo} 回包那串会话串
+     * （{@code JSESSIONID=…; UID=…; ticketID=…}）。不是 URL 上的 {@code QWHDSSOD}、
+     * 也不是 {@code QWHDSSOJWT}。
+     */
+    static String appToken() {
+        return token;
+    }
+
+    /** v4.32.0：脚本凭证用 —— 本人明文手机号（{@link #maskedPhone()} 是掩码版）。 */
+    static String plainPhone() {
+        return phone;
+    }
+
     /** App 版本号，请求体里的 version 字段用它。 */
     static String appVersion() {
         return version;
@@ -527,6 +542,8 @@ final class SsoLogin {
             version = pick(obj.optString("version", ""), APP_VERSION);
             infoAt = System.currentTimeMillis();
             HookLog.logcat("sso: user info cached from bridge callback");
+            // v4.32.0：登录信息刚到手就推一次，界面「提取」按钮不用干等下一次心跳。
+            HookLog.pushCredentials(HookLog.context());
         } catch (Throwable ignored) {
         }
     }
@@ -775,6 +792,8 @@ final class SsoLogin {
             detail.append("用户信息: ").append(maskPhone(phone))
                     .append(" 省 ").append(province)
                     .append(" 市 ").append(city).append('\n');
+            // v4.32.0：桥回调拿到的登录信息同样立即推给界面。
+            HookLog.pushCredentials(HookLog.context());
             return true;
         } catch (Throwable e) {
             lastError = "getUserInfo 解析失败: " + e;

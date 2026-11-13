@@ -96,6 +96,64 @@
             android:textColor="@color/header_text"
             android:textSize="11sp"
             android:visibility="gone" />
+
+        <!-- v4.32.0：脚本凭证提取。目标进程把登录态推过来后，点一下复制对应字段。
+             五个并排放不下，用两行 flex 式权重均分，不引入新依赖。 -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:orientation="vertical">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnCredAppToken"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:text="@string/cred_app_token" />
+
+                <TextView
+                    android:id="@+id/btnCredPhone"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:text="@string/cred_phone" />
+
+                <TextView
+                    android:id="@+id/btnCredProvince"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:text="@string/cred_province_code" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="6dp"
+                android:orientation="horizontal">
+
+                <TextView
+                    android:id="@+id/btnCredCity"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:text="@string/cred_city_code" />
+
+                <TextView
+                    android:id="@+id/btnCredCookie"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:text="@string/cred_cookie" />
+
+                <!-- 占位，让第二行和第一行一样是三等分 -->
+                <View
+                    android:layout_width="0dp"
+                    android:layout_height="1dp"
+                    android:layout_weight="1" />
+            </LinearLayout>
+        </LinearLayout>
     </LinearLayout>
 
     <!-- 页面容器：五个页面叠放，靠显隐切换 -->

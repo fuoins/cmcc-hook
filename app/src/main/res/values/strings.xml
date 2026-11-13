@@ -35,6 +35,14 @@
     <string name="account_unknown">账号：未识别</string>
     <string name="account_fmt">账号：%1$s</string>
     <string name="account_switched">已切换到账号 %1$s，数据独立</string>
+    <!-- v4.32.0 顶部框：脚本凭证提取按钮，文案 = 提取 + 字符名 -->
+    <string name="cred_app_token">提取app_token</string>
+    <string name="cred_phone">提取phone</string>
+    <string name="cred_province_code">提取province_code</string>
+    <string name="cred_city_code">提取city_code</string>
+    <string name="cred_cookie">提取cookie</string>
+    <string name="cred_copied">已复制 %1$s（%2$d 字符）</string>
+    <string name="cred_empty">还没有 %1$s：先打开一次中国移动 App，等它把登录态同步过来（最多 45 秒）</string>
     <string name="status_active">运行中</string>
     <string name="status_no_target">未安装中国移动 App</string>
     <string name="status_hint">请先在 LSPosed 中启用模块，并只勾选「中国移动」。打开一次中国移动 App 后，回到这里查看心跳。</string>
@@ -209,7 +217,9 @@
     <string name="coupon_title">卡券中心</string>
     <string name="coupon_summary_empty">还没刷新，点「刷新」读一次</string>
     <string name="coupon_scan">刷新</string>
-    <string name="coupon_never">还没刷新，点「刷新」读取卡券页</string>
+    <!-- v4.32.0：券页删掉「还没刷新，点刷新读取卡券页」和「小米读不到验证码？点这里看自检步骤」，
+         换成一条静态说明。 -->
+    <string name="coupon_lsp_hint">LSPosed 推荐应用全点开，自动填写验证码</string>
     <string name="coupon_at">扫描于 %1$s</string>
     <string name="coupon_at_cost">扫描于 %1$s · 耗时 %2$s</string>
     <string name="coupon_select_all">全选</string>
@@ -231,8 +241,8 @@
     <string name="coupon_done">批量结束：成功 %1$d 张，失败 %2$d 张</string>
     <string name="coupon_scanning">正在刷新…</string>
     <string name="coupon_scan_fail">【诊断测试版 v2】本版一键扫描只跑全方案探针，不产出券清单。导出完整日志看「一键扫描 · 全方案探针 v2 汇总」对照表，以及 6 条「探针 v2 · 方案 X」里的 JS 错误 / 资源清单 / Vue 状态，定位 Vue 未渲染的原因；命中结果将在下一轮精简正式版采用。</string>
-    <!-- v4.0.4 小米 / HyperOS 短信验证码自检引导 -->
-    <string name="sms_help_entry">小米 / HyperOS 读不到验证码？点这里看自检步骤</string>
+    <!-- v4.32.0：券页「小米 / HyperOS 读不到验证码？点这里看自检步骤」入口已删。
+         下面这些文案只供「自动读码超时」时的兜底诊断日志使用，不再有界面入口。 -->
     <string name="sms_help_title">小米读不到短信验证码 · 自检</string>
     <string name="sms_help_message">小米的「验证码安全保护」是系统级开关，会把验证码短信从第三方 App 的广播和短信库里摘掉，光给模块 RECEIVE_SMS / READ_SMS 权限不够。这也是 ColorOS 正常、小米不正常的原因。\n\n请按顺序做完这 4 步，再点一次券核销验证：\n\n1. 短信 App → 右上角设置 → 关闭「验证码安全保护」（也可在设置里直接搜这个词）。\n\n2. 设置 → 应用设置 → 应用管理 → 中国移动 → 权限：允许「短信」；并在「通知类短信」里放行（旧版在 安全中心 → 授权管理 → 短信转发器式路径）。\n\n3. 设置 → 应用设置 → 授权管理 → 自启动：允许中国移动；电池与性能里不要限制它的后台运行。\n\n4. LSPosed → 本模块 → 作用域：除「中国移动」外，勾选「电话服务」com.android.phone 与小米 / HyperOS 的 com.xiaomi.phone，建议连 com.android.providers.telephony、com.android.mms 一起勾（都是系统应用，先打开「显示系统应用」），然后重启手机。\n\n说明：v4.0.4 曾把 com.xiaomi.phone 当成「不存在的包」删掉，正好漏掉小米；v4.10.0 已按 XposedSmsCode 官方作用域加回，并把短信 App / Provider 一并纳入。\n\nXposedSmsCode 的 README 也明确写「适用于偏原生系统，其他第三方定制 Rom 可能不适用」——系统开关需你自己关，模块不会代改，也不会伪造或绕过验证码。\n\n点「写入诊断日志」会把这份自检写进日志页，导出日志后可逐条核对哪一步没落地。</string>
     <string name="sms_help_log">写入诊断日志</string>

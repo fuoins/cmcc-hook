@@ -167,18 +167,18 @@
 
         <!-- v4.1.0：券列表读的是 App 官方「我的卡券」真页；进页自动刷新。 -->
 
-        <!-- v4.0.4：小米 / HyperOS 短信验证码自检入口。
-             系统级「验证码安全保护」模块不能代改，只能把步骤摆到用户面前。 -->
+        <!-- v4.32.0：删掉「小米 / HyperOS 读不到验证码？点这里看自检步骤」入口，
+             换成一条静态说明。text_secondary 灰字、不可点、不弹窗。 -->
         <TextView
-            android:id="@+id/smsHelpEntry"
+            android:id="@+id/couponLspHint"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:paddingStart="6dp"
             android:paddingTop="6dp"
             android:paddingEnd="6dp"
             android:paddingBottom="4dp"
-            android:text="@string/sms_help_entry"
-            android:textColor="@color/primary"
+            android:text="@string/coupon_lsp_hint"
+            android:textColor="@color/text_secondary"
             android:textSize="12sp" />
 
         <!-- 两个功能开关 -->

@@ -36,6 +36,26 @@
         <item name="android:textColor">@color/header_text</item>
     </style>
 
+    <!-- v4.32.0：顶部 header 里的凭证「提取」胶囊。和右上角「捐赠」同款半透明白底，
+         放在 LinearLayout 里靠 layout_weight 三等分，所以 width 必须是 0dp。 -->
+    <style name="HeaderChipButton">
+        <item name="android:layout_width">0dp</item>
+        <item name="android:layout_height">wrap_content</item>
+        <item name="android:background">@drawable/bg_header_chip</item>
+        <item name="android:clickable">true</item>
+        <item name="android:focusable">true</item>
+        <item name="android:gravity">center</item>
+        <item name="android:paddingStart">6dp</item>
+        <item name="android:paddingEnd">6dp</item>
+        <item name="android:paddingTop">6dp</item>
+        <item name="android:paddingBottom">6dp</item>
+        <item name="android:layout_marginEnd">6dp</item>
+        <item name="android:maxLines">1</item>
+        <item name="android:singleLine">true</item>
+        <item name="android:textColor">@color/header_text</item>
+        <item name="android:textSize">11sp</item>
+    </style>
+
     <style name="CardTitle">
         <item name="android:textSize">16sp</item>
         <item name="android:fontFamily">sans-serif-medium</item>

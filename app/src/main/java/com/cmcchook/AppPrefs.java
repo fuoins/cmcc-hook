@@ -49,6 +49,39 @@ final class AppPrefs {
         return context.getSharedPreferences(STATUS, Context.MODE_PRIVATE);
     }
 
+    /**
+     * v4.32.0：顶部「提取」按钮用的 5 个脚本凭证。目标进程通过
+     * {@link HookLog#ACTION_CRED} 广播送过来，LogReceiver 在模块进程落盘。
+     *
+     * <p>存 {@code status} 而不是 {@code settings}：settings 会被
+     * {@link #setBool} chmod 成全局可读，cookie / token 不能放进那里。
+     */
+    static void setCredentials(Context context, String appToken, String phone,
+                               String provinceCode, String cityCode, String cookie) {
+        status(context).edit()
+                .putString("cred_app_token", nullToEmpty(appToken))
+                .putString("cred_phone", nullToEmpty(phone))
+                .putString("cred_province_code", nullToEmpty(provinceCode))
+                .putString("cred_city_code", nullToEmpty(cityCode))
+                .putString("cred_cookie", nullToEmpty(cookie))
+                .putLong("cred_at", System.currentTimeMillis())
+                .apply();
+    }
+
+    /** 取一个凭证值；没有同步过时返回空串。key 为 app_token/phone/... 之一。 */
+    static String credential(Context context, String key) {
+        return status(context).getString("cred_" + key, "");
+    }
+
+    /** 凭证最近一次同步时间；从没同步过返回 0。 */
+    static long credentialsAt(Context context) {
+        return status(context).getLong("cred_at", 0L);
+    }
+
+    private static String nullToEmpty(String s) {
+        return s == null ? "" : s;
+    }
+
     static boolean getBool(Context context, String key) {
         return settings(context).getBoolean(key, true);
     }
