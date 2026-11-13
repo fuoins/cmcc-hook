@@ -108,6 +108,12 @@ final class DiyTask {
             int undoTasks = 0;
             int drawTimes = 0;
             int comps = 0;
+            // v4.20.0-r34：落地页在外部域的任务，模块只能发 startBrowse，
+            // 服务端不会因此登记（要真进落地页、由对方回调才算）。
+            // 实测「登录王者云游戏领奖」targetUrl = h5.igame.qq.com，两轮都是 UNDO。
+            // 这类直接判「不代做」，不再发请求、不再算进「没做上」。
+            int outsideTasks = 0;
+            java.util.Set<String> outsideIds = new java.util.HashSet<>();
             // v4.10.0 两阶段：先把所有环节的「补领 + 做任务」跑完，收集环节 ID；
             // 全部任务做完之后，再统一遍历环节抽奖到剩余 0 次。
             // 用户实证：先抽奖再做任务，任务又发下新的抽奖次数，结果「抽了但有剩」。
@@ -131,6 +137,7 @@ final class DiyTask {
                 JSONArray tasks = taskList(comp, referer);
                 int undo = 0;
                 int waitReceive = 0;
+                int outside = 0;
                 // v4.20.0-r33：记下做之前的 taskStage，复查时按 UNDO→DONE 的真实
                 // 变化算完成数。startBrowse 的 HTTP 状态完全不能当判据 ——
                 // 16:45 那轮 3 个 -1 里 2 个复查时是 DONE，1 个仍 UNDO。
@@ -147,16 +154,33 @@ final class DiyTask {
                         taskNames.put(tid, task.optString("name", tid));
                     }
                     if ("UNDO".equals(stage)) {
-                        undo++;
+                        String out = outsideHost(task);
+                        if (out != null) {
+                            // 外域落地页：发多少次 startBrowse 都不会登记，直接不代做。
+                            outside++;
+                            if (!tid.isEmpty()) {
+                                outsideIds.add(tid);
+                            }
+                            detail.append("   ").append(task.optString("name", tid))
+                                    .append(": 外域落地页（").append(out)
+                                    .append("），模块代做不到，跳过\n");
+                        } else {
+                            undo++;
+                        }
                     } else if ("WAIT_RECEIVE".equals(stage)) {
                         waitReceive++;
                     }
                 }
                 stageBefore.add(beforeStage);
                 undoTasks += undo;
+                outsideTasks += outside;
                 detail.append("   任务 ").append(tasks.length())
                         .append(" 个，待做 ").append(undo)
-                        .append("，待领 ").append(waitReceive).append('\n');
+                        .append("，待领 ").append(waitReceive);
+                if (outside > 0) {
+                    detail.append("，外域不代做 ").append(outside);
+                }
+                detail.append('\n');
 
                 // 已完成待领的先补领：有些活动不自动发币，光做完没用
                 for (int t = 0; t < tasks.length(); t++) {
@@ -184,6 +208,10 @@ final class DiyTask {
                 for (int t = 0; t < tasks.length() && tried < MAX_TASKS; t++) {
                     JSONObject task = tasks.optJSONObject(t);
                     if (task == null || !"UNDO".equals(task.optString("taskStage"))) {
+                        continue;
+                    }
+                    if (outsideIds.contains(task.optString("taskId", ""))) {
+                        // 上面已判过外域，不再发一次注定无效的 startBrowse。
                         continue;
                     }
                     tried++;
@@ -234,6 +262,10 @@ final class DiyTask {
                     }
                     String stage = task.optString("taskStage", "");
                     if ("UNDO".equals(stage)) {
+                        if (outsideIds.contains(task.optString("taskId", ""))) {
+                            // 外域任务永远做不上，不算进「没做上」。
+                            continue;
+                        }
                         left++;
                     } else if ("DONE".equals(stage) && before != null
                             && "UNDO".equals(before.get(task.optString("taskId", "")))) {
@@ -252,11 +284,29 @@ final class DiyTask {
                         .append(" 个，按实际计\n");
                 doneTasks = verifiedDone;
             }
-            detail.append("复查: 仍待做 ").append(left).append(" 个\n");
+            detail.append("复查: 仍待做 ").append(left).append(" 个");
+            if (outsideTasks > 0) {
+                detail.append("（另有 ").append(outsideTasks).append(" 个外域任务不代做）");
+            }
+            detail.append('\n');
             detail.append("结果: 完成 ").append(doneTasks)
-                    .append(" 个任务，抽奖 ").append(drawTimes).append(" 次\n");
+                    .append(" 个任务，抽奖 ").append(drawTimes).append(" 次");
+            if (outsideTasks > 0) {
+                detail.append("，外域不代做 ").append(outsideTasks).append(" 个");
+            }
+            detail.append('\n');
 
-            String summary = name + " · 完成 " + doneTasks + " 个任务";
+            // v4.20.0-r34：「完成 0 个任务」配上 OK 时读起来像全挂了，
+            // 有外域任务时把原因写进摘要，一眼能分清是没做成还是本来就不做。
+            String summary;
+            if (doneTasks == 0 && outsideTasks > 0) {
+                summary = name + " · 任务 0 个（" + outsideTasks + " 个外域落地页不代做）";
+            } else {
+                summary = name + " · 完成 " + doneTasks + " 个任务";
+                if (outsideTasks > 0) {
+                    summary += "（" + outsideTasks + " 个外域不代做）";
+                }
+            }
             if (clockWins > 0 || videoSign > 0) {
                 summary += " · 签到到账";
             }
@@ -436,6 +486,38 @@ final class DiyTask {
             return prize.isEmpty() ? "已抽" : prize;
         } catch (Throwable e) {
             detail.append("   抽奖异常: ").append(e).append('\n');
+            return null;
+        }
+    }
+
+    /**
+     * v4.20.0-r34：任务的落地页是不是外部域名；是则返回域名，否则 null。
+     *
+     * <p>任务 url 形如 {@code /qwhdhub/diyTask/startBrowse/{id}?targetUrl=https%3A%2F%2F...}。
+     * 站内落地页（{@code *.10086.cn}）服务端在 302 之前就登记，发一次 startBrowse 就够；
+     * 外域落地页（例如 {@code h5.igame.qq.com}）要真进页面、由对方回调才算，
+     * 模块只能发个 GET，发多少次都是 UNDO。这类直接判「不代做」，不再白撞。
+     */
+    private static String outsideHost(JSONObject task) {
+        String url = task.optString("url", "");
+        if (!url.contains("/startBrowse/")) {
+            return null;
+        }
+        try {
+            String target = android.net.Uri.parse(url).getQueryParameter("targetUrl");
+            if (target == null || target.isEmpty()) {
+                return null;
+            }
+            String host = android.net.Uri.parse(target).getHost();
+            if (host == null || host.isEmpty()) {
+                return null;
+            }
+            host = host.toLowerCase();
+            if (host.equals("10086.cn") || host.endsWith(".10086.cn")) {
+                return null;
+            }
+            return host;
+        } catch (Throwable e) {
             return null;
         }
     }

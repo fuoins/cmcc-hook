@@ -364,7 +364,10 @@ final class TaskRunner {
             return "自动总开关关着";
         }
         if (isDoneToday(ctx, cmd)) {
-            return "今天已完成";
+            // v4.20.0-r34：这里以前写「今天已完成」，可当天成功过、后来手动重跑失败时，
+            // 抬头显示 ✗、跳过理由写「已完成」，同一份日志两句话打架。
+            // 真实语义是「今天已经成功过，不再重跑」，按这个写。
+            return "今天已成功过";
         }
         return "";
     }
@@ -1808,16 +1811,29 @@ final class TaskRunner {
         if (ctx == null || cmd == null || cmd.isEmpty()) {
             return;
         }
-        String text = (ok ? "OK " : "FAIL ") + shortText(summary);
         for (String one : cmd.split(",")) {
             String key = one.trim();
             if (key.isEmpty()) {
                 continue;
             }
+            // v4.20.0-r34：当天已经成功过、之后手动又跑了一次并失败时，
+            // 以前直接覆盖成 FAIL —— 抬头「今日」画 ✗、跳过理由写「今天已完成」，
+            // 同一份日志两句话打架（鹅蛋 14:50 成功 +37，15:29 重跑失败就是这样）。
+            // 当天目标已经达成、策略上也不再重跑，所以按 OK 记，
+            // 把这次失败的原因跟在括号里，信息不丢。
+            boolean passedToday = ok || isDoneToday(ctx, key);
+            String text;
+            if (ok) {
+                text = "OK " + shortText(summary);
+            } else if (passedToday) {
+                text = "OK 今天已成功过（最后一次重跑：" + shortText(summary) + "）";
+            } else {
+                text = "FAIL " + shortText(summary);
+            }
             putString(ctx, KEY_PREFIX_RESULT + key + "_" + dayKey(), text);
             putLong(ctx, KEY_PREFIX_RESULT_AT + key, System.currentTimeMillis());
             // 结果同时回传模块进程，首页「今日」才能显示出来。
-            HookLog.state(key, ok, idle, text, attemptsToday(ctx, key), dayKey());
+            HookLog.state(key, passedToday, idle, text, attemptsToday(ctx, key), dayKey());
         }
     }
 
@@ -1929,9 +1945,12 @@ final class TaskRunner {
             return "○";
         }
         String s = one.summary == null ? "" : one.summary;
+        // 抽奖真的抽到次数了，就不能因为「任务 0 个」把它标成「没做成」。
+        boolean hasDraw = s.contains("抽 ") && !s.contains("抽 0 次");
         if (s.contains("还剩") || s.contains("没到账") || s.contains("未确认")
-                || s.contains("完成 0 个任务") || s.contains("仍待做")
-                || s.contains("没找到可做的按钮")) {
+                || (s.contains("完成 0 个任务") && !hasDraw)
+                || (s.contains("任务 0 个") && !hasDraw)
+                || s.contains("仍待做") || s.contains("没找到可做的按钮")) {
             return "–";
         }
         if (s.contains("无需重复") || s.contains("今天已经做过")
@@ -1950,6 +1969,12 @@ final class TaskRunner {
             // 但进度条和文件尾部「--- 今日 ---」走的还是这里，只要 OK 就画 ✓，
             // 于是同一份日志出现两套口径。这里补上 idle 判定，三处统一。
             return AppPrefs.getTaskIdle(ctx, cmd, dayKey()) ? "○" : "✓";
+        }
+        // v4.20.0-r34：当天成功过、后来手动重跑失败时，done 标记还在，
+        // 策略上也不再重跑 —— 这时按「今天已达成」画 ✓，
+        // 别让同一天同时出现「已完成」和「✗」两种说法。
+        if (isDoneToday(ctx, cmd)) {
+            return "✓";
         }
         // 以前是 times > 1 才显示次数，失败 1 次时显示成 ○（没跑过），
         // 于是「跑过但失败」和「压根没跑」在界面上长得一样，排查时白绕。
@@ -1970,7 +1995,15 @@ final class TaskRunner {
             if (result == null) {
                 continue;
             }
-            sb.append(label(cmd)).append(": ").append(result);
+            // v4.20.0-r34：当天成功过、后来手动重跑失败时，这里原来只印最后那条
+            // FAIL，抬头却是 ✓，看着像两份日志拼在一起。按「已成功过」记，
+            // 把最后一次失败的原因跟在括号里，账仍然对得上。
+            if (result.startsWith("FAIL") && isDoneToday(ctx, cmd)) {
+                sb.append(label(cmd)).append(": OK（今天已成功过；最后一次重跑：")
+                        .append(result.substring(4).trim()).append('）');
+            } else {
+                sb.append(label(cmd)).append(": ").append(result);
+            }
             int times = attemptsToday(ctx, cmd);
             if (times > 0) {
                 sb.append("（今天失败 ").append(times).append(" 次）");
