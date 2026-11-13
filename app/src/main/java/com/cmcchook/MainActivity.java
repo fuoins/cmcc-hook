@@ -1,6 +1,7 @@
 package com.cmcchook;
 
 import android.Manifest;
+import android.app.ActivityManager;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -35,6 +36,8 @@ import com.google.android.material.switchmaterial.SwitchMaterial;
 
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -304,6 +307,7 @@ public final class MainActivity extends AppCompatActivity {
         bindCredButton(R.id.btnCredProvince, "province_code");
         bindCredButton(R.id.btnCredCity, "city_code");
         bindCredButton(R.id.btnCredCookie, "cookie");
+        bindForceStopButton();
 
         homeDot = findViewById(R.id.homeDot);
         homeStatus = findViewById(R.id.homeStatus);
@@ -1379,8 +1383,9 @@ public final class MainActivity extends AppCompatActivity {
                 return;
             }
             manager.setPrimaryClip(ClipData.newPlainText(key, value));
+            // v4.33.0：文案变长（含「需要刷新请进入[签到有礼]」），用 LONG 才看得全。
             Toast.makeText(this, getString(R.string.cred_copied, key, value.length()),
-                    Toast.LENGTH_SHORT).show();
+                    Toast.LENGTH_LONG).show();
         } catch (Throwable ignored) {
         }
     }
@@ -1394,6 +1399,115 @@ public final class MainActivity extends AppCompatActivity {
             manager.setPrimaryClip(ClipData.newPlainText("url", url));
             Toast.makeText(this, R.string.welfare_url_copied, Toast.LENGTH_SHORT).show();
         } catch (Throwable ignored) {
+        }
+    }
+
+    // -------------------------------------------------- v4.33.0 强行停止中国移动
+
+    private void bindForceStopButton() {
+        View button = findViewById(R.id.btnForceStop);
+        if (button == null) {
+            return;
+        }
+        button.setOnClickListener(v -> confirmForceStop());
+    }
+
+    /** 危险操作，和 5 个「提取」按钮挨着，点完先二次确认。 */
+    private void confirmForceStop() {
+        try {
+            new MaterialAlertDialogBuilder(this)
+                    .setTitle(R.string.force_stop_cmcc)
+                    .setMessage(R.string.force_stop_confirm)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .setPositiveButton(R.string.force_stop_yes,
+                            (dialog, which) -> forceStopTarget())
+                    .show();
+        } catch (Throwable ignored) {
+            forceStopTarget();
+        }
+    }
+
+    /**
+     * 主路径是 {@code am force-stop}（会把包打进 stopped 状态，服务/通知/任务一起停），
+     * LSPosed 环境一般能拿到 root。依次降级：su -c → 直接 am → 反射框架 API，
+     * 全失败再发广播让目标进程自己收尾，至少把卡住的任务和保活停掉。
+     */
+    private void forceStopTarget() {
+        final String pkg = AppPrefs.TARGET_PACKAGE;
+        Toast.makeText(this, R.string.force_stop_running, Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                boolean stopped = runForceStopCmd(
+                        new String[]{"su", "-c", "am force-stop " + pkg});
+                if (!stopped) {
+                    stopped = runForceStopCmd(new String[]{"am", "force-stop", pkg});
+                }
+                if (!stopped) {
+                    stopped = forceStopViaActivityManager(pkg);
+                }
+                final int msg;
+                if (stopped) {
+                    msg = R.string.force_stop_done;
+                } else {
+                    boolean sent = sendTaskBroadcast(TaskRunner.CMD_FORCESTOP, false);
+                    msg = sent ? R.string.force_stop_partial : R.string.force_stop_failed;
+                }
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        Toast.makeText(MainActivity.this, msg, Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }, "cmcc-force-stop").start();
+    }
+
+    /** exit 0 且输出里没有权限/异常字样，才算真的停掉（am 失败时也常回 0）。 */
+    private static boolean runForceStopCmd(String[] cmd) {
+        Process proc = null;
+        try {
+            proc = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(proc.getInputStream(), "UTF-8"));
+            StringBuilder out = new StringBuilder();
+            String line;
+            while ((line = reader.readLine()) != null) {
+                out.append(line).append('\n');
+            }
+            if (proc.waitFor() != 0) {
+                return false;
+            }
+            String s = out.toString().toLowerCase(Locale.US);
+            return !(s.contains("permission") || s.contains("denial")
+                    || s.contains("not allowed") || s.contains("securityexception")
+                    || s.contains("not found") || s.contains("unknown command")
+                    || s.contains("error") || s.contains("exception"));
+        } catch (Throwable e) {
+            return false;
+        } finally {
+            if (proc != null) {
+                try {
+                    proc.destroy();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+    }
+
+    /** 没有 shell 权限时再试框架 API；普通 App 通常被 SecurityException 挡下。 */
+    private boolean forceStopViaActivityManager(String pkg) {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am == null) {
+                return false;
+            }
+            java.lang.reflect.Method m = am.getClass()
+                    .getMethod("forceStopPackage", String.class);
+            m.invoke(am, pkg);
+            return true;
+        } catch (Throwable e) {
+            return false;
         }
     }
 

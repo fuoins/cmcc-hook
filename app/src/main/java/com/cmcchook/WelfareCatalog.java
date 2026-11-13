@@ -97,7 +97,8 @@ final class WelfareCatalog {
 
             // r27：辽宁 lyh 域只有辽宁号能做，名字标 (辽宁) 且默认关，不进「一键全部」。
             // 拆一百元礼盒本期已结束，标 (活动结束) 同样默认关。
-            // 三条由 items() 统一沉到「已接入」组末尾（带括号的活动集中显示）。
+            // r38：7日打卡分百万本期也已结束，同样标 (活动结束) 默认关。
+            // 四条由 items() 统一沉到「已接入」组末尾（带括号的活动集中显示）。
             new Item("goose", "收鹅蛋 换好礼(辽宁)", "打卡 / 投喂 / 收蛋 / 领任务",
                     "https://lyh.lncmcc.com/lyhVue/index.html#/bgIndex?actNo=goose2025",
                     "raisegoose", STATE_IMPL, TaskRunner.CMD_GOOSE, false, false),
@@ -124,10 +125,12 @@ final class WelfareCatalog {
                     STATE_IMPL, TaskRunner.CMD_VIDEO, false, true),
 
             // coc web6：进页面即打卡，页面自己记当天进度。
-            new Item("daily7", "7日打卡分百万", "每日进页打卡，连签 7 天",
+            // r38：本期活动已结束，名字标 (活动结束) 且默认关，不进「一键全部」。
+            // 由 migrateR38DefaultOff 对老用户显式关一次（本地可能已存 true）。
+            new Item("daily7", "7日打卡分百万(活动结束)", "每日进页打卡，连签 7 天",
                     "https://dev.coc.10086.cn/coc/web6/dailyLoginEvent/index"
                             + "?pageId=2090341662452445184&channelId=P00000005743", "dailyloginevent",
-                    STATE_IMPL, TaskRunner.CMD_DAILY7, false, true),
+                    STATE_IMPL, TaskRunner.CMD_DAILY7, false, false),
 
             // coc3 画布：签到领阳光值 + 浇水施肥养豆苗，同一页。
             new Item("miao", "AI豆苗养成记", "签到领阳光值 + 浇水施肥",
@@ -149,12 +152,8 @@ final class WelfareCatalog {
                             + "?pageId=1849008675699650560&channelId=P00000003839",
                     "act-wedrecharge", STATE_IMPL, TaskRunner.CMD_WED, false, true),
 
-            // 签到有礼的秒杀专区：每天 12:00 一场，库存通常只有 1 张。
-            // 必须准点手动触发，所以默认不进「一键全部」，只在这里单独点。
-            new Item("seckill", "12点抢券", "签到有礼 · 每日 12 点秒杀话费券",
-                    WX + "/qwhdhub/qwhdmark/1021122301"
-                            + "?touch_id=JTST_P00000010910&yx=JHQD9999999999", "seckill",
-                    STATE_IMPL, TaskRunner.CMD_SECKILL, false, false),
+            // v4.33.0：12点抢券从「已接入」清单移除。券页/抢券卡已有独立入口，
+            // 这里再列一行只是重复；CMD_SECKILL 命令和抢券卡本身都保留。
 
             new Item("lucky3", "幸运三日签", "累计签到 + 每三天抽奖",
                     COC3 + "26xysrqtyld?channelCode=P00000153130", "26xysrqtyld",
@@ -246,6 +245,9 @@ final class WelfareCatalog {
     /** r27 一次性迁移标记：鹅蛋 / 球赛 / 拆礼盒改默认关闭。 */
     private static final String KEY_OFF_MIGRATED_R27 = "welfare_off_migrated_r27";
 
+    /** r38 一次性迁移标记：7日打卡分百万(活动结束) 改默认关闭。 */
+    private static final String KEY_OFF_MIGRATED_R38 = "welfare_off_migrated_r38";
+
     /**
      * 把「签到抽奖赢好礼(辽宁)」「乡友农业知识问答(辽宁)」显式关一次。
      *
@@ -300,6 +302,32 @@ final class WelfareCatalog {
                     .putBoolean("welfare_soccer", false)
                     .putBoolean("welfare_tearbox", false)
                     .putBoolean(KEY_OFF_MIGRATED_R27, true)
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * r38：把「7日打卡分百万(活动结束)」显式关一次。
+     *
+     * <p>只改 {@code defaultOn} 对老用户无效 —— 他们本地可能已存 {@code true}。
+     * 只写一次，之后用户自己再打开就保持打开。用独立标记，避免和历史迁移互相挡住。
+     */
+    private static void migrateR38DefaultOff(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        if (!HookLog.MODULE_PACKAGE.equals(ctx.getPackageName())) {
+            return;
+        }
+        try {
+            SharedPreferences p = prefs(ctx);
+            if (p.getBoolean(KEY_OFF_MIGRATED_R38, false)) {
+                return;
+            }
+            p.edit()
+                    .putBoolean("welfare_daily7", false)
+                    .putBoolean(KEY_OFF_MIGRATED_R38, true)
                     .apply();
         } catch (Throwable ignored) {
         }
@@ -362,6 +390,7 @@ final class WelfareCatalog {
     static List<Item> items(Context ctx) {
         migrateDefaultOff(ctx);
         migrateR27DefaultOff(ctx);
+        migrateR38DefaultOff(ctx);
         List<Item> built = new ArrayList<>();
         for (Item one : BUILT_IN) {
             built.add(one);

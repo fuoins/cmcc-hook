@@ -250,6 +250,28 @@ final class TaskReceiver {
                         }, "cmcc-flow").start();
                         return;
                     }
+                    // v4.33.0：模块 UI 的「强行停止中国移动」兜底。
+                    // 主路径是 am force-stop（要 root）；没 root 时至少把目标进程
+                    // 自己收掉，别让卡住的任务和保活服务一直挂着。
+                    if (TaskRunner.CMD_FORCESTOP.equals(cmd)) {
+                        ack(context, cmd);
+                        new Thread(new Runnable() {
+                            @Override
+                            public void run() {
+                                try {
+                                    Thread.sleep(250L);
+                                } catch (Throwable ignored) {
+                                }
+                                try {
+                                    context.stopService(new Intent(context, KeepAliveService.class));
+                                } catch (Throwable ignored) {
+                                }
+                                android.os.Process.killProcess(android.os.Process.myPid());
+                                System.exit(0);
+                            }
+                        }, "cmcc-forcestop").start();
+                        return;
+                    }
                     ack(context, cmd);
                     // r20：描述 JSON 随命令直传（模块私有文件跨进程读不到），
                     // 供 desc:<id> 在目标进程里解析执行。

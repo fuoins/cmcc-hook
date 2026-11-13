@@ -122,7 +122,13 @@ final class DiyTask {
             // 实测「登录王者云游戏领奖」targetUrl = h5.igame.qq.com，两轮都是 UNDO。
             // 这类直接判「不代做」，不再发请求、不再算进「没做上」。
             int outsideTasks = 0;
-            java.util.Set<String> outsideIds = new java.util.HashSet<>();
+            // v4.33.0-r38：关注类任务（视频日「关注优质作者」）要真去关注作者才算，
+            // 落 cmcc-cs.cn 的 feed 页发 startBrowse 服务端也不登记
+            // （r37 20:26 日志：302 已发出、复查仍 UNDO）。按用户要求归为「不代做」，
+            // 不算待做、不发注定无效的请求、也不再判「一个都没做上」。
+            int followTasks = 0;
+            // 所有不代做的任务 id：外域 + 关注。执行阶段和复查阶段都要跳过。
+            java.util.Set<String> skipIds = new java.util.HashSet<>();
             // v4.10.0 两阶段：先把所有环节的「补领 + 做任务」跑完，收集环节 ID；
             // 全部任务做完之后，再统一遍历环节抽奖到剩余 0 次。
             // 用户实证：先抽奖再做任务，任务又发下新的抽奖次数，结果「抽了但有剩」。
@@ -147,6 +153,7 @@ final class DiyTask {
                 int undo = 0;
                 int waitReceive = 0;
                 int outside = 0;
+                int follow = 0;
                 // v4.20.0-r33：记下做之前的 taskStage，复查时按 UNDO→DONE 的真实
                 // 变化算完成数。startBrowse 的 HTTP 状态完全不能当判据 ——
                 // 16:45 那轮 3 个 -1 里 2 个复查时是 DONE，1 个仍 UNDO。
@@ -163,18 +170,29 @@ final class DiyTask {
                         taskNames.put(tid, task.optString("name", tid));
                     }
                     if ("UNDO".equals(stage)) {
-                        String out = outsideHost(task);
-                        if (out != null) {
-                            // 外域落地页：发多少次 startBrowse 都不会登记，直接不代做。
-                            outside++;
+                        String tname = task.optString("name", tid);
+                        if (isFollowTask(tname)) {
+                            // v4.33.0：关注类任务要真关注作者，模块代做不到。
+                            follow++;
                             if (!tid.isEmpty()) {
-                                outsideIds.add(tid);
+                                skipIds.add(tid);
                             }
-                            detail.append("   ").append(task.optString("name", tid))
-                                    .append(": 外域落地页（").append(out)
-                                    .append("），模块代做不到，跳过\n");
+                            detail.append("   ").append(tname)
+                                    .append(": 关注类任务，模块不代做，跳过\n");
                         } else {
-                            undo++;
+                            String out = outsideHost(task);
+                            if (out != null) {
+                                // 外域落地页：发多少次 startBrowse 都不会登记，直接不代做。
+                                outside++;
+                                if (!tid.isEmpty()) {
+                                    skipIds.add(tid);
+                                }
+                                detail.append("   ").append(tname)
+                                        .append(": 外域落地页（").append(out)
+                                        .append("），模块代做不到，跳过\n");
+                            } else {
+                                undo++;
+                            }
                         }
                     } else if ("WAIT_RECEIVE".equals(stage)) {
                         waitReceive++;
@@ -183,11 +201,15 @@ final class DiyTask {
                 stageBefore.add(beforeStage);
                 undoTasks += undo;
                 outsideTasks += outside;
+                followTasks += follow;
                 detail.append("   任务 ").append(tasks.length())
                         .append(" 个，待做 ").append(undo)
                         .append("，待领 ").append(waitReceive);
                 if (outside > 0) {
                     detail.append("，外域不代做 ").append(outside);
+                }
+                if (follow > 0) {
+                    detail.append("，关注不代做 ").append(follow);
                 }
                 detail.append('\n');
 
@@ -219,7 +241,7 @@ final class DiyTask {
                     if (task == null || !"UNDO".equals(task.optString("taskStage"))) {
                         continue;
                     }
-                    if (outsideIds.contains(task.optString("taskId", ""))) {
+                    if (skipIds.contains(task.optString("taskId", ""))) {
                         // 上面已判过外域，不再发一次注定无效的 startBrowse。
                         continue;
                     }
@@ -283,7 +305,7 @@ final class DiyTask {
                         doneAll++;
                     }
                     if ("UNDO".equals(stage)) {
-                        if (outsideIds.contains(task.optString("taskId", ""))) {
+                        if (skipIds.contains(task.optString("taskId", ""))) {
                             // 外域任务永远做不上，不算进「没做上」。
                             continue;
                         }
@@ -306,14 +328,27 @@ final class DiyTask {
                 doneTasks = verifiedDone;
             }
             detail.append("复查: 仍待做 ").append(left).append(" 个");
-            if (outsideTasks > 0) {
-                detail.append("（另有 ").append(outsideTasks).append(" 个外域任务不代做）");
+            if (outsideTasks > 0 || followTasks > 0) {
+                detail.append("（另有 ");
+                if (outsideTasks > 0) {
+                    detail.append(outsideTasks).append(" 个外域任务不代做");
+                }
+                if (outsideTasks > 0 && followTasks > 0) {
+                    detail.append("、");
+                }
+                if (followTasks > 0) {
+                    detail.append(followTasks).append(" 个关注任务不代做");
+                }
+                detail.append("）");
             }
             detail.append('\n');
             detail.append("结果: 完成 ").append(doneTasks)
                     .append(" 个任务，抽奖 ").append(drawTimes).append(" 次");
             if (outsideTasks > 0) {
                 detail.append("，外域不代做 ").append(outsideTasks).append(" 个");
+            }
+            if (followTasks > 0) {
+                detail.append("，关注不代做 ").append(followTasks).append(" 个");
             }
             if (drawPending > 0) {
                 detail.append("，保留 ").append(drawPending).append(" 次待开放");
@@ -330,6 +365,9 @@ final class DiyTask {
                 }
                 if (outsideTasks > 0) {
                     detail.append(" / 外域不代做 ").append(outsideTasks);
+                }
+                if (followTasks > 0) {
+                    detail.append(" / 关注不代做 ").append(followTasks);
                 }
                 detail.append("）");
                 if (doneTasks > 0) {
@@ -348,8 +386,12 @@ final class DiyTask {
                 if (outsideTasks > 0) {
                     summary += " · 外域不代做 " + outsideTasks;
                 }
-            } else if (outsideTasks > 0) {
-                summary = name + " · 没有可做任务（" + outsideTasks + " 个外域落地页不代做）";
+                if (followTasks > 0) {
+                    summary += " · 关注不代做 " + followTasks;
+                }
+            } else if (outsideTasks > 0 || followTasks > 0) {
+                summary = name + " · 没有可做任务（外域不代做 " + outsideTasks
+                        + "、关注不代做 " + followTasks + "）";
             } else {
                 summary = name + " · 没有任务";
             }
@@ -563,6 +605,19 @@ final class DiyTask {
     }
 
     /**
+     * v4.33.0-r38：关注类任务（视频日「关注优质作者」）不代做。
+     *
+     * <p>这类任务要真去关注作者才算完成，落点是移动自有内容域
+     * {@code v.cmcc-cs.cn/cmlive/livegray/feed}。r37 20:26 日志实证：
+     * startBrowse 发出 302、复查 {@code taskStage} 仍是 UNDO，连发几轮都不登记，
+     * 还把整轮判定拖成「活动有 1 个待做，但一个都没做上」。
+     * 现在按任务名识别，和外域任务一样归入「不代做」。
+     */
+    private static boolean isFollowTask(String name) {
+        return name != null && name.contains("关注");
+    }
+
+    /**
      * 任务的落地页是不是「真第三方」域名；是则返回域名，否则 null。
      *
      * <p>任务 url 形如 {@code /qwhdhub/diyTask/startBrowse/{id}?targetUrl=https%3A%2F%2F...}。
@@ -570,10 +625,9 @@ final class DiyTask {
      * 真第三方（{@code h5.igame.qq.com}、{@code rr.ln139.cn}）要真进页面、由对方回调
      * 才算，模块只能发个 GET，发多少次都是 UNDO。这类直接判「不代做」，不再白撞。
      *
-     * <p>v4.30.0：{@code cmcc-cs.cn} 是移动自己的内容域（视频日「关注优质作者」
-     * 落的是 {@code v.cmcc-cs.cn/cmlive/livegray/feed}），不是第三方。旧版把它
-     * 和腾讯、咪咕一起判成外域，追剧每天白白少做 1 个 +1 次的任务。
-     * 现在放行自有域，真发 startBrowse，再由复查决定到底算不算完成。
+     * <p>v4.30.0：{@code cmcc-cs.cn} 是移动自己的内容域，不是第三方，放行。
+     * v4.33.0：落在这上面的「关注优质作者」不再靠 startBrowse 硬撞，
+     * 交给 {@link #isFollowTask} 提前判为不代做。
      */
     private static String outsideHost(JSONObject task) {
         String url = task.optString("url", "");

@@ -147,11 +147,16 @@
                     android:layout_weight="1"
                     android:text="@string/cred_cookie" />
 
-                <!-- 占位，让第二行和第一行一样是三等分 -->
-                <View
-                    android:layout_width="0dp"
-                    android:layout_height="1dp"
-                    android:layout_weight="1" />
+                <!-- v4.33.0：强行停止中国移动。原来这格是占位 View；
+                     文案比「提取」长，放开单行限制并略缩字号，免得三等分里被裁掉。 -->
+                <TextView
+                    android:id="@+id/btnForceStop"
+                    style="@style/HeaderChipButton"
+                    android:layout_weight="1"
+                    android:maxLines="2"
+                    android:singleLine="false"
+                    android:textSize="10sp"
+                    android:text="@string/force_stop_cmcc" />
             </LinearLayout>
         </LinearLayout>
     </LinearLayout>

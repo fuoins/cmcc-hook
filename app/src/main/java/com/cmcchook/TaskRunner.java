@@ -82,6 +82,9 @@ final class TaskRunner {
     static final String CMD_OPEN = "open:";
     /** v4.0 流量余量：离屏只读官方余量页，不进任务队列、不记今日状态。 */
     static final String CMD_FLOW = "flow";
+
+    /** v4.33.0：模块 UI「强行停止中国移动」的兜底命令（拿不到 root 时让目标进程自我收尾）。 */
+    static final String CMD_FORCESTOP = "forcestop";
     /** r19：全活动接入清单（只读诊断，不进任务队列、不发请求）。 */
     static final String CMD_CATALOG = "catalog";
     /** r19：离线自验（纯函数，不依赖真机、不发请求）。 */

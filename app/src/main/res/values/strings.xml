@@ -41,8 +41,19 @@
     <string name="cred_province_code">提取province_code</string>
     <string name="cred_city_code">提取city_code</string>
     <string name="cred_cookie">提取cookie</string>
-    <string name="cred_copied">已复制 %1$s（%2$d 字符）</string>
-    <string name="cred_empty">还没有 %1$s：先打开一次中国移动 App，等它把登录态同步过来（最多 45 秒）</string>
+    <!-- v4.33.0：提示按用户要求改成「进签到有礼自动刷新」口径；
+         中间那段占位放字段名 + 字符数，让用户知道复制到了什么、有多长。 -->
+    <string name="cred_copied">已复制,%1$s（%2$d 字符）,需要刷新请进入[签到有礼],会自动刷新</string>
+    <string name="cred_empty">没有数据,请先进入[签到有礼],会自动刷新</string>
+
+    <!-- v4.33.0 顶部框：强行停止中国移动（危险操作，点完要二次确认） -->
+    <string name="force_stop_cmcc">强行停止中国移动</string>
+    <string name="force_stop_confirm">强行停止中国移动？\n\n会结束它正在跑的任务和后台服务，下次进 App 要重新启动。模块本身不受影响。</string>
+    <string name="force_stop_yes">强行停止</string>
+    <string name="force_stop_running">正在强行停止中国移动…</string>
+    <string name="force_stop_done">已强行停止中国移动</string>
+    <string name="force_stop_partial">已发停止指令（没拿到 root，只结束了进程）</string>
+    <string name="force_stop_failed">没停成功，请到系统设置 → 应用管理里手动强行停止</string>
     <string name="status_active">运行中</string>
     <string name="status_no_target">未安装中国移动 App</string>
     <string name="status_hint">请先在 LSPosed 中启用模块，并只勾选「中国移动」。打开一次中国移动 App 后，回到这里查看心跳。</string>
