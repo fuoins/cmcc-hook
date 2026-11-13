@@ -1252,8 +1252,11 @@ final class GooseTask {
                 // 先按任务名找到标题节点，再往上扩到「含图片/按钮」的整块卡片。
                 // 12:55 日志里 jobTitle 是「浏览我的亲友圈」，页面渲染成
                 // 「浏览「我的亲友圈」 +10」，去掉引号再比才命中。
-                var scope=document.querySelector('.doTaskDiv');
-                if(!scope)scope=document.body;
+                // 搜索范围用「所有卡片的共同父级」，不是第一张卡。旧版取
+                // document.querySelector('.doTaskDiv') 只覆盖第一张，idx>0 的任务
+                // 永远找不到标题，只能按列表顺序硬取。
+                var cardsAll=document.querySelectorAll('.doTaskDiv');
+                var scope=(cardsAll.length&&cardsAll[0].parentElement)||document.body;
                 var nodes=scope.querySelectorAll('*');
                 var anchor=null,anchorLen=99999;
                 for(var i=0;i<nodes.length;i++){
@@ -1265,20 +1268,40 @@ final class GooseTask {
                 }
                 if(!anchor){
                   // 连标题都是图时按列表顺序取：taskListArr 与 .doTaskDiv 顺序一致。
-                  var cards=document.querySelectorAll('.doTaskDiv');
-                  if(cards.length>idx)anchor=cards[idx];
+                  if(cardsAll.length>idx)anchor=cardsAll[idx];
                 }
                 if(!anchor)return byComp('nocard')||JSON.stringify({err:'任务卡片没找到',name:title});
-                var card=anchor;
-                for(var up=0;up<6&&card&&card.parentElement;up++){
-                  if(card.querySelector('img')||card.querySelector('[class*=btn]')
-                     ||/doTask/i.test(String(card.className||'')))break;
-                  card=card.parentElement;
-                }
+                // r28：只认标题所在的这一张卡，绝不向上扩。
+                // r27 是 for(up<6) 一路往父节点爬，直到找到「含 img 的块」——任务列表
+                // 本身就在一个可上下滑的容器里，爬到列表容器就满足条件停住了，于是
+                // card.querySelectorAll('img') 把**别的任务**的按钮图也收进来，再按
+                // r.left/100 加分排序，最靠左那张永远第一，三次点同一个 @280,959 就是这么来的。
+                var card=null;
+                try{ card=anchor.closest('.doTaskDiv') }catch(x){}
                 if(!card)card=anchor;
-                // 「去完成」这块在页面上是图片（绿底白字圆角），文字节点是空的。
-                // 旧脚本只认 innerText，永远匹配不上，最后去点标题那块容器，
-                // 落点压在文字上，页面自己的 @click 收不到。
+                // r28 三级降级，前两级都不碰坐标。
+                // ① 卡内有文字按钮：直接 DOM click。事件派发不受滚动位置、遮挡、
+                //    pointer-events 影响，也不需要先滚到可视区。
+                var KW={'去完成':1,'去逛逛':1,'去参与':1,'立即完成':1,'去看看':1,
+                        '去领取':1,'去做任务':1,'立即领取':1,'去签到':1};
+                var txts=card.querySelectorAll('button,a,span,div,p,i,em');
+                for(var j=0;j<txts.length;j++){
+                  var s=norm(txts[j].innerText);
+                  if(!s||s.length>10)continue;
+                  if(KW[s]){
+                    try{ txts[j].click() }catch(x){}
+                    return JSON.stringify({name:title,kind:'text',btn:s,url:String(location.href)});
+                  }
+                }
+                // ② 纯图片按钮：不猜坐标，直接调组件方法。toDoTask 内部就是
+                //    「发 doTask → toJump 打开落地页」，与手点同一条链路（12:02 已实证）。
+                //    14:58 这次三次点 @280,959 全无反应，就是候选排序选中了别的任务
+                //    的图；与其修打分，不如根本不用坐标。
+                var comp=byComp('imgcard');
+                if(comp)return comp;
+                // ③ 组件方法也没有（页面改版）才退回坐标。此时必须先在滑动容器里
+                //    把按钮滚进可视区——getBoundingClientRect 不受容器裁剪影响，
+                //    露半截的卡片算出来的中心点会落在容器外，点下去打在底栏/遮罩上。
                 var cands=[];
                 function push(node,score,kind){
                   if(!node)return;
@@ -1286,13 +1309,7 @@ final class GooseTask {
                   try{ r=node.getBoundingClientRect() }catch(x){ return }
                   if(!r||r.width<8||r.height<8)return;
                   for(var q=0;q<cands.length;q++){ if(cands[q].el===node)return }
-                  cands.push({el:node,score:score+r.left/100,kind:kind,r:r});
-                }
-                var txts=card.querySelectorAll('button,a,span,div,p,i,em');
-                for(var j=0;j<txts.length;j++){
-                  var s=norm(txts[j].innerText);
-                  if(s==='去完成'||s==='去逛逛'||s==='去参与'||s==='立即完成'
-                     ||s==='去看看'||s==='去领取'||s==='去做任务'||s==='立即领取'){push(txts[j],100,'text');break}
+                  cands.push({el:node,score:score,kind:kind});
                 }
                 var imgs=card.querySelectorAll('img');
                 for(var m=0;m<imgs.length;m++){
@@ -1310,29 +1327,50 @@ final class GooseTask {
                   var bs=card.querySelectorAll('[class*=btn],[class*=Btn],[class*=button],[onclick]');
                   for(var n=0;n<bs.length;n++)push(bs[n],25,'box');
                 }
-                if(!cands.length)return byComp('nobtn')||JSON.stringify({err:'任务按钮没找到',name:title});
+                if(!cands.length)return JSON.stringify({err:'任务卡片里没有可点的按钮',name:title});
                 cands.sort(function(a,b){return b.score-a.score});
                 var pick=cands[0];
-                var r2=pick.r;
+                try{ pick.el.scrollIntoView({block:'center',inline:'nearest'}) }catch(x){}
+                var r2=null;
+                try{ r2=pick.el.getBoundingClientRect() }catch(x){}
+                if(!r2)return JSON.stringify({err:'拿不到按钮位置',name:title});
                 var x=r2.left+r2.width/2,y=r2.top+r2.height/2;
-                // 图片上可能压着透明层或 pointer-events:none，取该点最上层再补一发。
-                var layers=[pick.el];
-                try{
-                  var top=document.elementFromPoint(x,y);
-                  if(top&&top!==pick.el)layers.push(top);
-                }catch(x){}
-                for(var L=0;L<layers.length;L++){
-                  var tg=layers[L];
-                  var seq=['touchstart','touchend','mousedown','mouseup','click'];
-                  for(var k=0;k<seq.length;k++){
-                    try{
-                      var ev=document.createEvent('MouseEvents');
-                      ev.initMouseEvent(seq[k],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
-                      tg.dispatchEvent(ev);
-                    }catch(x){}
-                  }
-                  try{ if(typeof tg.click==='function')tg.click() }catch(x){}
+                var vw=window.innerWidth||360, vh=window.innerHeight||640;
+                if(x<4||y<4||x>vw-4||y>vh-4){
+                  return JSON.stringify({err:'按钮在可视区外 '+Math.round(x)+','+Math.round(y),name:title});
                 }
+                var top=null;
+                try{ top=document.elementFromPoint(x,y) }catch(x){}
+                if(!top||!(top===pick.el||pick.el.contains(top)||top.contains(pick.el))){
+                  return JSON.stringify({err:'按钮被遮住 '+Math.round(x)+','+Math.round(y),name:title});
+                }
+                // 事件序列：r27 只有 touch/mouse，没有 pointer；而且 touchstart 是用
+                // MouseEvents 造的假货，e.touches 为 undefined，页面上的 touch 逻辑
+                // 一读就 return。这里补 pointerdown/pointerup，touch 用真 TouchEvent。
+                var tg=pick.el;
+                var pt={bubbles:true,cancelable:true,clientX:x,clientY:y,view:window};
+                try{ tg.dispatchEvent(new PointerEvent('pointerdown',pt)) }catch(x){}
+                try{ tg.dispatchEvent(new PointerEvent('pointerup',pt)) }catch(x){}
+                var touchOk=false;
+                try{
+                  var tt=new Touch({identifier:1,target:tg,clientX:x,clientY:y,
+                                    pageX:x+(window.scrollX||0),pageY:y+(window.scrollY||0)});
+                  tg.dispatchEvent(new TouchEvent('touchstart',{bubbles:true,cancelable:true,
+                                    touches:[tt],targetTouches:[tt],changedTouches:[tt]}));
+                  tg.dispatchEvent(new TouchEvent('touchend',{bubbles:true,cancelable:true,
+                                    touches:[],targetTouches:[],changedTouches:[tt]}));
+                  touchOk=true;
+                }catch(x){}
+                var seq=touchOk?['mousedown','mouseup','click']
+                               :['touchstart','touchend','mousedown','mouseup','click'];
+                for(var k=0;k<seq.length;k++){
+                  try{
+                    var ev=document.createEvent('MouseEvents');
+                    ev.initMouseEvent(seq[k],true,true,window,1,x,y,x,y,false,false,false,false,0,null);
+                    tg.dispatchEvent(ev);
+                  }catch(x){}
+                }
+                try{ if(typeof tg.click==='function')tg.click() }catch(x){}
                 return JSON.stringify({name:title,kind:pick.kind,x:Math.round(x),y:Math.round(y),
                                        url:String(location.href)});
               }catch(e){return JSON.stringify({err:String(e&&e.message||e)})}
