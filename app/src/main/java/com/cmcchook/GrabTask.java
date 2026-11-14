@@ -81,7 +81,7 @@ final class GrabTask {
         try {
             boolean perks = kind.startsWith("perks");
             boolean perks10 = "perks10".equals(kind);
-            String label = perks ? ("perks10".equals(kind) ? "天天领权益 · 10 点档" : "天天领权益 · 12 点档")
+            String label = perks ? ("perks10".equals(kind) ? "天天领权益(辽宁) · 10 点档" : "天天领权益(辽宁) · 12 点档")
                     : "wed".equals(kind) ? "周三 88 元话费券"
                     : "lingxi".equals(kind) ? "灵犀 · 周二/周四 10 点券" : "12 点话费券";
             long at = perks ? atHour(perks10 ? 10 : 12)
@@ -98,7 +98,7 @@ final class GrabTask {
             // 1. 打开抢券页并停住（同时把 App 拉到前台）。
             if (perks) {
                 // 天天领权益：页面必须停在活动页，到点才有按钮可点，所以先开真页。
-                HookLog.progress("grab", "· 打开天天领权益…");
+                HookLog.progress("grab", "· 打开天天领权益(辽宁)…");
                 boolean opened = WebSession.beginFast("perks", PerksTask.entryUrl(), 25_000L);
                 HookLog.progress("grab", opened ? "✓ 活动页已打开，停在每日奖品"
                         : "· 页面没打开，到点直接重试");

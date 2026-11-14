@@ -161,14 +161,14 @@
     <string name="grab_noon_desc">每周一次 · 12:00 开抢 · 点了就在页面等，到点自动抢；过点才进就直接试</string>
     <string name="grab_lingxi">灵犀 · 周二/周四 10 点券</string>
     <string name="grab_lingxi_desc">每周二、周四 10:00 开抢 · 先手动进到灵犀的券页，再点「进入等待」；没有券入口的号用下面的口令兜底</string>
-    <string name="grab_perks">天天领权益 · 10 点档 / 12 点档</string>
+    <string name="grab_perks">天天领权益(辽宁) · 10 点档 / 12 点档</string>
     <string name="grab_perks_desc">先开活动页停住，到点直发抢；10:00 每日一档，12:00 周六日再加一档；可点「改」指定优先抢哪个奖品</string>
     <string name="grab_perks10">抢 10 点</string>
     <string name="grab_perks12">抢 12 点</string>
     <!-- r45 天天领权益「优先抢」设置 -->
     <string name="perks_pick_none">优先抢：未设置（按页面顺序）</string>
     <string name="perks_pick_edit">改</string>
-    <string name="perks_pick_title">天天领权益 · 优先抢哪个</string>
+    <string name="perks_pick_title">天天领权益(辽宁) · 优先抢哪个</string>
     <string name="perks_pick_desc">两档各设一套。多个关键词用逗号分隔，按写的顺序优先匹配奖品名；留空＝按页面顺序抢第一个可领的。点下面的奖品名可快速填入。</string>
     <string name="perks_pick_r1">10 点档（每日 10:00）</string>
     <string name="perks_pick_r2">12 点档（周六日 12:00）</string>

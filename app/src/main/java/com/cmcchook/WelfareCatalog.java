@@ -189,12 +189,10 @@ final class WelfareCatalog {
                             + "#/answerQuestions",
                     "answerquestions", STATE_IMPL, TaskRunner.CMD_QUIZ, false, false),
 
-            // r42：天天领权益（辽宁）rr/actH5。每日 10:00 起每日奖池领 1 个奖品
-            // （流量券 / 云盘 / 会员），周周抢要支付、月月享要点亮，均不在自动范围。
-            // 入口短链 0FKMeG，落地带 activityCode=36293370，页面自己发 receive.do。
-            new Item("perks", "天天领权益(辽宁)", "每日 10 点领 1 个奖品（流量券 / 权益）",
-                    PerksTask.ACT_PERKS, "workperksmall", STATE_IMPL,
-                    TaskRunner.CMD_PERKS, false, false),
+            // r48：天天领权益(辽宁) 从「已接入」清单里删掉（用户要求）。
+            // 它本来就不进「一键全部」（defaultOn=false），唯一入口是首页「抢券」卡片上的
+            // 「抢 10 点 / 抢 12 点」，由 GrabTask → PerksTask 直发，不依赖这张表。
+            // 采集缓存里如果又扫到活动页，用 isPerksUrl() 挡掉，避免以「新发现」复活。
     };
 
     private WelfareCatalog() {
@@ -401,6 +399,20 @@ final class WelfareCatalog {
         }
     }
 
+    /**
+     * r48：天天领权益(辽宁) 的活动页地址。
+     *
+     * <p>已经从「已接入」清单删掉，但采集缓存里仍可能扫到同一个活动页；不挡掉的话
+     * 它会以「新发现 · index.html」的形式重新冒出来。
+     */
+    private static boolean isPerksUrl(String url) {
+        if (url == null || url.isEmpty()) {
+            return false;
+        }
+        String low = url.toLowerCase(Locale.US);
+        return low.contains("workperksmall") || low.contains("activitycode=36293370");
+    }
+
     /** 这个活动号是不是已经下线、不展示。 */
     private static boolean retired(String id) {
         if (id == null || id.isEmpty()) {
@@ -444,7 +456,7 @@ final class WelfareCatalog {
                 continue;
             }
             String id = idOf(url);
-            if (id.isEmpty() || retired(id)) {
+            if (id.isEmpty() || retired(id) || isPerksUrl(url)) {
                 continue;
             }
             int hit = -1;

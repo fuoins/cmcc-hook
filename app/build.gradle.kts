@@ -11,8 +11,8 @@ android {
         applicationId = "com.cmcchook"
         minSdk = 23
         targetSdk = 30
-        versionCode = 442
-        versionName = "4.42.0"
+        versionCode = 443
+        versionName = "4.43.0"
     }
 
     signingConfigs {
