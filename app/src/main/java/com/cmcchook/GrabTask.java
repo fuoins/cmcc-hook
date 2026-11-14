@@ -74,9 +74,13 @@ final class GrabTask {
         currentKind = kind;
         long start = System.currentTimeMillis();
         try {
-            String label = "wed".equals(kind) ? "周三 88 元话费券"
+            boolean perks = kind.startsWith("perks");
+            boolean perks10 = "perks10".equals(kind);
+            String label = perks ? ("perks10".equals(kind) ? "天天领权益 · 10 点档" : "天天领权益 · 12 点档")
+                    : "wed".equals(kind) ? "周三 88 元话费券"
                     : "lingxi".equals(kind) ? "灵犀 · 周二/周四 10 点券" : "12 点话费券";
-            long at = "wed".equals(kind) ? nextWednesday8()
+            long at = perks ? atHour(perks10 ? 10 : 12)
+                    : "wed".equals(kind) ? nextWednesday8()
                     : "lingxi".equals(kind) ? nextTueThu10() : nextNoon();
             long wait = at - System.currentTimeMillis();
             HookLog.log("GRAB", "抢券 · " + label + " · " + fmt(at),
@@ -87,7 +91,13 @@ final class GrabTask {
                             + "提前进就是在页面上等，过点才进就直接抢。");
 
             // 1. 打开抢券页并停住（同时把 App 拉到前台）。
-            if ("lingxi".equals(kind)) {
+            if (perks) {
+                // 天天领权益：页面必须停在活动页，到点才有按钮可点，所以先开真页。
+                HookLog.progress("grab", "· 打开天天领权益…");
+                boolean opened = WebSession.beginFast("perks", PerksTask.entryUrl(), 25_000L);
+                HookLog.progress("grab", opened ? "✓ 活动页已打开，停在每日奖品"
+                        : "· 页面没打开，到点直接重试");
+            } else if ("lingxi".equals(kind)) {
                 // 灵犀没有已知接口，抢的是「已经停住的那一页」，所以这里只找页面，
                 // 找不到就让用户手动进一次，不硬开一个空壳页。
                 HookLog.progress("grab", "· 找灵犀页面…");
@@ -109,9 +119,11 @@ final class GrabTask {
             }
 
             // 2. 等到点（每 5 秒报一次倒计时，用户能看见确实在等）。
+            //    天天领权益要贴着点交接：页面已经在活动页，早交过去只会空等。
+            long handover = perks ? 8_000L : HANDOVER_MS;
             while (!stop) {
                 long left = at - System.currentTimeMillis();
-                if (left <= HANDOVER_MS) {
+                if (left <= handover) {
                     break;
                 }
                 if (System.currentTimeMillis() - start > WAIT_LIMIT_MS) {
@@ -119,7 +131,7 @@ final class GrabTask {
                     return;
                 }
                 HookLog.progress("grab", "· 在页面等待 · 距开抢还有 " + human(left));
-                sleep(Math.min(5_000L, Math.max(500L, left - HANDOVER_MS)));
+                sleep(Math.min(5_000L, Math.max(500L, left - handover)));
             }
             if (stop) {
                 HookLog.progress("grab", "· 已取消");
@@ -129,7 +141,9 @@ final class GrabTask {
             // 3. 交给现成实现。WedTask 内含「打卡 + 领券 + 抽奖」，
             //    runSeckill 内含「查场次 + 蹲到开场 + 撞击重试」。
             HookLog.progress("grab", "· 到点了，开始抢…");
-            TaskRunner.Result r = "wed".equals(kind) ? WedTask.run()
+            TaskRunner.Result r = perks
+                    ? PerksTask.run(PerksTask.entryUrl(), at, perks10 ? "1" : "2")
+                    : "wed".equals(kind) ? WedTask.run()
                     : "lingxi".equals(kind) ? LingxiGrab.run() : SignTask.runSeckill();
             String text = r == null ? "没有返回" : r.summary;
             HookLog.progress("grab", (r != null && r.ok ? "✓ " : "· ") + text);
@@ -213,6 +227,17 @@ final class GrabTask {
             }
         }
         return now.getTimeInMillis();
+    }
+
+    /** 今天某个整点；已经过点就返回「现在」（直接抢，窗口没关还能捡漏）。 */
+    private static long atHour(int hour) {
+        Calendar now = Calendar.getInstance();
+        Calendar t = (Calendar) now.clone();
+        t.set(Calendar.HOUR_OF_DAY, hour);
+        t.set(Calendar.MINUTE, 0);
+        t.set(Calendar.SECOND, 0);
+        t.set(Calendar.MILLISECOND, 0);
+        return Math.max(now.getTimeInMillis(), t.getTimeInMillis());
     }
 
     /** 下一个 12:00；已过 12 点返回「现在」（直接试一次）。 */

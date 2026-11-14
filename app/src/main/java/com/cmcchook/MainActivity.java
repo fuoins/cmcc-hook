@@ -336,6 +336,8 @@ public final class MainActivity extends AppCompatActivity {
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
         findViewById(R.id.btnGrabLingxi).setOnClickListener(v -> grabStart("lingxi"));
+        findViewById(R.id.btnGrabPerks10).setOnClickListener(v -> grabStart("perks10"));
+        findViewById(R.id.btnGrabPerks12).setOnClickListener(v -> grabStart("perks12"));
         findViewById(R.id.btnLingxiSend).setOnClickListener(v -> askLingxiCmd());
         View cmdState = findViewById(R.id.lingxiCmdState);
         if (cmdState != null) {

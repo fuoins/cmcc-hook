@@ -21,26 +21,35 @@ import org.json.JSONObject;
  * </pre>
  * 只有 {@code LJRkIeoW} 是页面 JS 现场算的签名（{@code queryJsEncodeConfig.do} 下发的
  * deffirst/defsecond 密钥），Java 层拼不出来，所以仍然<b>只借页面自己的按钮</b>：
- * 点每日卡片上的「立即领」，让页面发 receive.do，模块只在旁边读回执，不重放、不改包。
+ * 点每日卡片上的领取按钮，让页面发 receive.do，模块只在旁边读回执，不重放、不改包。
  *
- * <p>页面结构（抓包里的活动组件 chunk-8822bd48）：
+ * <p>页面结构（2026-11-14 真机 DOM 实测）：
  * <ul>
  *   <li>每日区 {@code .wpm-benefit-section-daily}，奖品卡 {@code .wpm-benefit-card}，
- *       按钮 {@code .wpm-benefit-btn}</li>
- *   <li>按钮状态文案：{@code 立即领} 可领 / {@code 已抢光} / {@code 明天再来} /
- *       {@code 下周再来} / {@code 下月再来} / {@code 未开启}</li>
+ *       按钮 {@code .wpm-benefit-btn}（内部是 {@code SPAN}，文本只有箭头 {@code >}，
+ *       并<b>没有</b>「立即领」三个字 —— 不能靠按钮文案认可领）</li>
+ *   <li>卡片整段文本里才带状态词：{@code 已抢光} / {@code 明天再来} / {@code 下周再来} /
+ *       {@code 下月再来} / {@code 未开启} / {@code 已领取}</li>
  *   <li>成功弹窗 {@code .wds-panel}「领取成功」+ {@code .wds-ticket}，关闭 {@code .wds-close}</li>
- *   <li>领光/上限弹窗 {@code .dlm-*} / {@code .mlm-*}</li>
  * </ul>
  *
- * <p>只做每日「立即领」：周周抢是付费权益（stockOccupy → createPayOrder → 支付），
- * 月月享要点亮累计，两者都不在自动范围内，日志里如实标注未做。
+ * <p>奖池是两个独立 rule（都挂在 {@code ruleList} 下）：{@code ruleList["1"]} 10:00 起，
+ * {@code ruleList["2"]} 12:00 起且 {@code weekDay="6,7"}（仅周六日）。两档各算一次，
+ * 所以周六/周日最多能领 2 个；引擎领完一档会重新扫卡，12 点档出现且可点就接着领第二个。
+ *
+ * <p>页面加载时自己会查 {@code queryThirdReceiveRecords.do} / {@code queryLocalRecords.do}，
+ * 返回里带 {@code prizeName} 和 {@code getTime}。引擎先读这两份记录，按奖品名把今天已领的那张
+ * 标成「今日已领」不再点，剩下的照常领 —— 不会因为今天领过一个就整页收工。
+ *
+ * <p>周周抢是付费权益（stockOccupy → createPayOrder → 支付），月月享要点亮累计，两者都不在
+ * 自动范围内。每日区没有卡片时（停在别的 tab）直接收工，绝不退到全部卡片去点，避免误触付费按钮。
  */
 final class PerksTask {
 
     private static final String PREFS = "cmcc_hook_perks";
     private static final String KEY_ENTRY = "entry_url";
     private static final String KEY_ENTRY_AT = "entry_at";
+    private static final String KEY_WORDS = "pick_words";
     private static final long ENTRY_TTL = 24L * 3600_000L;
 
     static final String ACT_CODE = "36293370";
@@ -112,9 +121,65 @@ final class PerksTask {
         }
     }
 
+    // ------------------------------------------------------- 奖品偏好（关键词）
+
+    /** 优先奖品关键词，原样保存（逗号/空格分隔）。空 = 按页面顺序。 */
+    static String words() {
+        Context ctx = HookLog.context();
+        if (ctx == null) {
+            return "";
+        }
+        try {
+            return AccountScope.prefs(ctx, PREFS).getString(KEY_WORDS, "");
+        } catch (Throwable e) {
+            return "";
+        }
+    }
+
+    static void setWords(String raw) {
+        Context ctx = HookLog.context();
+        if (ctx == null) {
+            return;
+        }
+        try {
+            String v = raw == null ? "" : raw.trim();
+            if (v.isEmpty()) {
+                AccountScope.prefs(ctx, PREFS).edit().remove(KEY_WORDS).apply();
+            } else {
+                AccountScope.prefs(ctx, PREFS).edit().putString(KEY_WORDS, v).apply();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 关键词转 JSON 数组注入页面；最多 8 个，够用且不会把脚本撑爆。 */
+    private static String wordsJson() {
+        JSONArray arr = new JSONArray();
+        String raw = words();
+        if (raw.isEmpty()) {
+            return arr.toString();
+        }
+        String[] parts = raw.split("[,，;；\\s]+");
+        for (String one : parts) {
+            String w = one == null ? "" : one.trim();
+            if (!w.isEmpty() && arr.length() < 8) {
+                arr.put(w);
+            }
+        }
+        return arr.toString();
+    }
+
     // --------------------------------------------------------------- 执行
 
     static TaskRunner.Result run(String entry) {
+        return run(entry, 0L, "");
+    }
+
+    /**
+     * @param targetAt 抢兑目标时间（epoch 毫秒）；0 表示普通执行，立刻按顺序领。
+     * @param rule     目标档位："1"=10 点档，"2"=12 点档，""=不限。
+     */
+    static TaskRunner.Result run(String entry, long targetAt, String rule) {
         StringBuilder detail = new StringBuilder();
         detail.append("入口: ").append(brief(entry)).append('\n');
         WebPage page = WebSession.current();
@@ -160,9 +225,14 @@ final class PerksTask {
                     "短链还停在中转页。重开一次中国移动 App 再试；若连续两次都这样，把日志发我。");
         }
 
+        // 关键词先注入，页面脚本读 window.__cmcc_perks_words。
+        page.eval("(function(){try{window.__cmcc_perks_words=" + wordsJson()
+                + ";window.__cmcc_perks_target=" + Math.max(0L, targetAt)
+                + ";window.__cmcc_perks_rule='" + (rule == null ? "" : rule) + "'"
+                + "}catch(e){}})()", 3_000L);
         page.eval(PERKS_SCRIPT, 8_000L);
         String raw = null;
-        long deadline = System.currentTimeMillis() + 75_000L;
+        long deadline = System.currentTimeMillis() + 150_000L;
         while (System.currentTimeMillis() < deadline) {
             String v = page.eval(
                     "(function(){try{return String(window.__cmcc_perks||'')}catch(e){return ''}})()",
@@ -175,7 +245,7 @@ final class PerksTask {
         }
         if (raw == null) {
             return TaskRunner.Result.fail("天天领权益脚本超时",
-                    detail.append("页面脚本 75 秒没有回报\n").toString(),
+                    detail.append("页面脚本 150 秒没有回报\n").toString(),
                     "页面能打开但脚本没回报。把这段日志发我。");
         }
 
@@ -191,26 +261,34 @@ final class PerksTask {
         String stage = out.optString("stage", "");
         int items = out.optInt("items", 0);
         int claimable = out.optInt("claimable", 0);
-        int claimed = out.optInt("claimed", 0);
-        String prize = out.optString("prize", "");
-        String claimName = out.optString("claimName", "");
-        String code = out.optString("code", "");
-        String msg = out.optString("msg", "");
+        String stop = out.optString("stop", "");
+        String stopCode = out.optString("stopCode", "");
+        String stopMsg = out.optString("stopMsg", "");
         String pageText = out.optString("text", "");
         String url = out.optString("url", "");
+        JSONArray got = out.optJSONArray("got");
+        int claimed = got == null ? 0 : got.length();
+        String pickedWords = words();
 
         detail.append("页面: ").append(brief(url)).append('\n');
         detail.append("每日奖品: ").append(items).append(" 个 · 可领 ").append(claimable)
                 .append(" 个\n");
+        detail.append("派奖偏好: ").append(pickedWords.isEmpty() ? "按页面顺序" : pickedWords)
+                .append('\n');
+        int grab = out.optInt("grab", 0);
+        detail.append("场次: ")
+                .append("1".equals(rule) ? "10 点档" : "2".equals(rule) ? "12 点档" : "不限")
+                .append(grab > 0 ? " · 到点抢兑" : " · 直接领")
+                .append('\n');
         if (!pageText.isEmpty()) {
             detail.append("页面文案: ").append(brief(pageText)).append('\n');
         }
 
         if ("no-page".equals(stage)) {
-            return TaskRunner.Result.skip("天天领权益 · 页面没渲染出奖品列表",
+            return TaskRunner.Result.skip("天天领权益 · 页面没渲染出每日奖品区",
                     detail.toString(),
-                    "页面打开了但没渲染出每日奖品卡（可能还在加载活动信息，或登录态被顶掉）。\n"
-                            + "退出重进一次活动页再跑；连续出现把日志发我。");
+                    "页面打开了但每日区没有奖品卡（可能停在周周抢/月月享 tab，或活动信息还没回来）。\n"
+                            + "进活动页确认默认停在「天天领」再跑一次；连续出现把日志发我。");
         }
         if ("error".equals(stage)) {
             return TaskRunner.Result.fail("天天领权益脚本异常",
@@ -219,50 +297,79 @@ final class PerksTask {
         }
 
         if (claimed > 0) {
-            String got = prize.isEmpty() ? (claimName.isEmpty() ? "每日奖品" : claimName) : prize;
-            String summary = "天天领权益 · 已领「" + got + "」";
-            detail.append("提交回执: receive.do code=").append(code)
-                    .append(" msg=").append(msg).append('\n');
+            StringBuilder names = new StringBuilder();
+            StringBuilder rec = new StringBuilder();
+            for (int i = 0; i < got.length(); i++) {
+                JSONObject g = got.optJSONObject(i);
+                if (g == null) {
+                    continue;
+                }
+                String nm = g.optString("name", "每日奖品");
+                String rid = g.optString("rid", "");
+                if (names.length() > 0) {
+                    names.append("、");
+                }
+                names.append(nm);
+                rec.append("  · ").append(nm).append(" → code=").append(g.optString("code", ""))
+                        .append(rid.isEmpty() ? "" : " rid=" + rid).append('\n');
+            }
+            String summary = claimed == 1
+                    ? "天天领权益 · 已领「" + names + "」"
+                    : "天天领权益 · 已领 " + claimed + " 个（" + names + "）";
+            detail.append("提交回执:\n").append(rec);
+            if (!stop.isEmpty() && !stopCode.isEmpty()) {
+                detail.append("第二档: ").append(stopCode)
+                        .append(stopMsg.isEmpty() ? "" : " " + stopMsg).append('\n');
+            }
             detail.append("说明: 回执 body 里有 prizeRecordId，页面自己说已受理；"
                     + "流量券会下发到「中国移动APP-我的-卡券」。\n");
             return TaskRunner.Result.ok(summary, detail.toString(), summary);
         }
 
-        if (!code.isEmpty()) {
-            // 有回执但没领到：页面明确给了业务码，照实写，不猜。
-            String hint = "页面回执: " + code + (msg.isEmpty() ? "" : " " + msg);
-            if (code.equals("0000")) {
+        if (!stopCode.isEmpty()) {
+            // 点了但页面给了业务码：照实写，不猜。
+            String hint = "页面回执: " + stopCode + (stopMsg.isEmpty() ? "" : " " + stopMsg);
+            if (stopCode.equals("0000")) {
                 return TaskRunner.Result.skip("天天领权益 · 页面受理了但没返回奖品记录",
                         detail.append(hint).append('\n').toString(),
                         "接口回了 0000 但 body 里没有 prizeRecordId，把日志发我核对。");
             }
-            boolean already = msg.contains("上限") || msg.contains("已领")
-                    || msg.contains("领过") || msg.contains("明天");
-            if (already) {
-                return TaskRunner.Result.idle("天天领权益 · 今天已经领过了",
+            boolean alreadyDone = stopMsg.contains("上限") || stopMsg.contains("已领")
+                    || stopMsg.contains("领过") || stopMsg.contains("明天");
+            if (alreadyDone) {
+                return TaskRunner.Result.idle("天天领权益 · 今天这档已经领过了",
                         detail.append(hint).append('\n').toString(),
-                        "每日最多领 1 个奖品，明天 10 点后再跑。");
+                        "两档各 1 次，这一档今天领过了，另一档还能领；12 点后再跑一次试试。");
             }
-            boolean soldOut = msg.contains("抢光") || msg.contains("领完");
+            boolean soldOut = stopMsg.contains("抢光") || stopMsg.contains("领完");
             if (soldOut) {
                 return TaskRunner.Result.skip("天天领权益 · 今日奖品已抢光",
                         detail.append(hint).append('\n').toString(),
-                        "今天的份额没了，明天 10 点后再来。");
+                        "这档的份额没了，12 点后再看另一档。");
             }
-            return TaskRunner.Result.skip("天天领权益 · 没领到（" + code + "）",
+            return TaskRunner.Result.skip("天天领权益 · 没领到（" + stopCode + "）",
                     detail.append(hint).append('\n').toString(),
                     "页面回执如上。把日志发我，我按这个码补判定。");
         }
 
+        if (grab > 0) {
+            return TaskRunner.Result.skip(
+                    "天天领权益 · 这一档没抢到" + (stop.isEmpty() ? "" : "（" + stop + "）"),
+                    detail.toString(),
+                    "到点了但没拿到：可能是份额被抢光、页面没刷新出按钮，或停在别的 tab。\n"
+                            + "12 点档只在周六日开；下一场再试，或把日志发我看落点。");
+        }
+
         if (claimable == 0) {
             String state = out.optString("state", "");
-            return TaskRunner.Result.idle("天天领权益 · 今天没有可领的奖品"
+            return TaskRunner.Result.idle("天天领权益 · 这一轮没有可领的奖品"
                             + (state.isEmpty() ? "" : "（" + state + "）"),
                     detail.toString(),
-                    "每日奖品卡上都不是「立即领」：已抢光 / 明天再来 / 未开启。明天 10 点后再跑。");
+                    "卡片上都是「今日已领 / 已抢光 / 明天再来」：10 点档已领就等 12 点档，"
+                            + "周末 12 点后再跑一次。");
         }
-        // 有可领按钮但点了没有任何回执。
-        return TaskRunner.Result.fail("天天领权益 · 点了「立即领」但没收到 receive.do 回执",
+        // 有可点按钮但点了没有任何回执。
+        return TaskRunner.Result.fail("天天领权益 · 点了领取但没收到 receive.do 回执",
                 detail.toString(),
                 "按钮点了却没发出领取请求：可能弹了二次确认弹窗，或按钮在图片层上。\n"
                         + "把这份完整日志发我，我按页面实际 DOM 收敛选择器。");
@@ -303,16 +410,27 @@ final class PerksTask {
     }
 
     /**
-     * 页面内脚本：等每日奖品渲染 → 点第一张卡的「立即领」→ 只读 receive.do 回执。
+     * 页面内脚本：等每日区渲染 → 读「今天已领」记录 → 按关键词挑卡片 → 点它读 receive.do →
+     * 再扫一轮（12 点档），最多领 2 次。
      *
      * <p>不拼 LJRkIeoW、不改请求体；只装一个只读 XHR 钩子记录
-     * receive.do / receiveWithRecord.do 的状态码、响应体和请求体（取 prizeName）。
+     * receive.do / receiveWithRecord.do 的状态码、响应体和请求体。
+     *
+     * <p>判定不依赖按钮文案（真实按钮里只有一个 {@code >}）：卡片整段文本命中
+     * 抢光/明天再来/未开启 等状态词即视为不可领，否则有可见按钮就算可领。
      */
     private static final String PERKS_SCRIPT = """
             (async function(){
               var ID='__cmcc_perks';
               window[ID]='';
-              var L=[], NET=[];
+              var L=[], NET=[], WORDS=[], TARGET=0, RULE='';
+              try{
+                if(window.__cmcc_perks_words&&window.__cmcc_perks_words.length){
+                  WORDS=window.__cmcc_perks_words;
+                }
+                TARGET=Number(window.__cmcc_perks_target||0)||0;
+                RULE=String(window.__cmcc_perks_rule||'');
+              }catch(e){}
               function line(s){ L.push(String(s)) }
               function cut(s,n){ s=String(s==null?'':s); return s.length>n?s.slice(0,n)+'…':s }
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
@@ -349,6 +467,79 @@ final class PerksTask {
                   };
                 }catch(e){}
               })();
+
+              function netHit(re){
+                var out=[];
+                for(var i=0;i<NET.length;i++){ if(re.test(String(NET[i].u||''))) out.push(NET[i]) }
+                return out
+              }
+              function jsonOf(rec){
+                var d=null; try{ d=JSON.parse(String(rec&&rec.b||'')) }catch(e){}
+                return d
+              }
+
+              // 每日奖品清单：DOM 没渲染时的兜底信息来源。
+              function prizeListFromInfo(){
+                var rs=netHit(/dayWeekMoonReceive\\/queryActivityInfo\\.do/);
+                for(var i=rs.length-1;i>=0;i--){
+                  var d=jsonOf(rs[i]), body=d&&d.body;
+                  if(!body) continue;
+                  var rl=body.ruleList||{}, day=rl['1']||rl[1];
+                  if(!day||!day.length) continue;
+                  var pl=day[0].prizeList||[];
+                  if(pl.length) return pl;
+                }
+                return null
+              }
+
+              // 两档奖池：ruleList["1"]=10 点档，ruleList["2"]=12 点档（周六日）。
+              function rulesFromInfo(){
+                var rs=netHit(/dayWeekMoonReceive\\/queryActivityInfo\\.do/);
+                for(var i=rs.length-1;i>=0;i--){
+                  var d=jsonOf(rs[i]), body=d&&d.body;
+                  if(!body) continue;
+                  var rl=body.ruleList||{}, out={}, any=0;
+                  for(var key in rl){
+                    if(!rl.hasOwnProperty(key)) continue;
+                    var arr=rl[key];
+                    if(!arr||!arr.length) continue;
+                    var r=arr[0], names=[], pl=r.prizeList||[];
+                    for(var j=0;j<pl.length;j++){
+                      var nm=String(pl[j].prizeName||'').replace(/\\s+/g,'');
+                      if(nm) names.push(nm);
+                    }
+                    out[key]={ruleId:String(r.ruleId||''),weekDay:String(r.weekDay||''),
+                              begin:String(r.beginTime||''),end:String(r.endTime||''),names:names};
+                    any++;
+                  }
+                  if(any) return out;
+                }
+                return null
+              }
+              var RULES=rulesFromInfo();
+              function fmtTime(ms){
+                function p(n){ n=Number(n); return (n<10?'0':'')+n }
+                var d=new Date(Number(ms)||0);
+                return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds())
+              }
+
+              // 页面自己查的「已领记录」，含 prizeName / getTime。
+              function records(){
+                var out=[], re1=/dayWeekMoonReceive\\/queryThirdReceiveRecords\\.do/,
+                    re2=/dayWeekMoonReceive\\/queryLocalRecords\\.do/;
+                var rs=netHit(re1).concat(netHit(re2));
+                for(var i=0;i<rs.length;i++){
+                  var d=jsonOf(rs[i]), body=d&&d.body;
+                  if(!body||!body.records) continue;
+                  for(var j=0;j<body.records.length;j++) out.push(body.records[j]);
+                }
+                return out
+              }
+              function todayStr(){
+                function p(n){ n=Number(n); return (n<10?'0':'')+n }
+                var d=new Date();
+                return d.getFullYear()+'-'+p(d.getMonth()+1)+'-'+p(d.getDate())
+              }
 
               // 完整触摸序列：页面按钮是 Vue 组件，只派发 click 常常没反应。
               function fire(e){
@@ -407,111 +598,256 @@ final class PerksTask {
               }
               var bodyTxt=String((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').slice(0,300);
               var cards=document.querySelectorAll('.wpm-benefit-card');
+              var PL=prizeListFromInfo();
               if(!cards.length){
                 line('页面没渲染出每日奖品卡（body: '+cut(bodyTxt,120)+'）');
-                done({stage:'no-page', text:bodyTxt, url:String(location.href)});
+                if(PL&&PL.length){
+                  line('接口里有 '+PL.length+' 个每日奖品:');
+                  for(var z=0;z<PL.length;z++){
+                    line('  · '+cut(String(PL[z].prizeName||''),30)
+                         +' | status='+String(PL[z].status||''));
+                  }
+                }
+                done({stage:'no-page', text:bodyTxt, items:PL?PL.length:0,
+                      url:String(location.href)});
                 return;
               }
 
-              // 每日区优先；页面没分区 class 就退到全部卡片。
-              var scope=document.querySelector('.wpm-benefit-section-daily')||document;
-              var daily=scope.querySelectorAll('.wpm-benefit-card');
-              if(!daily.length) daily=cards;
-
-              var items=[], claim=null, claimName='', stateCount={};
-              for(var i=0;i<daily.length;i++){
-                var c=daily[i], name=txt(c).slice(0,40);
-                var btn=null, label='';
-                var bs=c.querySelectorAll('.wpm-benefit-btn,button,a,[role=button]');
-                for(var j=0;j<bs.length;j++){
-                  var b=bs[j], bt=txt(b);
-                  if(!bt) continue;
-                  if(/^(立即领|立即领取|马上领|领取|抢)$/.test(bt)&&vis(b)){ btn=b; label=bt; break }
-                  if(!label && /抢光|明天再来|下周再来|下月再来|未开启|已领取/.test(bt)){
-                    label=bt;
-                  }
-                }
-                if(!label) label='-';
-                stateCount[label]=(stateCount[label]||0)+1;
-                items.push({i:i,name:name,btn:label,can:!!btn});
-                if(btn&&!claim){ claim=btn; claimName=name }
-              }
-              var canN=0;
-              for(var k=0;k<items.length;k++){ if(items[k].can) canN++ }
-              line('每日奖品: '+items.length+' 个 · 可领 '+canN+' 个');
-              for(var k2=0;k2<items.length;k2++){
-                line('  ['+items[k2].i+'] '+cut(items[k2].name,34)+' | 按钮='+items[k2].btn);
-              }
-
-              if(!claim){
-                var states=[];
-                for(var sk in stateCount){ if(stateCount.hasOwnProperty(sk)) states.push(sk+'×'+stateCount[sk]) }
-                done({stage:'done', items:items.length, claimable:0,
-                      state:states.join(' / '), text:bodyTxt, url:String(location.href)});
+              // 只认每日区。周周抢是付费权益，宁可不动也不能误点。
+              var sec=document.querySelector('.wpm-benefit-section-daily');
+              if(!sec||!sec.querySelectorAll('.wpm-benefit-card').length){
+                line('每日区没有奖品卡（可能停在周周抢 / 月月享 tab）');
+                line('页面卡片总数: '+cards.length);
+                done({stage:'no-page', text:bodyTxt, items:0, url:String(location.href)});
                 return;
               }
 
-              line('点「'+items[0].btn+'」: '+cut(claimName,40));
-              var before=NET.length;
-              var hit=fire(claim);
-              line('点击落点: '+hit);
+              var BLOCK=/已抢光|抢光|已领完|领完|明天再来|下周再来|下月再来|未开启|已领取|已领过|已结束|敬请期待|已达上限|暂无库存/;
+              var OPEN=/立即领|立即领取|马上领|马上领取|去领取|^领取$|^抢$|^>|›|»/;
+              var SKIP=/规则|说明|详情|更多|协议|帮助|记录|明细|我的奖品/;
 
-              // 有的版本先弹「确认领取」再发请求，顺手点掉一层确认。
-              await wait(1200);
-              if(NET.length===before){
-                var conf=document.querySelectorAll('button,a,div,span,[role=button]');
-                for(var q=0;q<conf.length&&q<400;q++){
-                  var e2=conf[q], t2=txt(e2);
-                  if(!t2||!vis(e2)) continue;
-                  if(/^(确认领取|确认|立即领取|确定)$/.test(t2)){
-                    line('二次确认: '+t2);
-                    fire(e2);
-                    break;
+              function stripState(s){
+                var t=String(s||'');
+                try{ t=t.replace(new RegExp(BLOCK.source,'g'),'') }catch(e){}
+                return t.replace(/[>›»]/g,'').slice(0,26)
+              }
+              // 卡片名优先对接口清单，接口没抓到就从卡片文本里剥掉状态词。
+              function nameOf(cardTxt){
+                var t=String(cardTxt||'');
+                if(PL){
+                  for(var i=0;i<PL.length;i++){
+                    var nm=String(PL[i].prizeName||'').replace(/\\s+/g,'');
+                    if(nm && t.indexOf(nm)>=0) return PL[i].prizeName;
                   }
                 }
+                return stripState(t)
               }
 
-              var rec=null;
-              for(var n=0;n<40;n++){
-                await wait(500);
-                for(var m=before;m<NET.length;m++){
-                  if(/dayWeekMoonReceive\\/(receive|receiveWithRecord)\\.do/.test(String(NET[m].u||''))){
-                    rec=NET[m];
+              // 今天已领：按奖品名对上卡片，只跳过那一张，不整页收工。
+              var GOT={}, today=todayStr(), recs=records();
+              for(var r1=0;r1<recs.length;r1++){
+                var g=String(recs[r1].getTime||'');
+                var nm2=String(recs[r1].prizeName||'').replace(/\\s+/g,'');
+                if(g.slice(0,10)===today && nm2){ GOT[nm2]=g.slice(11,16) }
+              }
+              var gotN=0;
+              for(var gk in GOT){ if(GOT.hasOwnProperty(gk)) gotN++ }
+              line('今日已领记录: '+gotN+' 条');
+              for(var gk2 in GOT){
+                if(GOT.hasOwnProperty(gk2)) line('  · '+gk2+' @'+GOT[gk2]);
+              }
+
+              function scan(){
+                var list=sec.querySelectorAll('.wpm-benefit-card'), out=[];
+                for(var i=0;i<list.length;i++){
+                  var c=list[i], cardTxt=txt(c);
+                  var name=nameOf(cardTxt), gotAt='';
+                  for(var gk in GOT){
+                    if(GOT.hasOwnProperty(gk) && gk && cardTxt.indexOf(gk)>=0){ gotAt=GOT[gk]; break }
+                  }
+                  var ruleTag='';
+                  if(RULES){
+                    for(var rk in RULES){
+                      if(!RULES.hasOwnProperty(rk)) continue;
+                      var ns=RULES[rk].names||[];
+                      for(var ni=0;ni<ns.length;ni++){
+                        if(ns[ni]&&cardTxt.indexOf(ns[ni])>=0){ ruleTag=rk; break }
+                      }
+                      if(ruleTag) break;
+                    }
+                  }
+                  var blocked=BLOCK.test(cardTxt)||!!gotAt;
+                  var bs=c.querySelectorAll('.wpm-benefit-btn,button,a,[role=button]');
+                  var btn=null,label='',first=null;
+                  for(var j=0;j<bs.length;j++){
+                    var b=bs[j], bt=txt(b);
+                    if(!vis(b)) continue;
+                    if(SKIP.test(bt)) continue;
+                    if(!first) first=b;
+                    if(!blocked && OPEN.test(bt)){ btn=b; label=bt; break }
+                  }
+                  // 真机按钮里只有「>」，文案认不出来：卡片没状态词就算能点。
+                  if(!btn && !blocked && first){ btn=first; label=txt(first)||'>' }
+                  if(!label){
+                    if(gotAt){ label='今日已领@'+gotAt }
+                    else{
+                      var m=null; try{ m=cardTxt.match(BLOCK) }catch(e){}
+                      label=m?m[0]:(first?'按钮无文案':'无按钮');
+                    }
+                  }
+                  out.push({el:c,btn:btn,name:name,label:label,can:!!btn&&!blocked,
+                            got:gotAt,rule:ruleTag});
+                }
+                return out
+              }
+              function stateOf(rows){
+                var st={};
+                for(var i=0;i<rows.length;i++){ st[rows[i].label]=(st[rows[i].label]||0)+1 }
+                var out=[];
+                for(var k in st){ if(st.hasOwnProperty(k)) out.push(k+'×'+st[k]) }
+                return out.join(' / ')
+              }
+              // 关键词按填写顺序优先；全没命中就退回第一个可点的。
+              function pick(rows){
+                var pool=[];
+                for(var i=0;i<rows.length;i++){
+                  if(!rows[i].can) continue;
+                  // 明确属于另一档的卡不点：抢 10 点档时别把 12 点档点了。
+                  if(RULE && rows[i].rule && rows[i].rule!==RULE) continue;
+                  pool.push(rows[i]);
+                }
+                if(!pool.length) return null;
+                for(var w=0;w<WORDS.length;w++){
+                  var kw=String(WORDS[w]==null?'':WORDS[w]).replace(/\\s+/g,'');
+                  if(!kw) continue;
+                  for(var i2=0;i2<pool.length;i2++){
+                    if(pool[i2].name.indexOf(kw)>=0) return pool[i2];
                   }
                 }
-                if(rec) break;
+                return pool[0]
               }
 
-              var out={stage:'done', items:items.length, claimable:canN,
-                       claimName:claimName, claimed:0, code:'', msg:'', prize:''};
-              if(rec){
-                var d=null;
-                try{ d=JSON.parse(rec.b) }catch(x){}
-                out.code=d?String(d.code||''):'';
-                out.msg=d?String(d.msg||''):'';
-                if(d&&d.body&&d.body.prizeRecordId) out.claimed=1;
-                try{
-                  var mm=/prizeName=([^&]*)/.exec(String(rec.q||''));
-                  if(mm) out.prize=decodeURIComponent(mm[1]);
-                }catch(x){}
-                line('提交回执: receive.do status='+rec.s+' code='+out.code
-                     +' msg='+out.msg+(out.prize?(' 奖品='+out.prize):''));
-                if(!out.claimed&&out.code!=='0000'){
-                  line('回执原文: '+cut(String(rec.b||''),200));
+              async function claimOne(t, quick){
+                var before=NET.length, clickAt=Date.now();
+                line('点「'+cut(t.label,10)+'」: '+cut(t.name,40));
+                var hit=fire(t.btn);
+                line('点击落点: '+hit);
+                await wait(1200);
+                if(NET.length===before){
+                  var conf=document.querySelectorAll('button,a,div,span,[role=button]');
+                  for(var q=0;q<conf.length&&q<400;q++){
+                    var e2=conf[q], t2=txt(e2);
+                    if(!t2||!vis(e2)) continue;
+                    if(/^(确认领取|确认|立即领取|确定)$/.test(t2)){
+                      line('二次确认: '+t2);
+                      fire(e2);
+                      break;
+                    }
+                  }
                 }
-              } else {
-                line('提交回执: 20 秒内没有 receive.do（可能只弹了确认层或按钮没触发）');
+                var rec=null;
+                for(var n=0;n<(quick?12:24);n++){
+                  await wait(500);
+                  for(var m=before;m<NET.length;m++){
+                    if(/dayWeekMoonReceive\\/(receive|receiveWithRecord)\\.do/.test(String(NET[m].u||''))){
+                      if(NET[m].t && NET[m].t<clickAt-2000) continue;
+                      rec=NET[m];
+                    }
+                  }
+                  if(rec) break;
+                }
+                var r={name:t.name,code:'',msg:'',rid:'',ok:false};
+                if(rec){
+                  var d=jsonOf(rec);
+                  r.code=d?String(d.code||''):'';
+                  r.msg=d?String(d.msg||''):'';
+                  if(d&&d.body&&d.body.prizeRecordId){
+                    r.rid=String(d.body.prizeRecordId);
+                    r.ok=true;
+                  }
+                  line('提交回执: receive.do status='+rec.s+' code='+r.code
+                       +' msg='+r.msg+(r.rid?(' rid='+r.rid):''));
+                  if(!r.ok) line('回执原文: '+cut(String(rec.b||''),200));
+                } else {
+                  line('提交回执: 12 秒内没有 receive.do（可能只弹了确认层或按钮没触发）');
+                }
+                return r
               }
 
-              // 关掉成功/上限弹窗，避免遮住后续操作。
-              await wait(1000);
+              var first=scan(), canN=0;
+              for(var k=0;k<first.length;k++){ if(first[k].can) canN++ }
+              line('每日奖品: '+first.length+' 个 · 可领 '+canN+' 个');
+              for(var k2=0;k2<first.length;k2++){
+                line('  ['+k2+'] '+cut(first[k2].name,30)
+                     +' | '+(first[k2].can?'可领·':'不可领·')+first[k2].label);
+              }
+
+              var got=[], stop='', stopCode='', stopMsg='';
+
+              // 抢兑模式：先贴点等到点，再高频扫按钮，一出现就点。
+              if(TARGET>0){
+                line('抢兑: 目标 '+fmtTime(TARGET)+' · 档位 '+(RULE||'不限'));
+                while(Date.now()<TARGET-1500){ await wait(100) }
+                line('开扫: '+fmtTime(Date.now()));
+                var hardStop=TARGET+60000, tries=0;
+                while(Date.now()<hardStop){
+                  var rows0=scan(), t0=pick(rows0);
+                  if(!t0){
+                    tries++;
+                    var allGot=rows0.length>0;
+                    for(var ai=0;ai<rows0.length;ai++){ if(!rows0[ai].got) allGot=false }
+                    if(allGot){ stop='今日已领过'; break }
+                    if(tries===80&&RULE==='2') line('12 点档只在周六日开，今天可能没有这一档');
+                    if(tries%40===0) line('仍在等按钮… 已扫 '+tries+' 次');
+                    await wait(120);
+                    continue;
+                  }
+                  var r0=await claimOne(t0,true);
+                  if(r0.ok){ got.push(r0); line('抢到: '+cut(r0.name,30)); break }
+                  if(r0.code&&/上限|已领|领过|明天|抢光|领完/.test(String(r0.msg||''))){
+                    stop='该档没抢到'; stopCode=r0.code; stopMsg=r0.msg; break;
+                  }
+                  await wait(200);
+                }
+                if(!got.length&&!stop) stop='60 秒内没出现可点按钮';
+                var a0=scan(), aS0=stateOf(a0);
+                if(a0.length) line('收工状态: '+aS0);
+                done({stage:'done', grab:1, items:first.length, claimable:canN,
+                      claimed:got.length, got:got, stop:stop, stopCode:stopCode,
+                      stopMsg:stopMsg, state:aS0, text:bodyTxt, url:String(location.href)});
+                return
+              }
+
+              // 普通模式（一键跑 / 手动执行）：两档各 1 次，领完一档重扫。
+              for(var round=0; round<2; round++){
+                var rows=scan(), t=pick(rows);
+                if(!t){ stop = round===0 ? '无可领' : ''; break }
+                var r=await claimOne(t);
+                if(r.ok){
+                  got.push(r);
+                  await wait(2200);
+                } else {
+                  stop = round===0 ? '首档没成' : '第二档没成';
+                  stopCode=r.code;
+                  stopMsg=r.msg;
+                  break;
+                }
+              }
+
+              var after=scan(), afterState=stateOf(after);
+              if(after.length) line('收工状态: '+afterState);
+              if(got.length) line('本轮已领: '+got.length+' 个');
+
+              await wait(600);
               ['wds-close','dlm-close','mlm-close','wpm-description-close'].forEach(function(cl){
                 try{
                   var els=document.querySelectorAll('.'+cl);
                   for(var z=0;z<els.length;z++){ if(vis(els[z])){ fire(els[z]); break } }
                 }catch(x){}
               });
-              done(out);
+              done({stage:'done', items:first.length, claimable:canN, claimed:got.length,
+                    got:got, stop:stop, stopCode:stopCode, stopMsg:stopMsg,
+                    state:afterState, text:bodyTxt, url:String(location.href)});
             })();
             """;
 }
