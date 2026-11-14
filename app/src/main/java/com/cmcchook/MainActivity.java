@@ -15,6 +15,8 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
+import android.provider.Settings;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
@@ -280,6 +282,16 @@ public final class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
+        // r47：用户反馈「模块执行过程中一直自己关闭，我一直放在前台也不该关」。
+        // 这里做两件事：
+        //   1) 每次界面起来写一条启动日志（冷启动 / 界面重建 + pid + 任务还在不在跑），
+        //      并顺手把上一次进程退出原因（Android 11+ ApplicationExitInfo）落进日志 ——
+        //      是系统回收、被强杀还是自己崩，下次导出就有据可查，不用再猜；
+        //   2) 若 15 分钟内下发过任务而保活服务已经不在了（进程被回收后服务也跟着没了），
+        //      马上把前台服务补回来，避免再被当成缓存进程立刻回收。
+        logModuleStart(savedInstanceState == null);
+        KeepAliveService.ensure(this);
+
         // v3.52：冷启动清空上一次的券清单，强制重新扫描。旧清单里的券可能已经
         // 用掉/过期，按旧数据勾选再批量使用必然出错。静态标记用来区分
         // 「进程重建（=关掉软件重进）」和「旋转屏幕重建 Activity」。
@@ -474,6 +486,13 @@ public final class MainActivity extends AppCompatActivity {
         if (btnCaptureDesc != null) {
             btnCaptureDesc.setOnClickListener(v -> askDescriptorMenu());
         }
+        // r47：电池优化白名单 —— 模块界面被 HyperOS 当缓存进程回收时（用户看到「模块自己关了」），
+        // 这里一键跳到系统确认框；设成「无限制」后不再被清。
+        View btnBattery = findViewById(R.id.btnBattery);
+        if (btnBattery != null) {
+            btnBattery.setOnClickListener(v -> askBatteryWhitelist());
+        }
+        refreshBatteryState();
         // v4.10.0-r2：「立即全部跑一次」已挪到福利中心顶部，功能页不再有这个按钮。
 
         // 每次进界面都按当前开关重排一次，版本升级 / 清数据后也能自动恢复。
@@ -504,6 +523,9 @@ public final class MainActivity extends AppCompatActivity {
         refreshLingxiCmd();
         updateStatus();
         updateLogCount();
+        refreshBatteryState();
+        // r47：任务还在 15 分钟窗口内、保活服务却不在（进程刚被回收又拉起）时补一次。
+        KeepAliveService.ensure(this);
         handler.removeCallbacks(statusTick);
         handler.postDelayed(statusTick, 3000);
         handler.removeCallbacks(logTick);
@@ -2869,6 +2891,77 @@ public final class MainActivity extends AppCompatActivity {
             return;
         }
         launchTarget(cmd, label, label);
+    }
+
+    /** 系统是否已经放过本应用（电池优化白名单 = 不限制后台）。 */
+    private boolean ignoringBattery() {
+        try {
+            PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+            return pm != null && pm.isIgnoringBatteryOptimizations(getPackageName());
+        } catch (Throwable e) {
+            return false;
+        }
+    }
+
+    private void refreshBatteryState() {
+        TextView state = findViewById(R.id.batteryState);
+        if (state == null) {
+            return;
+        }
+        state.setText(ignoringBattery() ? R.string.battery_ok : R.string.battery_desc);
+    }
+
+    /**
+     * r47：跳到系统的电池优化白名单确认框。
+     *
+     * <p>用户反馈「模块执行过程中一直自己关闭，一直放前台也不该关」——小米/HyperOS 会把
+     * 退到后台的模块当缓存进程回收。任务本身跑在「中国移动」进程里不受影响，但界面会消失；
+     * 设成「无限制」后不会再被清。系统不认这个 Intent 时退回应用详情页。
+     */
+    private void askBatteryWhitelist() {
+        if (ignoringBattery()) {
+            Toast.makeText(this, R.string.battery_ok, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            Intent direct = new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS);
+            direct.setData(Uri.parse("package:" + getPackageName()));
+            startActivity(direct);
+        } catch (Throwable e) {
+            try {
+                Intent details = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                details.setData(Uri.parse("package:" + getPackageName()));
+                startActivity(details);
+                Toast.makeText(this, R.string.battery_fail, Toast.LENGTH_LONG).show();
+            } catch (Throwable e2) {
+                Toast.makeText(this, R.string.battery_fail, Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+
+    /**
+     * r47：模块界面自己的启动体检。
+     *
+     * <p>只解决「看不懂」：模块界面和任务进程是两回事 —— 任务跑在「中国移动」进程里，
+     * 模块界面被切到后台、被划掉、被 HyperOS 回收，都不会让任务中断。这里把 pid、
+     * 冷启动/重建、任务是否仍在 15 分钟窗口内写清楚，再补一次上次退出原因。
+     */
+    private void logModuleStart(boolean cold) {
+        long seq = AppPrefs.getTaskSeq(this);
+        boolean running = seq > 0 && System.currentTimeMillis() - seq < 15 * 60 * 1000L;
+        StringBuilder detail = new StringBuilder();
+        detail.append("进程: pid ").append(android.os.Process.myPid())
+                .append(cold ? " · 冷启动" : " · 界面重建（进程还活着）").append('\n');
+        if (running) {
+            detail.append("本批任务: ").append((System.currentTimeMillis() - seq) / 1000)
+                    .append(" 秒前下发，跑在「中国移动」进程里，模块界面不参与执行。\n")
+                    .append("结论: 界面被切走 / 被划掉 / 被回收都不影响任务，进度与结果在日志页看。\n");
+        } else {
+            detail.append("本批任务: 当前没有在跑的批次。\n");
+        }
+        HookLog.log("APP", running ? "模块界面重新打开 · 任务仍在中国移动进程继续" : "模块界面打开",
+                detail.toString());
+        ExitInfoApi30.log(this, "模块界面", 3);
     }
 
     /** v4.10.0-r7：记下本轮发起，顶部结果条据此显示「进行中」，不再强制跳日志页。 */

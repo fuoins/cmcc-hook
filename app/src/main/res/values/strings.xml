@@ -303,4 +303,11 @@
     <string name="capture_state">采集 %1$s · %2$d 条 · 最近 %3$s</string>
     <string name="capture_no_data_on">开关已开，但一条都没收到：先强制停止「中国移动」再打开（让模块重新加载），随便进一个活动页后回来导出。</string>
     <string name="capture_no_data_off">常驻采集还是关的：先把上面的开关打开。</string>
+
+    <!-- r47：模块被 HyperOS 回收（用户：模块执行过程中一直自己关闭）的兜底设置 -->
+    <string name="battery_title">后台不被回收（电池优化白名单）</string>
+    <string name="battery_desc">模块界面和任务进程是两回事：任务跑在「中国移动」里，界面被切走不会中断。但 HyperOS 会把退到后台的模块当缓存进程清掉，表现就是「模块自己关了」。设成「无限制」后不再被清，界面能一直看进度。</string>
+    <string name="battery_action">去设置</string>
+    <string name="battery_ok">已是「无限制」，不会再被后台回收</string>
+    <string name="battery_fail">没打开系统页面，请手动到 设置 → 应用管理 → 移动签到助手 → 省电策略 里选「无限制」</string>
 </resources>

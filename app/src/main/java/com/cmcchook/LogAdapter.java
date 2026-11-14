@@ -22,6 +22,26 @@ final class LogAdapter extends RecyclerView.Adapter<LogAdapter.Holder> {
     private final List<LogEntry> items = new ArrayList<>();
     private final Set<String> expandedKeys = new HashSet<>();
 
+    /**
+     * r47：单条详情最多渲染 2 万字。
+     *
+     * <p>一屏 2500 条日志里如果混进 300KB 的响应体，TextView 量一次就可能把模块进程
+     * 顶到 OOM / ANR —— 用户侧看到的就是「模块执行过程中自己关了」。显示截断，
+     * 文件里的原文不动：导出日志、长按复制拿到的仍是全文。
+     */
+    private static final int MAX_DISPLAY_DETAIL = 20_000;
+
+    private static String displayDetail(String detail) {
+        if (detail == null || detail.isEmpty()) {
+            return "";
+        }
+        if (detail.length() <= MAX_DISPLAY_DETAIL) {
+            return detail;
+        }
+        return detail.substring(0, MAX_DISPLAY_DETAIL)
+                + "\n…（显示已截断，共 " + detail.length() + " 字；长按复制或导出日志可取全文）";
+    }
+
     void submit(List<LogEntry> entries) {
         items.clear();
         items.addAll(entries);
@@ -62,7 +82,7 @@ final class LogAdapter extends RecyclerView.Adapter<LogAdapter.Holder> {
         holder.summaryText.setText(entry.summary);
         holder.expandText.setText(entry.expanded ? R.string.collapse : R.string.expand);
         holder.detailText.setVisibility(entry.expanded ? View.VISIBLE : View.GONE);
-        holder.detailText.setText(entry.expanded ? entry.detail : "");
+        holder.detailText.setText(entry.expanded ? displayDetail(entry.detail) : "");
         holder.itemView.setOnClickListener(v -> {
             int current = holder.getAdapterPosition();
             if (current == RecyclerView.NO_POSITION) {

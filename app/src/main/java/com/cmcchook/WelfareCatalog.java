@@ -159,9 +159,12 @@ final class WelfareCatalog {
                     COC3 + "26xysrqtyld?channelCode=P00000153130", "26xysrqtyld",
                     STATE_IMPL, TaskRunner.CMD_LUCKY3, false, true),
 
-            new Item("weekly", "周周有好礼", "每周翻牌 + 月度翻牌",
+            // r47：用户实测「周周有好礼」服务端一直风控拦截、翻牌也不出奖，
+            // 「没啥奖励不修了」——按「7日打卡」的做法标 (没啥奖励) + 默认关，
+            // 老用户本地存着 true 的由 migrateR47DefaultOff 关一次。想跑可手动打开。
+            new Item("weekly", "周周有好礼(没啥奖励)", "每周翻牌 + 月度翻牌（服务端风控，基本不出奖）",
                     COC3 + "zzcj2?channelCode=P00000153130", "zzcj2",
-                    STATE_IMPL, TaskRunner.CMD_WEEKLY, false, true),
+                    STATE_IMPL, TaskRunner.CMD_WEEKLY, false, false),
 
             // wisdom-h5（米粒商城）：签到 + 任务 + 转盘。h5token 由福利专区下发，
             // 采到带 token 的真实地址会覆盖内置地址；采不到就用内置的裸路由。
@@ -255,6 +258,9 @@ final class WelfareCatalog {
     /** r38 一次性迁移标记：7日打卡分百万(活动结束) 改默认关闭。 */
     private static final String KEY_OFF_MIGRATED_R38 = "welfare_off_migrated_r38";
 
+    /** r47 一次性迁移标记：周周有好礼(没啥奖励) 改默认关闭。 */
+    private static final String KEY_OFF_MIGRATED_R47 = "welfare_off_migrated_r47";
+
     /**
      * 把「签到抽奖赢好礼(辽宁)」「乡友农业知识问答(辽宁)」显式关一次。
      *
@@ -340,6 +346,33 @@ final class WelfareCatalog {
         }
     }
 
+    /**
+     * r47：把「周周有好礼」显式关一次。
+     *
+     * <p>用户实测：服务端一直风控拦着，翻牌也不出东西，「没啥奖励不修了」。
+     * 只改 {@code defaultOn} 对老用户无效 —— 他们本地可能已存 {@code true}，
+     * 所以这里一次性写关，之后不再动；想跑仍可在福利页手动打开。
+     */
+    private static void migrateR47DefaultOff(Context ctx) {
+        if (ctx == null) {
+            return;
+        }
+        if (!HookLog.MODULE_PACKAGE.equals(ctx.getPackageName())) {
+            return;
+        }
+        try {
+            SharedPreferences p = prefs(ctx);
+            if (p.getBoolean(KEY_OFF_MIGRATED_R47, false)) {
+                return;
+            }
+            p.edit()
+                    .putBoolean("welfare_weekly", false)
+                    .putBoolean(KEY_OFF_MIGRATED_R47, true)
+                    .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     static boolean hidden(Context ctx, String id) {
         if (ctx == null || id == null || id.isEmpty()) {
             return false;
@@ -398,6 +431,7 @@ final class WelfareCatalog {
         migrateDefaultOff(ctx);
         migrateR27DefaultOff(ctx);
         migrateR38DefaultOff(ctx);
+        migrateR47DefaultOff(ctx);
         List<Item> built = new ArrayList<>();
         for (Item one : BUILT_IN) {
             built.add(one);

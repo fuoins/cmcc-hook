@@ -24,6 +24,17 @@ final class ExitInfoApi30 {
     }
 
     static void log(Context context) {
+        log(context, "", 5);
+    }
+
+    /**
+     * r47：模块界面自己也调一份 —— 用户反馈「模块执行过程中一直自己关闭」，
+     * 只有拿到 {@link ApplicationExitInfo} 才能区分是系统 LMK / 被强杀 / 自己崩。
+     *
+     * @param label 日志前缀，空串表示目标进程的常规体检
+     * @param max   最多写几条，模块界面启动时给 3 条就够
+     */
+    static void log(Context context, String label, int max) {
         if (Build.VERSION.SDK_INT < 30 || context == null) {
             return;
         }
@@ -36,7 +47,7 @@ final class ExitInfoApi30 {
             List<ApplicationExitInfo> list = manager.getHistoricalProcessExitReasons(
                     context.getPackageName(), 0, 8);
             if (list == null || list.isEmpty()) {
-                HookLog.log("EXIT-INFO", "没有历史进程退出记录",
+                HookLog.log("EXIT-INFO", prefix(label) + "没有历史进程退出记录",
                         "系统未返回本应用的 ApplicationExitInfo。\n"
                                 + "可能是厂商 ROM 限制，或本次是安装后第一次启动。");
                 return;
@@ -74,17 +85,25 @@ final class ExitInfoApi30 {
                         detail.append("--- 系统 trace / tombstone ---\n").append(trace);
                     }
                 }
-                HookLog.log("EXIT-INFO", "上次进程退出 · " + reasonName(reason)
+                HookLog.log("EXIT-INFO", prefix(label) + reasonName(reason)
                         + " · " + time, detail.toString());
-                if (++count >= 5) {
+                if (++count >= Math.max(1, max)) {
                     break;
                 }
             }
         } catch (Throwable e) {
             HookLog.logcat("read exit info failed: " + e);
-            HookLog.log("EXIT-INFO", "读取进程退出记录失败",
+            HookLog.log("EXIT-INFO", prefix(label) + "读取进程退出记录失败",
                     Log.getStackTraceString(e));
         }
+    }
+
+    /** 模块界面用的前缀；空标签时保持 r25 的老文案，导出脚本按老文案匹配。 */
+    private static String prefix(String label) {
+        if (label == null || label.isEmpty()) {
+            return "上次进程退出 · ";
+        }
+        return label + " · 上次退出 · ";
     }
 
     private static String readTrace(ApplicationExitInfo info) {

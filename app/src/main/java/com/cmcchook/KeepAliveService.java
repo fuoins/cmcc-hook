@@ -41,6 +41,28 @@ public final class KeepAliveService extends Service {
         }
     };
 
+    /** 服务是否已经在本进程里起来（同一进程的静态标志够用）。 */
+    private static volatile boolean alive;
+
+    /**
+     * r47：模块界面重新打开时把保活服务补回来。
+     *
+     * <p>用户实测「模块执行过程中一直自己关闭」：HyperOS 把模块进程回收后，
+     * 前台服务也跟着没了；用户再点开模块时它只是普通缓存进程，下一次被切到后台
+     * 又会被回收 —— 看起来就是「模块一直关」。这里在界面每次回到前台时检查：
+     * 15 分钟内下发过任务、服务又不在，就重新抬一次前台优先级。
+     */
+    static void ensure(Context ctx) {
+        if (ctx == null || alive) {
+            return;
+        }
+        long seq = AppPrefs.getTaskSeq(ctx);
+        if (seq <= 0 || System.currentTimeMillis() - seq > 15 * 60 * 1000L) {
+            return;
+        }
+        start(ctx);
+    }
+
     /**
      * 任务开始前调用。
      *
@@ -75,6 +97,7 @@ public final class KeepAliveService extends Service {
 
     /** 任务结束后调用。 */
     static void stop(Context ctx) {
+        alive = false;
         if (ctx == null) {
             return;
         }
@@ -93,6 +116,7 @@ public final class KeepAliveService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        alive = true;
         boolean ok;
         try {
             startForeground(NID, build());
@@ -127,13 +151,29 @@ public final class KeepAliveService extends Service {
     /** 用户从最近任务里划掉模块界面时，服务仍活着；记一笔方便和日志时间点对照。 */
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        HookLog.log("APP", "模块界面被划掉 · 保活服务仍在",
-                "任务未结束时进程会继续跑完；如果任务已经结束，说明该停服务了。");
+        // r47：划掉界面后 ROM 常把前台服务一起降级/收掉。这里再抬一次通知，
+        // 只要任务还在 15 分钟窗口里就继续保活，任务跑完由 TASK_END 停。
+        long seq = AppPrefs.getTaskSeq(this);
+        boolean running = seq > 0 && System.currentTimeMillis() - seq < 15 * 60 * 1000L;
+        if (running) {
+            try {
+                startForeground(NID, build());
+            } catch (Throwable ignored) {
+            }
+            HookLog.log("APP", "模块界面被划掉 · 保活服务仍在",
+                    "任务未结束时进程会继续跑完；如果任务已经结束，说明该停服务了。\n"
+                            + "任务实际跑在「中国移动」进程里，模块界面关掉不影响执行结果，"
+                            + "重新打开模块可在日志页看到进度。");
+        } else {
+            HookLog.log("APP", "模块界面被划掉 · 保活服务仍在",
+                    "任务未结束时进程会继续跑完；如果任务已经结束，说明该停服务了。");
+        }
         super.onTaskRemoved(rootIntent);
     }
 
     @Override
     public void onDestroy() {
+        alive = false;
         handler.removeCallbacks(expire);
         try {
             stopForeground(true);

@@ -1477,10 +1477,12 @@ final class TaskRunner {
         List<String> cmds = new ArrayList<>();
         try {
             for (WelfareCatalog.Item item : WelfareCatalog.items(HookLog.context())) {
-                // v4.2.0：抢券类（周三 88 元话费券 08:00、每日 12 点话费券）不进「一键全做」。
-                // 一键是随手跑一轮，赶不上开抢时间，跑了也是空手；它们改成福利页手动
-                // 「进入等待」，到点由 GrabTask 抢。
-                if (CMD_WED.equals(item.cmd) || CMD_SECKILL.equals(item.cmd)) {
+                // v4.2.0：每日 12 点话费券不进「一键全做」——一键是随手跑一轮，
+                // 赶不上开抢时间，跑了也是空手；它在券页手动「进入等待」，到点由 GrabTask 抢。
+                // r47：周三充值日从这条排除里拿出来。它主体是七天打卡 + 8 折券 + 抽奖，
+                // 什么时候跑都能做；只有 08:00 的 88 元券要准点，抢不到不影响打卡。
+                // 用户反馈「周三那个开关打开了一键却没执行」，就是被这行挡住的。
+                if (CMD_SECKILL.equals(item.cmd)) {
                     continue;
                 }
                 if (WelfareCatalog.runnable(item) && WelfareCatalog.enabled(HookLog.context(), item)

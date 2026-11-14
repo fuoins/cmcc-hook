@@ -16,6 +16,11 @@
          只申请前台服务权限，不申请电池白名单，也不做常驻。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
 
+    <!-- r47：用户在 HyperOS 上遇到「模块执行过程中一直自己关闭」。模块界面退到后台后
+         会被当缓存进程回收，所以提供「电池优化白名单」入口（功能页 → 后台不被回收）。
+         只用于弹系统那一个白名单确认框，不自建常驻、不改系统设置。 -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+
     <!-- 券核销短信验证码自动读取：静态广播收实时短信，短信库做兜底。
          两者都是运行时权限，模块界面里会按需申请；不授权就退回手动输入。 -->
     <uses-permission android:name="android.permission.RECEIVE_SMS" />
@@ -76,7 +81,8 @@
         <service
             android:name=".KeepAliveService"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <receiver
             android:name=".LogReceiver"
