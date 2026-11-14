@@ -305,6 +305,17 @@ final class PerksTask {
                 .append("1".equals(rule) ? "10 点档" : "2".equals(rule) ? "12 点档" : "不限")
                 .append(grab > 0 ? " · 到点抢兑" : " · 直接领")
                 .append('\n');
+        String locked = out.optString("locked", "");
+        String rawResp = out.optString("raw", "");
+        if (!locked.isEmpty()) {
+            detail.append("锁定奖品: ").append(locked)
+                    .append("（忽略 status，只发这一个，不换别的）\n");
+        }
+        if (!rawResp.isEmpty()) {
+            detail.append("服务端原始响应: ")
+                    .append(rawResp.length() > 900 ? rawResp.substring(0, 900) : rawResp)
+                    .append('\n');
+        }
         if (!pageText.isEmpty()) {
             detail.append("页面文案: ").append(brief(pageText)).append('\n');
         }
@@ -378,11 +389,19 @@ final class PerksTask {
         }
 
         if (grab > 0) {
-            return TaskRunner.Result.skip(
-                    "天天领权益 · 这一档没抢到" + (stop.isEmpty() ? "" : "（" + stop + "）"),
+            String head = locked.isEmpty()
+                    ? "天天领权益 · 这一档没抢到"
+                    : "天天领权益 · 指定的「" + locked + "」没抢到";
+            String tail = stopCode.isEmpty() ? "" : "（业务码 " + stopCode
+                    + (stopMsg.isEmpty() ? "" : " " + stopMsg) + "）";
+            return TaskRunner.Result.skip(head + tail + (locked.isEmpty() && !stop.isEmpty()
+                            ? "（" + stop + "）" : ""),
                     detail.toString(),
-                    "到点了但没拿到：可能是份额被抢光、页面没刷新出按钮，或停在别的 tab。\n"
-                            + "12 点档只在周六日开；下一场再试，或把日志发我看落点。");
+                    locked.isEmpty()
+                            ? "到点了但没拿到：可能是份额被抢光、页面没刷新出按钮，或停在别的 tab。\n"
+                                + "12 点档只在周六日开；下一场再试，或把日志发我看落点。"
+                            : "已按你指定的奖品直接发请求，服务端原始响应见上方「服务端原始响应」。\n"
+                                + "锁定模式不会改抢别的奖品；把这个码发我，我按实际回执判定它是「未开启」还是「已抢完」。");
         }
 
         if (claimable == 0) {
@@ -825,7 +844,21 @@ final class PerksTask {
                         notStart:/未开始|未开启|未到时间|不在活动|活动时间|未开放|未到/.test(msg),
                         signErr:/签名|非法|鉴权|未登录|会话|失效|过期|LJRk|token|验签|重复请求|频繁/i.test(txt)};
               }
-              // 按关键词挑奖品；status=1 可抢，0 未开（2.88 元话费券）。
+              // r46：关键词锁定在「全部奖品」里找，不看 status。
+              // 用户明确指定了奖品，就不能因为 status≠1 而悄悄改抢别的（上次 2.88→花小猪）。
+              // status 是页面态、且抢兑时拿的是到点前旧快照，本来就不该参与决策。
+              function lockPrize(rule){
+                var ps=(rule&&rule.prizes)||[];
+                for(var w=0;w<WORDS.length;w++){
+                  var kw=String(WORDS[w]==null?'':WORDS[w]).replace(/\\s+/g,'');
+                  if(!kw) continue;
+                  for(var i=0;i<ps.length;i++){
+                    if(String(ps[i].name).replace(/\\s+/g,'').indexOf(kw)>=0) return ps[i];
+                  }
+                }
+                return null
+              }
+              // 没设关键词时的默认行为：只挑 status=1，按页面顺序。
               function pickPrize(rule, skip){
                 var ps=(rule&&rule.prizes)||[], pool=[], i, w, k;
                 for(i=0;i<ps.length;i++){
@@ -842,34 +875,47 @@ final class PerksTask {
                 }
                 return pool[0]
               }
-              // 一档一次直发（含重试判定），返回 {ok,name,code,msg,rid,tries,stop}
+              // 一档一次直发（含重试判定），返回 {ok,name,code,msg,rid,tries,stop,raw,locked}
               async function burstOnce(rule, path, hardStop){
-                var skip={}, tries=0, lastCode='', lastMsg='';
-                while(Date.now()<hardStop){
-                  var p=pickPrize(rule,skip);
-                  if(!p) return {ok:false,stop:'这一档没有 status=1 的可抢奖品',tries:tries,code:lastCode,msg:lastMsg};
+                var skip={}, tries=0, lastCode='', lastMsg='', lastRaw='';
+                var locked=lockPrize(rule), lockedName=locked?locked.name:'';
+                if(locked) line('锁定奖品: '+lockedName+' · status='+locked.status+'（忽略 status，照发）');
+                // 锁定模式只试 3 次就收：目的是看清服务端响应，不做无意义高频。
+                var maxTries=locked?3:100000;
+                while(Date.now()<hardStop && tries<maxTries){
+                  var p=locked||pickPrize(rule,skip);
+                  if(!p) return {ok:false,stop:'这一档没有可抢的奖品',tries:tries,
+                                 code:lastCode,msg:lastMsg,raw:lastRaw,locked:lockedName};
                   var rec=await xhrPost(path,formOf(rule,p),anySign());
                   var jd=judge(rec); tries++; lastCode=jd.code; lastMsg=jd.msg;
-                  if(tries<=4||tries%12===0){
-                    line('直发#'+tries+' '+cut(p.name,16)+' → status='+rec.s
-                         +' code='+jd.code+' '+cut(jd.msg,26));
-                  }
+                  lastRaw=String(rec.b||'');
+                  line('直发#'+tries+' '+cut(p.name,16)+' → status='+rec.s
+                       +' code='+jd.code+' '+cut(jd.msg,26));
+                  // r46：把服务端原始响应体完整打出来，试 2.88 就看这一行。
+                  line('原始响应: '+cut(lastRaw,400));
                   if(jd.ok){
                     line('直发命中: '+p.name+' rid='+jd.rid);
-                    return {ok:true,name:p.name,code:jd.code,msg:jd.msg,rid:jd.rid,tries:tries,stop:''};
+                    return {ok:true,name:p.name,code:jd.code,msg:jd.msg,rid:jd.rid,
+                            tries:tries,stop:'',raw:lastRaw,locked:lockedName};
+                  }
+                  // 锁定模式：只认这个奖品，任何非成功响应都如实记下并停，绝不换别的。
+                  if(locked){
+                    return {ok:false,stop:'指定的奖品没抢到（'+jd.code+' '+cut(jd.msg,30)+'）',
+                            tries:tries,code:jd.code,msg:jd.msg,raw:lastRaw,locked:lockedName};
                   }
                   if(jd.signErr){
                     return {ok:false,stop:'签名被拒('+jd.code+' '+jd.msg+')',tries:tries,
-                            code:jd.code,msg:jd.msg,fallback:1};
+                            code:jd.code,msg:jd.msg,raw:lastRaw,locked:'',fallback:1};
                   }
                   if(jd.terminal && !jd.notStart){
-                    return {ok:false,stop:jd.msg||('业务码 '+jd.code),tries:tries,code:jd.code,msg:jd.msg};
+                    return {ok:false,stop:jd.msg||('业务码 '+jd.code),tries:tries,
+                            code:jd.code,msg:jd.msg,raw:lastRaw,locked:''};
                   }
-                  // 3003 之类：换个奖品继续；未开始：继续贴点重试
                   if(/存在未支付订单|已抢光|抢光|已达上限/.test(jd.msg)) skip[p.id]=1;
                   await wait(Date.now()<hardStop-8000?160:350);
                 }
-                return {ok:false,stop:'直发窗口结束没拿到',tries:tries,code:lastCode,msg:lastMsg};
+                return {ok:false,stop:'直发窗口结束没拿到',tries:tries,
+                        code:lastCode,msg:lastMsg,raw:lastRaw,locked:lockedName};
               }
               // ===== 直发通道结束 =====
 
@@ -960,6 +1006,7 @@ final class PerksTask {
                   var hardStop=TARGET+55000;
                   var br=await burstOnce(rule,path,hardStop);
                   line('直发合计 '+br.tries+' 次'+(br.stop?(' · '+br.stop):''));
+                  if(br.raw) line('最终原始响应: '+cut(String(br.raw),500));
                   if(br.ok){
                     got.push({name:br.name,code:br.code,msg:br.msg,rid:br.rid,ok:true});
                   } else if(br.fallback){
@@ -967,13 +1014,14 @@ final class PerksTask {
                     line('签名被拒，退回页面按钮（页面自己会生成合法签名）');
                   } else {
                     stop=br.stop; stopCode=br.code; stopMsg=br.msg;
+                    if(br.locked) line('锁定模式: 只发指定奖品，不换别的、不点按钮兜底');
                   }
                 } else {
                   stop=rule?'没借到页面签名':'没拿到这一档规则表';
                 }
 
                 // 兜底：直发没成才扫按钮；已命中就不再动页面。
-                if(!got.length && (sg||rule)){
+                if(!got.length && (sg||rule) && !(br && br.locked)){
                   line('兜底: 扫页面按钮点击');
                   var fbStop=Math.max(Date.now()+20000, TARGET+30000), fbTries=0;
                   while(Date.now()<fbStop){
@@ -997,7 +1045,8 @@ final class PerksTask {
                 if(a0.length) line('收工状态: '+aS0);
                 done({stage:'done', grab:1, items:first.length, claimable:canN,
                       claimed:got.length, got:got, stop:stop, stopCode:stopCode,
-                      stopMsg:stopMsg, state:aS0, text:bodyTxt, url:String(location.href)});
+                      stopMsg:stopMsg, state:aS0, text:bodyTxt, url:String(location.href),
+                      raw:(br&&br.raw)?String(br.raw):'', locked:(br&&br.locked)?String(br.locked):''});
                 return
               }
 
