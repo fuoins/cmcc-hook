@@ -68,6 +68,39 @@ final class AppPrefs {
                 .apply();
     }
 
+    // ------------------------------------------------------- r45 天天领权益「优先抢」
+
+    private static final String KEY_PERKS_WORDS_1 = "perks_words_1";
+    private static final String KEY_PERKS_WORDS_2 = "perks_words_2";
+    private static final String KEY_PERKS_RULES = "perks_rules";
+
+    /** 模块界面保存的优先奖品关键词，10 点档("1") / 12 点档("2") 各一套。 */
+    static String perksWords(Context context, String rule) {
+        String key = "1".equals(rule) ? KEY_PERKS_WORDS_1 : KEY_PERKS_WORDS_2;
+        return nullToEmpty(settings(context).getString(key, ""));
+    }
+
+    static void setPerksWords(Context context, String rule, String raw) {
+        String key = "1".equals(rule) ? KEY_PERKS_WORDS_1 : KEY_PERKS_WORDS_2;
+        String v = raw == null ? "" : raw.trim();
+        SharedPreferences.Editor e = settings(context).edit();
+        if (v.isEmpty()) {
+            e.remove(key);
+        } else {
+            e.putString(key, v);
+        }
+        e.apply();
+    }
+
+    /** 目标进程回传的两档奖池 JSON：{"1":{prizes:[{name,…}]},"2":{…}}。 */
+    static String perksRules(Context context) {
+        return nullToEmpty(settings(context).getString(KEY_PERKS_RULES, ""));
+    }
+
+    static void setPerksRules(Context context, String json) {
+        settings(context).edit().putString(KEY_PERKS_RULES, nullToEmpty(json)).apply();
+    }
+
     /** 取一个凭证值；没有同步过时返回空串。key 为 app_token/phone/... 之一。 */
     static String credential(Context context, String key) {
         return status(context).getString("cred_" + key, "");

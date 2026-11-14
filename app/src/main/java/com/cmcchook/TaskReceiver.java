@@ -212,14 +212,20 @@ final class TaskReceiver {
                     // 它可能要等几个小时，进队列会把「过任务」堵死。
                     if (cmd.startsWith(GrabTask.CMD)) {
                         final String kind = cmd.substring(GrabTask.CMD.length());
-                        LingxiGrab.text(intent.getStringExtra("text"));
+                        final String grabText = intent.getStringExtra("text");
+                        final boolean perks = kind.startsWith("perks");
+                        // r45：perks 命令的 text 是「优先抢」关键词，别喂给灵犀口令。
+                        if (!perks) {
+                            LingxiGrab.text(grabText);
+                        }
+                        final String pickWords = perks && grabText != null ? grabText : "";
                         ack(context, cmd);
                         final BroadcastReceiver.PendingResult grabPending = goAsync();
                         new Thread(new Runnable() {
                             @Override
                             public void run() {
                                 try {
-                                    GrabTask.run(kind);
+                                    GrabTask.run(kind, pickWords);
                                 } finally {
                                     try {
                                         grabPending.finish();

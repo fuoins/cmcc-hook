@@ -21,6 +21,7 @@ import android.view.View;
 import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -34,6 +35,7 @@ import com.google.android.material.button.MaterialButton;
 import com.google.android.material.dialog.MaterialAlertDialogBuilder;
 import com.google.android.material.switchmaterial.SwitchMaterial;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -186,6 +188,8 @@ public final class MainActivity extends AppCompatActivity {
     private TextView welfareResultHint;
     /** v4.2.0：抢券卡的状态行（倒计时 / 抢到没有）。 */
     private TextView grabStatus;
+    /** r45：天天领权益「优先抢」摘要行。 */
+    private TextView tvPerksPick;
     /** 本机记录的抢券状态，避免重复点同一条把等待取消掉。 */
     private String grabRunningKind = "";
     private long welfareStamp = -1L;
@@ -333,6 +337,9 @@ public final class MainActivity extends AppCompatActivity {
         // 点结果条才进日志（此时日志默认已是「任务」视图），不强制跳页。
         welfareResult.setOnClickListener(v -> selectTab(TAB_LOG));
         grabStatus = findViewById(R.id.grabStatus);
+        tvPerksPick = findViewById(R.id.tvPerksPick);
+        findViewById(R.id.btnPerksPick).setOnClickListener(v -> askPerksPick());
+        refreshPerksPick();
         findViewById(R.id.btnGrabWed).setOnClickListener(v -> grabStart("wed"));
         findViewById(R.id.btnGrabNoon).setOnClickListener(v -> grabStart("seckill"));
         findViewById(R.id.btnGrabLingxi).setOnClickListener(v -> grabStart("lingxi"));
@@ -1533,12 +1540,163 @@ public final class MainActivity extends AppCompatActivity {
      * 点了就把 App 拉到前台、打开抢券页停住；目标进程的 {@link GrabTask} 自己算还差多久，
      * 到点再动手。已经过了开抢时间就直接试。
      */
+    /** r45：刷新抢兑卡上的「优先抢」摘要行。 */
+    private void refreshPerksPick() {
+        if (tvPerksPick == null) {
+            return;
+        }
+        String a = AppPrefs.perksWords(this, "1");
+        String b = AppPrefs.perksWords(this, "2");
+        if (a.isEmpty() && b.isEmpty()) {
+            tvPerksPick.setText(R.string.perks_pick_none);
+        } else {
+            tvPerksPick.setText("优先抢：10点[" + (a.isEmpty() ? "顺序" : a)
+                    + "] · 12点[" + (b.isEmpty() ? "顺序" : b) + "]");
+        }
+    }
+
+    /**
+     * r45：两档各一套优先奖品关键词。奖品名不硬编码 —— 从目标进程回传的
+     * {@code queryActivityInfo} 奖池里列出来，点一下就填进输入框。
+     */
+    private void askPerksPick() {
+        JSONObject rules = null;
+        try {
+            String j = AppPrefs.perksRules(this);
+            if (!j.isEmpty()) {
+                rules = new JSONObject(j);
+            }
+        } catch (Throwable ignored) {
+        }
+
+        int pad = (int) (20 * getResources().getDisplayMetrics().density);
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(pad, pad / 2, pad, 0);
+        scroll.addView(box, new ScrollView.LayoutParams(
+                ScrollView.LayoutParams.MATCH_PARENT,
+                ScrollView.LayoutParams.WRAP_CONTENT));
+
+        TextView desc = new TextView(this);
+        desc.setText(R.string.perks_pick_desc);
+        desc.setTextSize(13f);
+        box.addView(desc);
+
+        final String[] keys = {"1", "2"};
+        final int[] titles = {R.string.perks_pick_r1, R.string.perks_pick_r2};
+        final EditText[] inputs = new EditText[2];
+        for (int i = 0; i < 2; i++) {
+            TextView head = new TextView(this);
+            head.setText(titles[i]);
+            head.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+            head.setTextSize(14f);
+            head.setPadding(0, pad / 2, 0, 0);
+            box.addView(head);
+
+            EditText et = new EditText(this);
+            et.setSingleLine(true);
+            et.setHint(R.string.perks_pick_hint);
+            String saved = AppPrefs.perksWords(this, keys[i]);
+            et.setText(saved);
+            et.setSelection(saved.length());
+            box.addView(et, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            inputs[i] = et;
+
+            JSONArray prizes = null;
+            if (rules != null) {
+                try {
+                    JSONObject r = rules.optJSONObject(keys[i]);
+                    if (r != null) {
+                        prizes = r.optJSONArray("prizes");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            if (prizes == null || prizes.length() == 0) {
+                TextView none = new TextView(this);
+                none.setText(R.string.perks_pick_no_rules);
+                none.setTextSize(12f);
+                none.setPadding(0, 4, 0, 4);
+                box.addView(none);
+            } else {
+                for (int k = 0; k < prizes.length(); k++) {
+                    String name = "";
+                    String status = "";
+                    try {
+                        JSONObject pz = prizes.optJSONObject(k);
+                        if (pz != null) {
+                            name = pz.optString("name", "");
+                            status = pz.optString("status", "");
+                        }
+                    } catch (Throwable ignored) {
+                    }
+                    if (name.isEmpty()) {
+                        continue;
+                    }
+                    final String word = name;
+                    final EditText target = et;
+                    TextView chip = new TextView(this);
+                    chip.setText("· " + name + ("1".equals(status) ? "" : "  [" + status + "]"));
+                    chip.setTextSize(13f);
+                    chip.setPadding(0, 6, 0, 6);
+                    chip.setClickable(true);
+                    chip.setOnClickListener(v -> appendPerksWord(target, word));
+                    box.addView(chip);
+                }
+            }
+        }
+
+        new MaterialAlertDialogBuilder(this)
+                .setTitle(R.string.perks_pick_title)
+                .setView(scroll)
+                .setPositiveButton(R.string.perks_pick_save, (dialog, which) -> {
+                    AppPrefs.setPerksWords(this, "1", inputs[0].getText().toString());
+                    AppPrefs.setPerksWords(this, "2", inputs[1].getText().toString());
+                    refreshPerksPick();
+                    Toast.makeText(this, R.string.perks_pick_saved, Toast.LENGTH_SHORT).show();
+                })
+                .setNeutralButton(R.string.perks_pick_clear, (dialog, which) -> {
+                    AppPrefs.setPerksWords(this, "1", "");
+                    AppPrefs.setPerksWords(this, "2", "");
+                    refreshPerksPick();
+                })
+                .setNegativeButton(R.string.cancel, null)
+                .show();
+    }
+
+    /** 点奖品名 = 追加成关键词（逗号分隔、去重、最多 8 个）。 */
+    private void appendPerksWord(EditText et, String word) {
+        String cur = et.getText().toString().trim();
+        String[] parts = cur.isEmpty() ? new String[0] : cur.split("[,，;；\\s]+");
+        for (String one : parts) {
+            if (one.equals(word)) {
+                return;
+            }
+        }
+        if (parts.length >= 8) {
+            return;
+        }
+        et.setText(cur.isEmpty() ? word : cur + "," + word);
+        et.setSelection(et.getText().length());
+    }
+
     private void grabStart(String kind) {
         if (kind == null || kind.isEmpty()) {
             return;
         }
         boolean same = kind.equals(grabRunningKind);
-        String cmdText = "lingxi".equals(kind) ? LingxiCmd.text(this) : "";
+        String cmdText;
+        if ("lingxi".equals(kind)) {
+            cmdText = LingxiCmd.text(this);
+        } else if (kind.startsWith("perks")) {
+            // r45：把这一档的「优先抢」关键词随命令下发到目标进程。
+            cmdText = AppPrefs.perksWords(this, "perks10".equals(kind) ? "1" : "2");
+        } else {
+            cmdText = "";
+        }
         if (!sendTaskBroadcast(GrabTask.CMD + kind, "text", cmdText, true)) {
             Toast.makeText(this, "指令发送失败，请重试", Toast.LENGTH_SHORT).show();
             return;

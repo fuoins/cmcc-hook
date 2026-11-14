@@ -154,12 +154,20 @@ final class PerksTask {
 
     /** 关键词转 JSON 数组注入页面；最多 8 个，够用且不会把脚本撑爆。 */
     private static String wordsJson() {
+        return wordsJson(words());
+    }
+
+    /** r45：抢兑偏好由模块界面随命令下发，优先用传入值；为空才回退本机 prefs。 */
+    private static String wordsJson(String raw) {
         JSONArray arr = new JSONArray();
-        String raw = words();
-        if (raw.isEmpty()) {
+        String src = raw == null ? "" : raw.trim();
+        if (src.isEmpty()) {
+            src = words();
+        }
+        if (src.isEmpty()) {
             return arr.toString();
         }
-        String[] parts = raw.split("[,，;；\\s]+");
+        String[] parts = src.split("[,，;；\\s]+");
         for (String one : parts) {
             String w = one == null ? "" : one.trim();
             if (!w.isEmpty() && arr.length() < 8) {
@@ -172,14 +180,19 @@ final class PerksTask {
     // --------------------------------------------------------------- 执行
 
     static TaskRunner.Result run(String entry) {
-        return run(entry, 0L, "");
+        return run(entry, 0L, "", "");
+    }
+
+    static TaskRunner.Result run(String entry, long targetAt, String rule) {
+        return run(entry, targetAt, rule, "");
     }
 
     /**
      * @param targetAt 抢兑目标时间（epoch 毫秒）；0 表示普通执行，立刻按顺序领。
      * @param rule     目标档位："1"=10 点档，"2"=12 点档，""=不限。
+     * @param words    r45 模块界面下发的优先奖品关键词；空则回退本机 prefs。
      */
-    static TaskRunner.Result run(String entry, long targetAt, String rule) {
+    static TaskRunner.Result run(String entry, long targetAt, String rule, String words) {
         StringBuilder detail = new StringBuilder();
         detail.append("入口: ").append(brief(entry)).append('\n');
         WebPage page = WebSession.current();
@@ -226,7 +239,7 @@ final class PerksTask {
         }
 
         // 关键词先注入，页面脚本读 window.__cmcc_perks_words。
-        page.eval("(function(){try{window.__cmcc_perks_words=" + wordsJson()
+        page.eval("(function(){try{window.__cmcc_perks_words=" + wordsJson(words)
                 + ";window.__cmcc_perks_target=" + Math.max(0L, targetAt)
                 + ";window.__cmcc_perks_rule='" + (rule == null ? "" : rule) + "'"
                 + "}catch(e){}})()", 3_000L);
@@ -258,6 +271,15 @@ final class PerksTask {
         }
         writeLines(out.optJSONArray("lines"));
 
+        // r45：把页面读到的两档奖池回传给模块界面，供「优先抢」设置框列出奖品名。
+        JSONObject rules = out.optJSONObject("rules");
+        if (rules != null && rules.length() > 0) {
+            try {
+                HookLog.pushPerksRules(rules.toString());
+            } catch (Throwable ignored) {
+            }
+        }
+
         String stage = out.optString("stage", "");
         int items = out.optInt("items", 0);
         int claimable = out.optInt("claimable", 0);
@@ -268,7 +290,10 @@ final class PerksTask {
         String url = out.optString("url", "");
         JSONArray got = out.optJSONArray("got");
         int claimed = got == null ? 0 : got.length();
-        String pickedWords = words();
+        String pickedWords = (words == null ? "" : words.trim());
+        if (pickedWords.isEmpty()) {
+            pickedWords = words();
+        }
 
         detail.append("页面: ").append(brief(url)).append('\n');
         detail.append("每日奖品: ").append(items).append(" 个 · 可领 ").append(claimable)
@@ -436,7 +461,9 @@ final class PerksTask {
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               function txt(e){ try{ return String(e.innerText||e.textContent||'').replace(/\\s+/g,'') }catch(x){ return '' } }
               function vis(e){ try{ var r=e.getBoundingClientRect(); return r.width>2&&r.height>2 }catch(x){ return false } }
-              function done(o){ try{ o.lines=L; window[ID]=JSON.stringify(o) }catch(e){ window[ID]='{"stage":"crash","lines":[]}' } }
+              function done(o){ try{ o.lines=L;
+                try{ if(typeof RULES!=='undefined'&&RULES) o.rules=RULES }catch(e){}
+                window[ID]=JSON.stringify(o) }catch(e){ window[ID]='{"stage":"crash","lines":[]}' } }
 
               // 只读回执钩子：不改请求、不改响应，只把 receive.do 记下来。
               (function(){

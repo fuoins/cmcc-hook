@@ -88,6 +88,8 @@
                 <action android:name="com.cmcchook.action.STATE" />
                 <!-- v4.32.0 目标进程同步脚本凭证 -->
                 <action android:name="com.cmcchook.action.CRED" />
+                <!-- r45 目标进程同步天天领权益奖池 -->
+                <action android:name="com.cmcchook.action.PERKS_RULES" />
                 <action android:name="com.cmcchook.action.WELFARE" />
                 <action android:name="com.cmcchook.action.PROBE" />
                 <action android:name="com.cmcchook.action.PROBE_ACT" />

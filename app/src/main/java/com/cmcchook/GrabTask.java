@@ -61,6 +61,11 @@ final class GrabTask {
     }
 
     static void run(String rawKind) {
+        run(rawKind, "");
+    }
+
+    /** @param pickWords r45 模块界面下发的「优先抢」关键词，仅 perks 档位用。 */
+    static void run(String rawKind, String pickWords) {
         String kind = rawKind == null ? "" : rawKind.trim();
         if (kind.isEmpty()) {
             return;
@@ -142,7 +147,7 @@ final class GrabTask {
             //    runSeckill 内含「查场次 + 蹲到开场 + 撞击重试」。
             HookLog.progress("grab", "· 到点了，开始抢…");
             TaskRunner.Result r = perks
-                    ? PerksTask.run(PerksTask.entryUrl(), at, perks10 ? "1" : "2")
+                    ? PerksTask.run(PerksTask.entryUrl(), at, perks10 ? "1" : "2", pickWords)
                     : "wed".equals(kind) ? WedTask.run()
                     : "lingxi".equals(kind) ? LingxiGrab.run() : SignTask.runSeckill();
             String text = r == null ? "没有返回" : r.summary;

@@ -14,6 +14,7 @@ public final class LogReceiver extends BroadcastReceiver {
     static final String ACTION_STATE = "com.cmcchook.action.STATE";
     /** v4.32.0：目标进程同步脚本凭证，模块进程落盘供「提取」按钮复制。 */
     static final String ACTION_CRED = HookLog.ACTION_CRED;
+    static final String ACTION_PERKS_RULES = HookLog.ACTION_PERKS_RULES;
     /** 目标进程盘点完福利中心，把新入口列表发回来。 */
     static final String ACTION_WELFARE = "com.cmcchook.action.WELFARE";
     /** 目标进程探路完，把整份报告发回来。 */
@@ -100,6 +101,9 @@ public final class LogReceiver extends BroadcastReceiver {
                     intent.getStringExtra("province_code"),
                     intent.getStringExtra("city_code"),
                     intent.getStringExtra("cookie"));
+        } else if (ACTION_PERKS_RULES.equals(action)) {
+            // r45：目标进程把页面读到的奖池推过来，界面「优先抢」设置框据此列奖品名。
+            AppPrefs.setPerksRules(context, intent.getStringExtra("rules"));
         } else if (ACTION_WELFARE.equals(action)) {
             handleWelfare(context, intent);
         } else if (ACTION_PROBE.equals(action)) {

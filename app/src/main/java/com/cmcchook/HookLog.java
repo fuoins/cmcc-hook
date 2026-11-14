@@ -50,6 +50,8 @@ final class HookLog {
      *  推给模块界面，供顶部「提取」按钮复制。目标进程与模块进程内存不共享，
      *  SsoLogin / CookieStore 的静态值只能这样带过去。 */
     static final String ACTION_CRED = "com.cmcchook.action.CRED";
+    /** r45：目标进程把天天领权益两档奖池回传给模块界面。 */
+    static final String ACTION_PERKS_RULES = "com.cmcchook.action.PERKS_RULES";
     /** v4.2.0：刷新 / 抢券的实时步骤，界面上滚动显示。 */
     static final String ACTION_PROGRESS = "com.cmcchook.action.PROGRESS";
     private static final String RECEIVER = "com.cmcchook.LogReceiver";
@@ -297,6 +299,28 @@ final class HookLog {
             ctx.sendBroadcast(intent);
         } catch (Throwable e) {
             logcat("credentials broadcast failed: " + e);
+        }
+    }
+
+    /** r45：把页面读到的两档奖池（含每档 prizeName）推给模块界面落盘。 */
+    static void pushPerksRules(String json) {
+        if (json == null || json.isEmpty()) {
+            return;
+        }
+        Context ctx = context();
+        if (ctx == null) {
+            return;
+        }
+        try {
+            Intent intent = new Intent(ACTION_PERKS_RULES);
+            intent.setComponent(new ComponentName(MODULE_PACKAGE, RECEIVER));
+            intent.setPackage(MODULE_PACKAGE);
+            intent.addFlags(Intent.FLAG_INCLUDE_STOPPED_PACKAGES
+                    | Intent.FLAG_RECEIVER_FOREGROUND);
+            intent.putExtra("rules", json);
+            ctx.sendBroadcast(intent);
+        } catch (Throwable e) {
+            logcat("perks rules broadcast failed: " + e);
         }
     }
 
