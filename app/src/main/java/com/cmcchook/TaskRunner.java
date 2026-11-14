@@ -70,6 +70,8 @@ final class TaskRunner {
     static final String CMD_SIGNLOTTERY = "signlottery";
     /** 乡友农业知识问答（wisdom-h5 #/answerQuestions）：答案随题目下发。 */
     static final String CMD_QUIZ = "quiz";
+    /** 天天领权益(辽宁)：每日 10 点「立即领」，周周抢/月月享不在自动范围。 */
+    static final String CMD_PERKS = "perks";
     /** 福利中心盘点：只拉清单，不动账号资产。 */
     static final String CMD_WELFARE = "welfare";
     /** 探路：自己进福利中心和各活动页，把证据带回来。不写今日完成状态。 */
@@ -1022,6 +1024,11 @@ final class TaskRunner {
             String e = TaskApi.findEntry("answerQuestions");
             url = e.isEmpty() ? WisdomTask.ACT_QUIZ : e;
             needToken = false;
+        } else if (CMD_PERKS.equals(cmd)) {
+            key = "perks";
+            url = PerksTask.entryUrl();
+            // rr/actH5 的会话靠 SSO 落地时种下的 Cookie，不需要 URL 上带票。
+            needToken = false;
         } else if (cmd.startsWith(CMD_DIY)) {
             String actId = cmd.substring(CMD_DIY.length());
             if (actId.isEmpty()) {
@@ -1216,6 +1223,9 @@ final class TaskRunner {
             }
             if (CMD_QUIZ.equals(cmd)) {
                 return WisdomTask.runQuiz(url);
+            }
+            if (CMD_PERKS.equals(cmd)) {
+                return PerksTask.run(url);
             }
             if (cmd.startsWith(CMD_DIY)) {
                 return DiyTask.run(cmd.substring(CMD_DIY.length()), url);
@@ -1752,6 +1762,9 @@ final class TaskRunner {
         }
         if (CMD_QUIZ.equals(cmd)) {
             return "乡友农业知识问答";
+        }
+        if (CMD_PERKS.equals(cmd)) {
+            return "天天领权益";
         }
         if (CMD_WELFARE.equals(cmd)) {
             return "福利中心盘点";

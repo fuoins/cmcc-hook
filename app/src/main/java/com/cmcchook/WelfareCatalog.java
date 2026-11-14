@@ -185,6 +185,13 @@ final class WelfareCatalog {
                     "https://digismart.lncmcc.com/wisdom-h5/index.html"
                             + "#/answerQuestions",
                     "answerquestions", STATE_IMPL, TaskRunner.CMD_QUIZ, false, false),
+
+            // r42：天天领权益（辽宁）rr/actH5。每日 10:00 起每日奖池领 1 个奖品
+            // （流量券 / 云盘 / 会员），周周抢要支付、月月享要点亮，均不在自动范围。
+            // 入口短链 0FKMeG，落地带 activityCode=36293370，页面自己发 receive.do。
+            new Item("perks", "天天领权益(辽宁)", "每日 10 点领 1 个奖品（流量券 / 权益）",
+                    PerksTask.ACT_PERKS, "workperksmall", STATE_IMPL,
+                    TaskRunner.CMD_PERKS, false, false),
     };
 
     private WelfareCatalog() {

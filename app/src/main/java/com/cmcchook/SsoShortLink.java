@@ -67,7 +67,7 @@ final class SsoShortLink {
     static final String SOCCER = BASE + "0ELdax";
     /** 签到抽奖 / 乡友问答：{@link WelfareToken} 领票用的就是这一条。 */
     static final String WISDOM_LINK = BASE + "0EL7vw";
-    /** 天天领权益(辽宁)：本期暂无执行引擎，只登记入口供核对。 */
+    /** 天天领权益(辽宁)：{@link PerksTask} 每日「立即领」用的入口。 */
     static final String PERKS = BASE + "0FKMeG";
 
     private static final Entry[] ALL = {
@@ -76,7 +76,7 @@ final class SsoShortLink {
             new Entry("0EL7vw", WISDOM_LINK, WISDOM, "signInLottery", "h5token",
                     "签到抽奖赢好礼 / 乡友农业知识问答(辽宁)"),
             new Entry("0FKMeG", PERKS, ACT_H5, "workPerksMall", "activityCode",
-                    "天天领权益(辽宁)（暂无引擎）"),
+                    "天天领权益(辽宁) · 每日领取"),
     };
 
     private SsoShortLink() {

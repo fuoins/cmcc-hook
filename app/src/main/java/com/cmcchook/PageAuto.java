@@ -56,6 +56,8 @@ final class PageAuto {
         GooseTask.rememberEntry(url);
         // 球赛狂欢季同一个域、同一套 pc/pk 机制，一并记下来。
         SoccerTask.rememberEntry(url);
+        // 天天领权益：记住带 activityCode 的落地页，下次直接复用。
+        PerksTask.rememberEntry(url);
         if (webView != null) {
             lastWebView = new WeakReference<>(webView);
         }

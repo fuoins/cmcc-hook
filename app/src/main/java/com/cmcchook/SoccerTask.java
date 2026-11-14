@@ -435,6 +435,8 @@ final class SoccerTask {
               window[ID]='';
               var L=[];
               function line(s){ L.push(String(s)) }
+              // 进页面时的地址：任务浏览页把 Activity 顶走后，用它拉回活动页。
+              var ENTRY=String(location.href);
               // v4.36.0：NET 以前只是**一个名字** —— 下面判竞猜回执时读 NET[vq].s，
               // 但全脚本没有任何地方往 NET 里写，ReferenceError 被外层的
               // catch(e){ voteOut.err='竞猜异常 '+e } 吞掉，竞猜永远算「异常」、
@@ -666,7 +668,74 @@ final class SoccerTask {
                     out.sort(function(a,b){ return b.sc-a.sc });
                     return out;
                   }
-                  function openTaskPanel(){
+                  var TICKET=null, TICKETC=null;
+                  function ticketComps(){
+                    var out=[];
+                    for(var i=0;i<comps.length;i++){
+                      try{
+                        var c=comps[i];
+                        if(c&&c.$options&&c.$options.name==='GuessTicket') out.push(c);
+                      }catch(e){}
+                    }
+                    return out;
+                  }
+                  function taskUndo(t){
+                    if(!t) return false;
+                    var st=stageOf(t);
+                    if(/UNDO/i.test(st)) return true;
+                    if(st!=='') return false;
+                    var ic=String(t.isComplete==null?'':t.isComplete);
+                    if(ic==='') return true;
+                    return ic==='0';
+                  }
+                  async function openTaskPanel(){
+                    // r42：任务面板是 GuessTicket 组件里的 van-popup，不是独立页面。
+                    // 组件源码（chunk-13f5bb9f）实证：watch.show=true → fetchData() →
+                    // taskList 填充 → dataReady=true 才渲染 .common-dialog。
+                    // 以前只在首页找 moreguess 图片，图片在 CSS 背景 / 未渲染时永远找不到，
+                    // 于是「任务入口: 没找到」→ 直接扫首页 → 0 项。
+                    // 组件实例就在内存里，直接把 show 置 true，让组件自己去拉任务。
+                    var tc=ticketComps();
+                    if(tc.length){
+                      var cc=tc[0];
+                      try{
+                        cc.show=true;
+                        line('进任务界面: GuessTicket.show=true（组件通道）');
+                      }catch(e){ line('组件通道失败: '+e) }
+                      for(var w=0;w<24;w++){
+                        await wait(500);
+                        try{ if(cc.dataReady&&cc.taskList&&cc.taskList.length) break }catch(e){}
+                      }
+                      var tl=null;
+                      try{ tl=cc.taskList }catch(e){}
+                      if(tl&&tl.length){
+                        TICKET=[]; TICKETC=cc;
+                        for(var ti=0;ti<tl.length;ti++){
+                          var it=tl[ti]||{};
+                          TICKET.push({
+                            name:(it.taskType==='INVITE'
+                                  ?('邀请好友 '+it.inviteCount+'/'+it.inviteMax)
+                                  :String(it.name||it.taskKey||'任务')),
+                            taskKey:String(it.taskKey||''),
+                            taskType:String(it.taskType||'NORMAL'),
+                            isComplete:String(it.isComplete||''),
+                            inviteCount:Number(it.inviteCount||0),
+                            inviteMax:Number(it.inviteMax||0),
+                            reward:String(it.reward||''),
+                            raw:it
+                          });
+                        }
+                        line('任务面板: '+TICKET.length+' 项（dataReady='+cc.dataReady+'）');
+                        for(var td=0;td<TICKET.length&&td<12;td++){
+                          line('  · '+cut(TICKET[td].name,30)
+                               +' 奖励+'+(TICKET[td].reward||'-')
+                               +' 状态='+(TICKET[td].isComplete||'-')
+                               +' 类型='+TICKET[td].taskType);
+                        }
+                        return 'GuessTicket|'+TICKET.length+'项';
+                      }
+                      line('任务面板: 组件在，但 taskList 仍空（dataReady='+cc.dataReady+'）');
+                    }
                     var cands=moreGuessImg(), q=[];
                     for(var i=0;i<cands.length&&i<5;i++) q.push(cands[i].src+'|s'+cands[i].sc);
                     line('竞猜票入口: '+(q.length?q.join(' , '):'没找到 moreguess 图片'));
@@ -709,7 +778,7 @@ final class SoccerTask {
                     }catch(x){ line('点击异常: '+x) }
                     return how+'|'+nm2;
                   }
-                  var panel=openTaskPanel();
+                  var panel=await openTaskPanel();
                   if(panel){
                     await wait(2400);
                     line('进任务界面后接口: taskIndex '+netN('taskIndex')
@@ -777,6 +846,12 @@ final class SoccerTask {
                   }
 
                   var tasks=owner?(owner[field]||[]):[];
+                  // r42：GuessTicket.taskList 是组件自己 fetchData() 拉的，比从
+                  // webpack 模块里 harvest 更可靠（它已经把 taskList + 邀请合在一起）。
+                  if(!tasks.length && TICKET && TICKET.length){
+                    tasks=TICKET;
+                    line('任务数组: 用 GuessTicket.taskList 共 '+tasks.length+' 项');
+                  }
                   line('任务: 共 '+tasks.length+' 项');
                   // r18：数组读空时用 DOM 上的任务按钮做交叉验证。
                   // 页面有按钮 = 字段没对上（读错组件/读太早）；页面也没按钮 = 今天确实没任务。
@@ -802,8 +877,7 @@ final class SoccerTask {
                   }
                   var undo=0;
                   for(var i=0;i<tasks.length;i++){
-                    var st=stageOf(tasks[i]);
-                    if(/UNDO/i.test(st) || st==='') undo++;
+                    if(taskUndo(tasks[i])) undo++;
                   }
                   line('待做: '+undo);
 
@@ -812,8 +886,19 @@ final class SoccerTask {
                   // harvest() 只捞数组，所以永远读不到它，日志才会写「今天确实没有任务」。
                   // 邀请按老规矩不代做，但必须如实写「邀请任务 0/5 未完成」。
                   var inv=null;
+                  // r42：GuessTicket.taskList 里的邀请项就是明文（inviteCount/inviteMax/
+                  // isComplete），比去猜密文 taskInfo 的 dataEn 直接得多。
+                  if(TICKET){
+                    for(var ii=0;ii<TICKET.length;ii++){
+                      if(TICKET[ii].taskType==='INVITE'){
+                        inv={count:TICKET[ii].inviteCount,max:TICKET[ii].inviteMax,
+                             complete:TICKET[ii].isComplete,raw:'GuessTicket.taskList'};
+                        break;
+                      }
+                    }
+                  }
                   try{
-                    var ib=netBody('taskInfo');
+                    var ib=inv?'' : netBody('taskInfo');
                     if(ib){
                       var io=JSON.parse(ib);
                       var b0=(io&&io.body)?io.body:io;
@@ -849,23 +934,45 @@ final class SoccerTask {
                   var doneCount=0, mode='component';
                   for(var i=0;i<tasks.length;i++){
                     var t=tasks[i];
-                    if(!/UNDO/i.test(stageOf(t)) && stageOf(t)!=='') continue;
-                    if(!cands.length) break;
-                    var call=cands[0], okOne=false;
-                    try{
-                      var ret=call.c[call.m](t);
-                      if(ret&&isFn(ret.then)) await ret;
-                      okOne=true;
-                    }catch(e){
+                    if(!taskUndo(t)) continue;
+                    if(t.taskType==='INVITE') continue;   // 邀请类不代做
+                    var okOne=false;
+                    // r42：GuessTicket 的任务卡带 jobUrl，点它要 handleTaskClick(task)：
+                    // 内部先 doTask 上报，再按 jobUrl 跳浏览页。这里是组件自己的方法，
+                    // 不用猜 doTask 的参数结构。跳转若真发生，下面会拉回活动页。
+                    if(TICKETC && isFn(TICKETC.handleTaskClick)){
+                      var here0=String(location.href);
                       try{
-                        var ret2=call.c[call.m](t.taskId, t.type||'');
-                        if(ret2&&isFn(ret2.then)) await ret2;
+                        var rt=TICKETC.handleTaskClick(t.raw||t);
+                        if(rt&&isFn(rt.then)) await rt;
                         okOne=true;
-                      }catch(e2){ line('  做任务失败: '+e2) }
+                        line('  做任务 '+cut(t.name,30)+' → GuessTicket.handleTaskClick');
+                      }catch(e){ line('  handleTaskClick 失败: '+e) }
+                      await wait(1500);
+                      if(String(location.href)!==here0){
+                        line('  任务页跳走 → 拉回活动页');
+                        try{ location.replace(ENTRY) }catch(e){}
+                        await wait(2500);
+                      }
+                    }
+                    var call=cands.length?cands[0]:null;
+                    if(!okOne && call){
+                      try{
+                        var ret=call.c[call.m](t);
+                        if(ret&&isFn(ret.then)) await ret;
+                        okOne=true;
+                      }catch(e){
+                        try{
+                          var ret2=call.c[call.m](t.taskId, t.type||'');
+                          if(ret2&&isFn(ret2.then)) await ret2;
+                          okOne=true;
+                        }catch(e2){ line('  做任务失败: '+e2) }
+                      }
                     }
                     if(okOne){
                       doneCount++;
-                      line('  做任务 '+cut(t.name||t.taskName||t.taskId,40)+' → '+call.m);
+                      if(!call) line('  做任务 '+cut(t.name||t.taskKey,40)+' → 组件');
+                      else line('  做任务 '+cut(t.name||t.taskKey,40)+' → '+call.m);
                     }
                     await wait(900);
                   }
@@ -880,8 +987,30 @@ final class SoccerTask {
                   }
                   scanTasks();
                   tasks=owner?(owner[field]||[]):[];
+                  // r42：做了任务要按组件自己的 taskList 复查 isComplete，
+                  // 不能只看 harvest 出来的 UNDO 字段（那是别的组件的结构）。
+                  if(TICKETC){
+                    try{
+                      var rs=TICKETC.fetchData();
+                      if(rs&&isFn(rs.then)) await rs;
+                      await wait(800);
+                      var tl2=TICKETC.taskList||[];
+                      if(tl2.length){
+                        tasks=[];
+                        for(var i3=0;i3<tl2.length;i3++){
+                          var it3=tl2[i3]||{};
+                          tasks.push({name:String(it3.name||it3.taskKey||''),
+                            taskType:String(it3.taskType||'NORMAL'),
+                            isComplete:String(it3.isComplete||''),
+                            inviteCount:Number(it3.inviteCount||0),
+                            inviteMax:Number(it3.inviteMax||0)});
+                        }
+                      }
+                    }catch(e){}
+                  }
+                  if(!tasks.length && TICKET) tasks=TICKET;
                   var left=0;
-                  for(var i=0;i<tasks.length;i++){ if(/UNDO/i.test(stageOf(tasks[i]))) left++ }
+                  for(var i=0;i<tasks.length;i++){ if(taskUndo(tasks[i])) left++ }
                   line('复查: 仍待做 '+left+' 个');
 
                   // 组件方法一个都没调成，退到页面自己的业务接口层直发。
