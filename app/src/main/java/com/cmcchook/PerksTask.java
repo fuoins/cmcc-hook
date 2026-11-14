@@ -313,7 +313,7 @@ final class PerksTask {
         }
         if (!rawResp.isEmpty()) {
             detail.append("服务端原始响应: ")
-                    .append(rawResp.length() > 900 ? rawResp.substring(0, 900) : rawResp)
+                    .append(rawResp.length() > 2500 ? rawResp.substring(0, 2500) : rawResp)
                     .append('\n');
         }
         if (!pageText.isEmpty()) {
@@ -363,6 +363,16 @@ final class PerksTask {
         }
 
         if (!stopCode.isEmpty()) {
+            // r49：抢兑锁定模式 = 用户点了「抢 X 点」并指定奖品直发，服务端回什么就
+            // 如实报什么（含完整原始响应，见上方 detail）。不要套「已领 / 抢光」这些
+            // 按钮点击时代的通用判定，否则 2.88 的真实业务码会被误读成「今天领过了」。
+            if (grab > 0 && !locked.isEmpty()) {
+                return TaskRunner.Result.skip("天天领权益 · 指定的「" + locked + "」没抢到（"
+                                + stopCode + (stopMsg.isEmpty() ? "" : " " + stopMsg) + "）",
+                        detail.toString(),
+                        "抢兑已在页面上下文直接发请求（不等按钮亮、不查 status），服务端原始响应见上方。\n"
+                                + "锁定模式不会改抢别的奖品；把这个业务码发我，据此判定是「未开启 / 已有占用 / 兑换券类」。");
+            }
             // 点了但页面给了业务码：照实写，不猜。
             String hint = "页面回执: " + stopCode + (stopMsg.isEmpty() ? "" : " " + stopMsg);
             if (stopCode.equals("0000")) {
@@ -645,6 +655,84 @@ final class PerksTask {
                 return String(tgt.tagName||'')+'.'+String(tgt.className||'').slice(0,40);
               }
 
+              // ===== r49：抢兑分支前置 —— 不等 DOM、不等按钮亮，直接页面上下文发请求 =====
+              // r46 实测 bug：这段原本排在「死等 .wpm-benefit-card 25 秒 + no-page 早退」之后；
+              // 真页首次打开 SSO 换票没做完时 Vue 不渲染卡片，脚本先 done('no-page') return，
+              // 抢兑直发永远到不了（两份真机日志里 stockOccupy/receive 独立直发 0 次）。
+              // 抢兑不需要任何 DOM：奖池靠自己发 queryActivityInfo.do、签名从页面借、
+              // 指定奖品直接 stockOccupy.do / receive.do，服务端回执全文打印。故整段前置。
+              if(TARGET>0){
+                var gGot=[], gStop='', gStopCode='', gStopMsg='', gRaw='', gLocked='';
+                var gUrl=String(location.href), gText='';
+                try{ gText=String((document.body&&document.body.innerText)||'').replace(/\\s+/g,' ').slice(0,300) }catch(e){}
+                line('抢兑(r49): 不等 DOM · 目标 '+fmtTime(TARGET)+' · 档位 '+(RULE||'不限'));
+                line('抢兑(r49): 先在页面上下文等 SSO 换票 / 奖池就绪');
+
+                // 1) 等换票完成：真页刚落地时页面自己发的 queryActivityInfo 常回 9999
+                //    「登录信息失效」，奖池是空的。优先读页面自己换票成功后查到的那份
+                //    （签名必然合法），再主动补查一次刷新签名/刺激页面，直到拿到 ruleList。
+                var gRules=null, gT0=Date.now(), gProbe=0;
+                while(Date.now()-gT0<30000){
+                  gProbe++;
+                  gRules=rulesFromInfo();
+                  if(gRules) break;
+                  var gFr=await freshRules();
+                  if(gFr){ gRules=gFr; break }
+                  var gRs=netHit(/dayWeekMoonReceive\\/queryActivityInfo\\.do/);
+                  var gLast=gRs.length?gRs[gRs.length-1]:null;
+                  if(gProbe===1||gProbe%4===0) line('换票未就绪#'+gProbe+': 最近回执 '
+                    +cut(gLast?String(gLast.b||''):'（页面还没发查询）',220));
+                  await wait(900);
+                }
+                if(gRules){
+                  RULES=gRules;
+                  line('奖池就绪: '+Object.keys(gRules).length+' 档 · 查了 '+gProbe+' 次 · 耗时 '
+                    +((Date.now()-gT0)/1000).toFixed(1)+'s');
+                } else {
+                  line('奖池没就绪: 30 秒内 queryActivityInfo 都没返回 ruleList（多半 SSO / 登录态没好）');
+                }
+
+                var gRule=gRules?gRules[RULE]:null, gSign=anySign();
+                var gPath=(gRule&&String(gRule.ruleType)==='2')?'stockOccupy':'receive';
+                line('通道: 页面上下文直发 '+gPath+'.do · 签名 '+(gSign?'已借到':'没借到'));
+                if(gRule){
+                  line('规则: ruleId='+cut(gRule.ruleId,12)+' ruleType='+gRule.ruleType
+                    +' 奖品='+gRule.prizes.length+' begin='+gRule.begin+' weekDay='+gRule.weekDay);
+                  var gLock=lockPrize(gRule);
+                  if(gLock) line('锁定奖品: '+gLock.name+' · prizeId='+gLock.id+' · status='+gLock.status+'（忽略 status，只发这一个）');
+                  else line('未锁定: 没设关键词或没匹配到，按 status=1 / 页面顺序');
+                } else {
+                  line('规则: 没拿到这一档的奖池，无法直发（下方回执就是能拿到的全部信息）');
+                }
+
+                // 2) 贴点开火。已过点 → fireAt 在过去 → 立即开火，正好试现在的真实响应。
+                if(gRule&&gSign){
+                  var gFireAt=TARGET-350;
+                  if(gFireAt>Date.now()) line('贴点中: '+fmtTime(Date.now())+' → 开火 '+fmtTime(gFireAt));
+                  while(Date.now()<gFireAt){ await wait(40) }
+                  line('开火: '+fmtTime(Date.now())+' · '+gPath+'.do');
+                  var gStopAt=Math.max(Date.now()+30000, TARGET+55000);
+                  var gBr=await burstOnce(gRule, gPath, gStopAt);
+                  line('直发合计 '+gBr.tries+' 次'+(gBr.stop?(' · '+gBr.stop):''));
+                  gRaw=String(gBr.raw||''); gLocked=String(gBr.locked||'');
+                  if(gRaw) line('服务端原始响应(全): '+gRaw);
+                  if(gBr.ok){
+                    gGot.push({name:gBr.name,code:gBr.code,msg:gBr.msg,rid:gBr.rid,ok:true});
+                  } else {
+                    gStop=gBr.stop||'指定的奖品没抢到'; gStopCode=gBr.code||''; gStopMsg=gBr.msg||'';
+                    if(gBr.locked) line('锁定模式: 只发指定奖品，不换别的、不点按钮兜底');
+                  }
+                } else {
+                  gStop=gRule?'没借到页面签名（LJRkIeoW）':'没拿到这一档规则表（奖池没就绪）';
+                  line('未开火: '+gStop);
+                }
+                done({stage:'done', grab:1,
+                      items:gRule?gRule.prizes.length:0, claimable:gRule?gRule.prizes.length:0,
+                      claimed:gGot.length, got:gGot, stop:gStop, stopCode:gStopCode,
+                      stopMsg:gStopMsg, text:gText, url:gUrl, raw:gRaw, locked:gLocked});
+                return;
+              }
+
               var t0=Date.now();
               while(Date.now()-t0<25000){
                 if(document.querySelector('.wpm-benefit-card')) break;
@@ -892,7 +980,7 @@ final class PerksTask {
                   line('直发#'+tries+' '+cut(p.name,16)+' → status='+rec.s
                        +' code='+jd.code+' '+cut(jd.msg,26));
                   // r46：把服务端原始响应体完整打出来，试 2.88 就看这一行。
-                  line('原始响应: '+cut(lastRaw,400));
+                  line('原始响应(全): '+lastRaw);
                   if(jd.ok){
                     line('直发命中: '+p.name+' rid='+jd.rid);
                     return {ok:true,name:p.name,code:jd.code,msg:jd.msg,rid:jd.rid,
@@ -977,79 +1065,8 @@ final class PerksTask {
 
               var got=[], stop='', stopCode='', stopMsg='';
 
-              // 抢兑模式：不等按钮亮，直接在页面上下文把领取请求发出去。
-              // 12 点档走 stockOccupy.do，10 点档走 receive.do（真机抓包实证）。
-              if(TARGET>0){
-                line('抢兑: 目标 '+fmtTime(TARGET)+' · 档位 '+(RULE||'不限'));
-                var rule=RULES?RULES[RULE]:null;
-                if(!rule){
-                  var fr=await freshRules();
-                  if(fr){ RULES=fr; rule=fr[RULE];
-                    line('奖池: 主动查 queryActivityInfo 拿到 '+Object.keys(fr).length+' 档'); }
-                }
-                var sg=anySign();
-                line('通道: 页面上下文直发（借页面签名）· 签名 '+(sg?'已借到':'没借到'));
-                if(rule){
-                  line('规则: ruleId='+cut(rule.ruleId,12)+' ruleType='+rule.ruleType
-                       +' 奖品='+rule.prizes.length+' begin='+rule.begin+' weekDay='+rule.weekDay);
-                } else {
-                  line('规则: 没拿到这一档的奖池，只能退回按钮点击');
-                }
-
-                // 贴到目标前 350ms：开始高频发（提前量用于抵消网络/服务端时钟偏差）。
-                var path=(rule&&String(rule.ruleType)==='2')?'stockOccupy':'receive';
-                if(rule&&sg){
-                  var fireAt=TARGET-350;
-                  if(fireAt>Date.now()) line('贴点中: '+fmtTime(Date.now())+' → 开火 '+fmtTime(fireAt));
-                  while(Date.now()<fireAt){ await wait(40) }
-                  line('开火: '+fmtTime(Date.now())+' · '+path+'.do');
-                  var hardStop=TARGET+55000;
-                  var br=await burstOnce(rule,path,hardStop);
-                  line('直发合计 '+br.tries+' 次'+(br.stop?(' · '+br.stop):''));
-                  if(br.raw) line('最终原始响应: '+cut(String(br.raw),500));
-                  if(br.ok){
-                    got.push({name:br.name,code:br.code,msg:br.msg,rid:br.rid,ok:true});
-                  } else if(br.fallback){
-                    stop=br.stop; stopCode=br.code; stopMsg=br.msg;
-                    line('签名被拒，退回页面按钮（页面自己会生成合法签名）');
-                  } else {
-                    stop=br.stop; stopCode=br.code; stopMsg=br.msg;
-                    if(br.locked) line('锁定模式: 只发指定奖品，不换别的、不点按钮兜底');
-                  }
-                } else {
-                  stop=rule?'没借到页面签名':'没拿到这一档规则表';
-                }
-
-                // 兜底：直发没成才扫按钮；已命中就不再动页面。
-                if(!got.length && (sg||rule) && !(br && br.locked)){
-                  line('兜底: 扫页面按钮点击');
-                  var fbStop=Math.max(Date.now()+20000, TARGET+30000), fbTries=0;
-                  while(Date.now()<fbStop){
-                    var rows0=scan(), t0=pick(rows0);
-                    if(t0){
-                      var r0=await claimOne(t0,true);
-                      if(r0.ok){ got.push(r0); line('兜底抢到: '+cut(r0.name,30)); break }
-                      if(r0.code&&/上限|已领|领过|明天|抢光|领完/.test(String(r0.msg||''))){
-                        if(!stopCode){ stopCode=r0.code; stopMsg=r0.msg; }
-                        break;
-                      }
-                    } else {
-                      fbTries++;
-                      if(fbTries%40===0) line('兜底仍在等按钮… 已扫 '+fbTries+' 次');
-                    }
-                    await wait(150);
-                  }
-                }
-                if(!got.length&&!stop) stop='直发与按钮都没拿到';
-                var a0=scan(), aS0=stateOf(a0);
-                if(a0.length) line('收工状态: '+aS0);
-                done({stage:'done', grab:1, items:first.length, claimable:canN,
-                      claimed:got.length, got:got, stop:stop, stopCode:stopCode,
-                      stopMsg:stopMsg, state:aS0, text:bodyTxt, url:String(location.href),
-                      raw:(br&&br.raw)?String(br.raw):'', locked:(br&&br.locked)?String(br.locked):''});
-                return
-              }
-
+              // r49：抢兑分支（TARGET>0）已整段前置到脚本开头（不等 DOM / 等换票 / 直发 / 打印原始响应），到点前段会直接 done+return。
+              // 走到这里说明 TARGET=0，即普通「一键 / 手动领」，继续走下面的两档按钮点击。
               // 普通模式（一键跑 / 手动执行）：两档各 1 次，领完一档重扫。
               for(var round=0; round<2; round++){
                 var rows=scan(), t=pick(rows);
