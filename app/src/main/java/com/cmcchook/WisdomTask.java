@@ -641,6 +641,21 @@ final class WisdomTask {
             return TaskRunner.Result.fail(tag + " · 脚本异常",
                     detail.append(msg).append('\n').toString(), "把这份日志发我。");
         }
+        if ("blocked".equals(stage)) {
+            // v4.36.0：08:48 日志实证 —— 页面挂着「连续签到第7天 · 惊喜奖励四选一」
+            // 的选奖框（请选择连签7天奖励 / 确认领取 / 跳过下一步），这张框只有
+            // 今天签到成功才会弹。旧脚本把它判成「今天还没签」，然后把弹窗里的
+            // 「去签到」当签到按钮点了 18 次，signInDoTask / lottery 全是 0 条，
+            // 最后还报了 FAIL。这里按「已签到·等你选奖」如实呈现，不记失败。
+            detail.append(msg).append('\n')
+                    .append("说明: 选奖框里「确认领取」等于替你选奖、「跳过下一步」等于放弃奖励，"
+                            + "两个都可能选亏，所以脚本一个都没点，也没在弹窗上空点。\n");
+            return TaskRunner.Result.idle(tag + " · 等你选奖",
+                    detail.toString(),
+                    "今天签到大概率已经完成（「连签7天·惊喜奖励四选一」是签到成功后才弹的框）。"
+                            + "去活动页自己选一个奖励点「确认领取」，再单独重跑「" + tag + "」"
+                            + "做任务和抽奖；脚本不替选奖品。");
+        }
         if ("idle".equals(stage)) {
             return TaskRunner.Result.idle(tag + " · " + msg, detail.toString(),
                     tag + "：" + msg);
@@ -1508,6 +1523,40 @@ final class WisdomTask {
               // 统一去掉空白再比；文本一样长时取层级更深的那个，别点到大容器。
               function norm(s){return String(s||'').replace(/\\s+/g,'')}
               function deepOf(e){var d=0;while(e&&e.parentElement){d++;e=e.parentElement}return d}
+              // v4.36.0：签到/任务/抽奖的主流程按钮，绝不能在「连签7天·惊喜奖励四选一」
+              // 这类选奖弹窗里找。08:48 日志实证：脚本把弹窗里的
+              //   DIV.sevenDays-popup-button-item-left「去签到」（元素链 … < DIV.rule-popup-content）
+              // 当成签到按钮，18 次全打在弹窗上，signInDoTask 0 条、lottery 0 条。
+              // IN_TIP_CLICK 只有 closeTip 自己关弹窗时才置 true，其它流程一律排除。
+              var IN_TIP_CLICK=false, TIP_BLOCKED=false, TIP_LOGGED=false, CHOOSE_LOGGED=false;
+              function inPopup(e){
+                try{
+                  var p=e;
+                  for(var i=0;i<9&&p;i++,p=p.parentElement){
+                    var c=String(p.className||'');
+                    if(/sevenDays|seven-days|rule-popup|rulePopup|popup-content|popupContent|reward-popup|rewardPopup|choosePop|choose-pop/i.test(c)) return true;
+                  }
+                }catch(x){}
+                return false;
+              }
+              // 真实可见的弹窗容器：模板堆里的同名元素 rect 全是 0x0，
+              // 所以「有尺寸」才是它真的弹出来了。
+              function realBox(sel){
+                try{
+                  var bs=document.querySelectorAll(sel);
+                  for(var i=0;i<bs.length;i++){
+                    var e=bs[i];
+                    if(!shown(e)) continue;
+                    var r=e.getBoundingClientRect();
+                    if(r.width>40&&r.height>16) return e;
+                  }
+                }catch(x){}
+                return null;
+              }
+              function chooseRewardBox(){
+                return realBox('.sevenDays-popup,[class*=sevenDaysPopup],[class*=seven-days],'
+                               +'[class*=sevenDays],[class*=rule-popup],[class*=rulePopup]');
+              }
               function pick(words,excludes,ok){
                 var all=document.querySelectorAll('button,a,div,span,p,li,uni-view,uni-button,uni-text,uni-image,view,text,image,[role=button],[class*=btn],[class*=sign]');
                 for(var w=0;w<words.length;w++){
@@ -1516,6 +1565,7 @@ final class WisdomTask {
                   for(var i=0;i<all.length;i++){
                     var e=all[i];
                     if(!ok(e)) continue;
+                    if(!IN_TIP_CLICK&&inPopup(e)) continue;
                     var raw=tx(e), t=norm(raw);
                     if(t.length>word.length+8) continue;
                     if(t.indexOf(word)<0) continue;
@@ -1552,6 +1602,7 @@ final class WisdomTask {
                   for(var i=0;i<all.length;i++){
                     var e=all[i], t=norm(tx(e));
                     if(t!==word) continue;
+                    if(!IN_TIP_CLICK&&inPopup(e)) continue;
                     var bad=false;
                     for(var x=0;excludes&&x<excludes.length;x++){
                       if(t.indexOf(norm(excludes[x]))>=0){bad=true;break}
@@ -1812,6 +1863,8 @@ final class WisdomTask {
               //   连签7天获得「惊喜奖励四选一」/ 请选择连签7天奖励 / 确认领取 / 跳过下一步
               // 脚本一个都没点，直接报「没有可点的按钮」。
               function closeTip(){
+                IN_TIP_CLICK=true;
+                try{
                 var all=document.querySelectorAll('button,a,div,span,p,li,uni-view,uni-button,uni-text,uni-image,view,text,image,[role=button],[class*=btn],[class*=sign]');
                 // v4.10.0-r4：新皮肤进场会有一步「新手引导」（localStorage guidePopupStep），
                 // 蒙层上只有「下一步」，旧词表一个都不认，整页点不动。补上引导词。
@@ -1856,9 +1909,24 @@ final class WisdomTask {
                   }
                 }
                 if(!best) return false;
+                // v4.36.0：选奖弹窗里的按钮一个都不代点 ——「确认领取」等于替用户选奖，
+                // 「跳过下一步」等于直接放弃奖励。选哪个是人的判断，交给用户。
+                if(inPopup(best)){
+                  TIP_BLOCKED=true;
+                  if(!TIP_LOGGED){
+                    TIP_LOGGED=true;
+                    line('弹窗挡住且不能代点: 「'+bestTx+'」在选奖弹窗里（'
+                        +String(best.className||'').slice(0,30)
+                        +'）· 选哪个奖留给你，脚本不替选也不跳过');
+                  }
+                  return false;
+                }
                 clickEl(best);
                 line('关掉弹窗: '+bestTx);
                 return true;
+                }finally{
+                  IN_TIP_CLICK=false;
+                }
               }
 
               (async function(){
@@ -2059,6 +2127,19 @@ final class WisdomTask {
                   }
                   function signedNow(){
                     var b=bodyText();
+                    // v4.36.0：先看**真实弹窗**，再看模板堆。
+                    // 「连续签到第7天 · 惊喜奖励四选一」这张框只有今天签到成功才会弹，
+                    // 框真实存在（有尺寸）就是「已签到·待选奖」，不是「今天还没签」。
+                    // 08:48 日志就是在这里判反了：pileCount()>=3 短路在最前面，
+                    // 把「已签待选奖」写成「今天还没签」，然后 18 次空点。
+                    if(chooseRewardBox()){
+                      if(!CHOOSE_LOGGED){
+                        CHOOSE_LOGGED=true;
+                        line('已签到·待选奖: 页面挂着「连签7天·惊喜奖励四选一」弹窗，'
+                            +'这是签到成功才弹的；选哪个奖留给你，脚本不代选');
+                      }
+                      return true;
+                    }
                     // 模板堆里这些词全是假状态，一律不许当「已签」证据。
                     if(pileCount()>=3) return false;
                     // v3.86：签到按钮是图片，签到前后会换图 ——
@@ -2096,17 +2177,22 @@ final class WisdomTask {
                   if(!laidOut && pileCount()>=3){
                     line('页面未布局: innerText 为空 / 模板堆 '+pileCount()+' 个，等渲染（最多 25 秒）');
                     stage('wait-layout');
-                    var layoutWait=0;
+                    var layoutWait=0, bestVis=0;
                     while(layoutWait<25000){
                       await wait(700); layoutWait+=700;
                       laidOut=(function(){ try{ return String(document.body.innerText||'').trim().length>0 }catch(e){ return false } })();
                       if(laidOut) break;
-                      if(visBtn()>0){ laidOut=true; break }
+                      // v4.36.0：旧版 visBtn()>0 就放行 —— 08:48 日志里只等了 1 秒、
+                      // 3 个可见元素就往下走，那一页其实还是模板堆，后面 18 次点击
+                      // 全打在 0x0 元素上。真签到页的元素远不止 8 个，门槛提到 8。
+                      var vn=visBtn();
+                      if(vn>bestVis) bestVis=vn;
+                      if(vn>=8){ laidOut=true; break }
                     }
                     if(!laidOut){
                       line('探针: ' + probe());
-                      done('not-laid-out','页面 25 秒内一直没有渲染（innerText 为空、按钮全 0x0），'
-                           + '只读到 Vue 弹窗模板；没有点任何按钮');
+                      done('not-laid-out','页面 25 秒内一直没有渲染（innerText 空、可见元素最多 '
+                           + bestVis + ' 个），只读到 Vue 弹窗模板；没有点任何按钮');
                       return;
                     }
                     line('页面已渲染（等了 '+Math.round(layoutWait/1000)+' 秒，可见元素 '+visBtn()+' 个），继续');
@@ -2172,6 +2258,10 @@ final class WisdomTask {
                       line('页面图片按钮: 没找到符合胶囊特征的 img');
                     }
                     var triedImg={};
+                    // v4.36.0：收敛计数。08:48 日志里 6 轮刷满、18 次点击、一条回执都没有。
+                    // 点到了元素但连续 3 轮没有任何新回执 → 收手，把「点不动」如实写出来，
+                    // 比继续空点有价值。
+                    var noNet=0, baseSign=netCount('signIn'), baseTask=netCount('signInDoTask');
                     for(var sw=0;sw<6;sw++){
                       if(netSign()) break;
                       for(var ct=0;ct<2;ct++){ if(closeTip()){ await wait(500) } else break }
@@ -2206,7 +2296,21 @@ final class WisdomTask {
                         await wait(1600);
                         SEEN={};
                       }
-                      if(!moved) break;
+                      if(!moved){
+                        if(TIP_BLOCKED) line('签到段收手: 页面被选奖弹窗挡住，等你手动选完再跑');
+                        break;
+                      }
+                      // 点到了东西却没有任何新回执 —— 多半点在弹窗/模板/引流按钮上。
+                      if(netCount('signIn')===baseSign&&netCount('signInDoTask')===baseTask){
+                        noNet++;
+                        line('这一轮点了 '+did+' 次，但 signIn / signInDoTask 都没有新回执（连续 '+noNet+' 轮）');
+                        if(noNet>=3){
+                          line('签到段收手: 连续 3 轮点到了元素却没有任何新回执，不再空点');
+                          break;
+                        }
+                      }else{
+                        noNet=0;
+                      }
                     }
                   }
 
@@ -2306,6 +2410,12 @@ final class WisdomTask {
                     +'，任务回执 '+tasks+' 条，抽奖回执 '+drawn+' 条，动作 '+did+' 次');
                   else if(drawn>0) done('ok','抽奖有回执 '+drawn+' 条，任务回执 '+tasks+' 条，动作 '+did+' 次');
                   else if(signedAlready) done('idle','今天已签到（动作 '+did+' 次）');
+                  // v4.36.0：被选奖弹窗挡住 ≠ 失败。签到大概率已经成功（框就是签到成功才弹的），
+                  // 只是「选哪个奖」要人来定。报 fail 会让人以为今天没签、白点一堆。
+                  else if(TIP_BLOCKED) done('blocked',
+                    '页面挂着「连签7天·惊喜奖励四选一」选奖弹窗：这是签到成功后才弹的框，'
+                    +'脚本没有代选、也没有跳过（选哪个奖是人的判断）；动作 '+did
+                    +' 次，signIn 回执 '+sign+' 条、signInDoTask 回执 '+tasks+' 条');
                   else if(did>0){
                     // v3.83：点击没生效时把真实 DOM 带回来，别再靠猜按钮文案。
                     line('DOM 快照: ' + domSnapshot());

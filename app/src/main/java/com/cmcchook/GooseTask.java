@@ -923,6 +923,13 @@ final class GooseTask {
                     .append(" · 待领 ").append(travelItems)
                     .append(" 项 · 找到领取按钮 ").append(out.optInt("travelMatched", 0))
                     .append(" 个\n");
+        } else {
+            // r41：084621 真机日志整段静默，看起来像「压根没做这块」。
+            // 其实页面没弹出「出游归来」卡片时脚本不会调 tapTravel()，
+            // r40 的 .claimBtn 精确点击本轮没有触发机会 —— 如实写明，别留白。
+            detail.append("  出游归来领取: 本轮无待领项（页面没弹出「出游归来」卡片）\n")
+                    .append("    说明: r40 精确点 .travelRewardDiv .claimBtn 的逻辑本轮未触发，")
+                    .append("不是通过也不是失败，等下次真有待领时验证\n");
         }
     }
 
@@ -1089,6 +1096,11 @@ final class GooseTask {
                     lines.append(" [").append(travelLabels).append("]");
                 }
                 lines.append('\n');
+            } else {
+                // r41：不再静默。页面没弹出「出游归来」卡片时不点领取按钮，
+                // 明确写一行，避免日志看起来像漏做了这块。
+                lines.append("出游归来领取: 本轮无待领项（页面没弹出「出游归来」卡片，")
+                        .append("r40 精确领取逻辑未触发）\n");
             }
             int rounds = fin == null ? 0 : fin.optInt("rounds", 0);
             if (rounds > 0) {
@@ -2150,6 +2162,9 @@ final class GooseTask {
                                      +' 个（弹窗 '+tp.boxes+' 个）'
                                      +(tp.labels.length?' ['+tp.labels.join('/')+']':''));
                     if(tp.clicked>0) await wait(1800);  // 留时间给页面自己发 claimTravelReward
+                  }else{
+                    // r41：待领 0 项时明确记一行，别让「出游奖励」整段静默。
+                    out.actions.push('出游奖励: 本轮无待领项（页面没弹出「出游归来」卡片，未触发领取按钮）');
                   }
                 }catch(e){ out.actions.push('刷新/出游领取异常:'+e.message) }
 

@@ -563,7 +563,12 @@ final class CouponTask {
             HookLog.log("COUPON", "批量使用 · 开始 " + total + " 张",
                     "现场: " + host.name()
                             + "\n运行方式: 一张一页 —— 每张开始前重进卡券页，做完立刻重进下一张"
+                            + "\n第 1 张如果页面已经是卡券列表，直接复用，省一次重进"
                             + "\n结果弹窗不关、不点遮罩、不改 DOM，直接靠刷新清掉"
+                            + "\n验收口径: 认页面自己发的 rightsCouponsUse 回执 retCode，"
+                            + "000000 记「页面已受理」（页面自己说 24 小时内到账，不写成兑换成功）；"
+                            + "非 000000 连 retMsg 一起记失败"
+                            + "\n短信验证码的获取/灌入/等待链路本轮没动"
                             + "\n进度由 Java 侧掌握，页面刷新不会丢队列");
 
             // v3.61：待复核队列。页面没回明确成败时先挂在这里，下一张重进后
@@ -590,7 +595,26 @@ final class CouponTask {
                 }
                 sendProgress("item", k, name, ok, fail, total, "");
                 codeFedThisItem = false;
-                boolean fresh = host.reload();
+                // v4.36.0（A3 提速）：第 1 张不再无条件重进。openHost() 刚打开的页面
+                // 通常就是卡券列表，白等一次 reload（3~6 秒）。先探一眼：已经是
+                // mycoupons 且券按钮已渲染就直接用，否则照旧重进，不冒「跑在旧文档上」的险。
+                boolean fresh;
+                if (k == 0) {
+                    String probe0 = host.eval("(function(){try{return "
+                            + "(location.href.indexOf('mycoupons')>=0?'1':'0')+','+"
+                            + "document.querySelectorAll('button.cp-btn').length"
+                            + "}catch(e){return ''}})()", 4_000L);
+                    fresh = probe0 != null && probe0.replace("\"", "").startsWith("1");
+                    if (fresh) {
+                        HookLog.log("COUPON", "第 1/" + total + " 张 · 复用已打开的卡券页",
+                                "页面已是 " + probe0.replace("\"", "")
+                                        + "（mycoupons,券按钮数），省掉一次重进");
+                    } else {
+                        fresh = host.reload();
+                    }
+                } else {
+                    fresh = host.reload();
+                }
                 if (fresh) {
                     HookLog.log("COUPON", "第 " + (k + 1) + "/" + total + " 张 · 已重进卡券页",
                             name);
@@ -1044,7 +1068,16 @@ final class CouponTask {
             sb.append("阶段: ").append(o.optString("stage")).append('\n');
             sb.append("页面: ").append(o.optString("title")).append(" · ")
                     .append(o.optString("head")).append('\n');
-            sb.append("识别: ").append(o.optInt("count")).append(" 张\n");
+            sb.append("识别: ").append(o.optInt("count")).append(" 张");
+            // v4.36.0：把「可使用(N)」和「能自动用的张数」分开写，不再让人以为漏扫是没券。
+            int cnt = o.optInt("count");
+            int usable = o.optInt("usableCount", cnt);
+            if (usable < cnt) {
+                sb.append(" · 可自动用 ").append(usable)
+                        .append(" 张 · 仅列出 ").append(cnt - usable)
+                        .append(" 张（去查看/权益类，点了会跳外部页）");
+            }
+            sb.append('\n');
             JSONArray lines = o.optJSONArray("lines");
             if (lines != null) {
                 for (int i = 0; i < lines.length(); i++) {
@@ -1154,6 +1187,10 @@ final class CouponTask {
               // v3.41：只认「去使用」类按钮。上一版把领券中心的「哦 去领券」
               // 当成一张券扫了出来，其实那只是引导，券列表根本没渲染。
               var WORDS=/^(去使用|立即使用|马上使用|去兑换|立即兑换|去充值)$/;
+              // v4.36.0：页面写着「可使用(22)」，扫描只识别到 15 张 —— 差的 7 张按钮
+              // 文案是「去查看」。这批多是权益券/第三方券，点了会跳外部页，所以
+              // **不自动用**；但必须先列出来并标注，别让人以为漏扫是没券。
+              var WORDS_VIEW=/^(去查看|查看详情|立即查看|查看)$/;
               function inLead(e){
                 var p=e;
                 for(var i=0;i<9&&p;i++,p=p.parentElement){
@@ -1174,9 +1211,10 @@ final class CouponTask {
                   if(/cp-grays|gray|disabled/.test(String(b.className||''))) continue;
                   if(inLead(b)) continue;
                   var bt=T(b).replace(/\\s+/g,'');
-                  if(!WORDS.test(bt)) continue;
+                  var usable=WORDS.test(bt),view=WORDS_VIEW.test(bt);
+                  if(!usable&&!view) continue;
                   if(seen.indexOf(b)>=0) continue;
-                  seen.push(b); out.push(b);
+                  seen.push(b); out.push({el:b,usable:usable});
                 }
                 return out;
               }
@@ -1239,13 +1277,14 @@ final class CouponTask {
                 for(var d=0;d<ds.length;d++){
                   var as=anchors(ds[d]);
                   for(var i=0;i<as.length;i++){
-                    var btn=as[i],el=cardOf(btn);
+                    var btn=as[i].el,usable=as[i].usable,el=cardOf(btn);
                     if(!el||seen.indexOf(el)>=0) continue;
                     seen.push(el);
                     var t=T(el),bt=T(btn);
                     if(!t) continue;
                     var one=parse(t,bt);
                     if(!one.name&&!one.type) continue;
+                    one.usable=usable;
                     one.i=out.length; out.push(one);
                     try{
                       el.setAttribute('data-qc-i',String(one.i));
@@ -1339,16 +1378,23 @@ final class CouponTask {
                           ||(t.indexOf('{{')<0&&/有效期至|可使用\\s*\\(|￥\\s*[0-9]/.test(t));
                 if((cards.length>0&&ready)||tries>40){
                   diagnose();
+                  var usableN=0;
                   for(var i=0;i<cards.length;i++){
                     var c=cards[i];
+                    if(c.usable) usableN++;
                     line('券'+c.i+': ['+(c.type||'券')+'] '+c.name
-                         +' | '+c.valid+' | '+c.amount+' | '+c.state+' | 按钮='+c.btn);
+                         +' | '+c.valid+' | '+c.amount+' | '+c.state+' | 按钮='+c.btn
+                         +(c.usable?'':' · 仅列出（按钮=「'+c.btn+'」，不是去使用，不自动用）'));
+                  }
+                  if(cards.length>usableN){
+                    line('合计: 可用 '+usableN+' 张 · 仅列出 '+(cards.length-usableN)
+                         +' 张（去查看/权益类，点了会跳外部页，不自动用）');
                   }
                   var bt=BT(),hm=bt.match(/可使用\\s*\\(([0-9]+)\\)/);
                   window[ID]=JSON.stringify({
                     stage:cards.length>0?'ok':'empty',
                     head:hm?('可使用('+hm[1]+')'):'',
-                    count:cards.length,items:cards,lines:L,
+                    count:cards.length,usableCount:usableN,items:cards,lines:L,
                     title:document.title||'',url:location.href
                   });
                   return;
@@ -1366,6 +1412,59 @@ final class CouponTask {
               window[ID]=S;
               window.__cmcc_coupon_code='';
 
+              // v4.36.0：用券提交的**硬回执**。页面上点「认证」后由页面自己发
+              //   POST /i/v1/cust/rightsCouponsUse/…
+              // 请求体 inParam 是密文（瑞数 + 动态签名），但响应外层是明文：
+              //   {"data":{"outParam":"<密文>"},"retCode":"000000","retMsg":"成功"}
+              // 只读 retCode，不解密、不自己拼请求、不改请求体。
+              // 旧版把「兑换中 卡券兑换中，预计24小时内到账…」这种过程态弹窗文案
+              // 当成功，和鹅蛋「点击 2 次冒充结果」是同一类软判定，这里换成机器回执。
+              S.netUse=null;
+              (function(){
+                try{
+                  if(window.__cmcc_coupon_netHooked){
+                    S.netUse=window.__cmcc_coupon_net||null;
+                    return;
+                  }
+                  window.__cmcc_coupon_netHooked=1;
+                  window.__cmcc_coupon_net=null;
+                  var XO=window.XMLHttpRequest;
+                  if(!XO||!XO.prototype) return;
+                  var open0=XO.prototype.open, send0=XO.prototype.send;
+                  XO.prototype.open=function(m,u){
+                    try{ this.__cmccUrl=String(u||'') }catch(e){}
+                    return open0.apply(this,arguments);
+                  };
+                  XO.prototype.send=function(){
+                    var xhr=this, url='';
+                    try{ url=String(xhr.__cmccUrl||'') }catch(e){}
+                    if(url.indexOf('rightsCouponsUse')>=0){
+                      try{
+                        xhr.addEventListener('load',function(){
+                          var txt='', code='', msg='';
+                          try{ txt=String(xhr.responseText||'') }catch(e){}
+                          try{
+                            var o=JSON.parse(txt);
+                            code=String(o.retCode||o.code||'');
+                            msg=String(o.retMsg||o.message||o.msg||'');
+                          }catch(e){
+                            // 不是 JSON 也要留证据，别把「解析失败」当成「没回执」。
+                            msg='响应非JSON';
+                          }
+                          window.__cmcc_coupon_net={
+                            ret:code, msg:msg, at:Date.now(),
+                            status:(function(){ try{ return xhr.status }catch(e){ return 0 } })(),
+                            head:txt.substring(0,180)
+                          };
+                          try{ if(window.__cmcc_coupon_use) window.__cmcc_coupon_use.netUse=window.__cmcc_coupon_net }catch(e){}
+                        });
+                      }catch(e){}
+                    }
+                    return send0.apply(this,arguments);
+                  };
+                }catch(e){}
+              })();
+
               // v3.50：每条 line 带自增序号，Java 侧轮询时增量桥接到导出日志。
               // 旧版 S.lines 只在收尾 describeUse() 里打印，流程一卡住/中途导出就全黑盒，
               // 「点认证/关弹窗/为什么跳过」全靠猜。序号让 S.lines 滚动 shift 也不重不漏。
@@ -1376,7 +1475,7 @@ final class CouponTask {
               }
               // 宿主进程里真正跑的脚本版本：日志出现这条 = LSPosed 已重载新 dex。
               // 日志头「模块版本」只是 App 侧 BuildConfig，不能证明注入的 dex 是新的。
-              line('券脚本 4.1.0 已装载 · 刷新读 App 官方卡券真页 + 等券列表渲染再动手（不再抢跑判空）');
+              line('券脚本 4.36.0 已装载 · 认 rightsCouponsUse retCode 硬回执 + 等券列表渲染再动手');
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
               // 同 SCAN_SCRIPT：离屏页 innerText 为空、rect 全 0，只能靠 textContent + CSS 判定。
               function T(e){
@@ -2361,8 +2460,22 @@ final class CouponTask {
                 //   不点提示框、不点遮罩、不点按钮、不复位状态机、不改 DOM。
                 // 结果迟迟不出来的，把 unknown 交给 Java 在下一张重进后复核。
                 var lastTxt='';
-                var limit=30;                       // 30 × 500ms = 15 秒
+                var t0=Date.now();
+                var limit=24;                       // 24 × 500ms = 12 秒（有硬回执会立刻返回）
                 for(var i=0;i<limit;i++){
+                  // 0) v4.36.0：网络硬回执优先。retCode 是机器可判的唯一证据，
+                  //    比结果弹窗/过程态文案都硬；拿到就立刻收尾，直接切下一张（A3）。
+                  var nu=S.netUse||window.__cmcc_coupon_net;
+                  if(nu&&nu.ret&&nu.at>=t0-2000){
+                    if(nu.ret==='000000'||nu.ret==='0'){
+                      line('提交回执 rightsCouponsUse retCode='+nu.ret
+                           +(nu.msg?('（'+nu.msg+'）'):'')+' · 页面已受理');
+                      return {ok:true,text:'已受理 retCode='+nu.ret+(nu.msg?(' '+nu.msg):'')};
+                    }
+                    line('提交回执 rightsCouponsUse retCode='+nu.ret
+                         +(nu.msg?('（'+nu.msg+'）'):'')+' · 页面拒绝');
+                    return {ok:false,text:'失败 retCode='+nu.ret+(nu.msg?(' '+nu.msg):'')};
+                  }
                   // 1) 券数量下降是硬回执，够判成功。
                   if(before>0){
                     var n=headCount();
@@ -2399,7 +2512,8 @@ final class CouponTask {
                   await wait(500);
                 }
                 // 15 秒还没结论：不判死，标 unknown，由下一张重进后按「券还在不在」复核。
-                line('结果: 15 秒内没有明确成败文案，标为待复核（下一张刷新后核对券是否还在）');
+                line('结果: 12 秒内既没有 rightsCouponsUse 回执也没有明确成败文案，'
+                     +'标为待复核（下一张刷新后核对券是否还在）');
                 return {ok:false,unknown:true,text:lastTxt};
               }
 

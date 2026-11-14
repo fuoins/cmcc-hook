@@ -256,8 +256,21 @@ final class SoccerTask {
 
         detail.append("actNo: ").append(actNo).append('\n');
         detail.append("方式: ").append(mode.isEmpty() ? "页面组件" : mode).append('\n');
+        // v4.36.0：任务在「获取更多竞猜票」那张图片后面，先如实写清有没有点进去。
+        String panel = out.optString("panel", "");
+        detail.append("任务入口: ")
+                .append(panel.isEmpty() ? "首页没找到「获取更多竞猜票」图片，按首页扫任务"
+                        : "已点「获取更多竞猜票」进任务界面（" + panel + "）")
+                .append('\n');
+        JSONObject invite = out.optJSONObject("invite");
         detail.append("竞猜任务: 共 ").append(total).append(" 个，待做 ").append(undo)
                 .append("，完成 ").append(done).append("，复查仍待做 ").append(left).append('\n');
+        if (invite != null) {
+            detail.append("邀请任务: ").append(invite.optInt("count", 0)).append('/')
+                    .append(invite.optInt("max", 0))
+                    .append("1".equals(invite.optString("complete")) ? " 已完成" : " 未完成")
+                    .append("（邀请类不代做）").append('\n');
+        }
 
         JSONObject vote = out.optJSONObject("vote");
         int voteOk = vote == null ? 0 : vote.optInt("ok", 0);
@@ -329,15 +342,26 @@ final class SoccerTask {
                 // r18：DOM 上有任务按钮、数组却读空 —— 这是读错组件或读太早，不是「今天没任务」，
                 // 不能再当 skip 糊过去，否则永远是 0 项、永远跳过。
                 if (dom > 0) {
-                    summary = "球赛狂欢季 · 页面有 " + dom + " 个任务按钮，但任务数组读空";
+                    summary = "球赛狂欢季 · 任务界面有 " + dom + " 个「去完成」，任务数组读空";
                     return TaskRunner.Result.fail(summary, detail.toString(),
-                            "页面 DOM 上有「去完成/立即参与」按钮，说明任务存在，只是脚本没读到数据字段。\n"
-                                    + "把这份日志发我，我按 DOM 按钮直接点，不再依赖组件数组。");
+                            "已经点「获取更多竞猜票」进了任务界面，DOM 上有 " + dom
+                                    + " 个「去完成」按钮，说明任务确实存在，只是脚本没读到组件里的数据字段。\n"
+                                    + "把这份完整日志发我，我按 DOM 上的「去完成」改选择器，不再依赖组件数组。");
                 }
                 summary = "球赛狂欢季 · 页面没列出任务项";
+                // v4.36.0：能读到邀请回执就说明任务存在，不能再说「今天确实没有任务」。
+                if (invite != null) {
+                    summary = "球赛狂欢季 · 只剩邀请任务 "
+                            + invite.optInt("count", 0) + "/" + invite.optInt("max", 0);
+                    return TaskRunner.Result.idle(summary, detail.toString(),
+                            "页面能读到邀请任务回执（inviteCount / inviteMax），说明任务确实存在，"
+                                    + "只是邀请类按老规矩不代做。\n"
+                                    + "要拿邀请奖励得自己邀人；竞猜今天没有可投场次。");
+                }
                 return TaskRunner.Result.skip(summary, detail.toString(),
-                        "页面里既没扫到任务数组、DOM 上也没有「去完成/去邀请」按钮，"
-                                + "说明今天确实没有任务。");
+                        "点进任务界面后既没扫到任务数组、DOM 上也没有「去完成/去邀请」按钮，"
+                                + "也没读到 invite/taskInfo 回执 —— 这一版页面确实没有任务可做。\n"
+                                + "如果 App 里明明能看到任务，把完整日志发我，我按 DOM 文案改选择器。");
             }
             summary = "球赛狂欢季 · 今天没有待做任务"
                     + (voteSkip.isEmpty() ? "" : "（" + voteSkip + "）");
@@ -411,6 +435,54 @@ final class SoccerTask {
               window[ID]='';
               var L=[];
               function line(s){ L.push(String(s)) }
+              // v4.36.0：NET 以前只是**一个名字** —— 下面判竞猜回执时读 NET[vq].s，
+              // 但全脚本没有任何地方往 NET 里写，ReferenceError 被外层的
+              // catch(e){ voteOut.err='竞猜异常 '+e } 吞掉，竞猜永远算「异常」、
+              // 永远记 0 条回执。这里补一个只读回执钩子：记 method / url / status /
+              // 响应体，不改请求、不改响应。
+              var NET=[];
+              (function(){
+                try{
+                  if(window.__cmcc_soccer_netHooked){ NET=window.__cmcc_soccer_net||[]; return }
+                  window.__cmcc_soccer_netHooked=1;
+                  window.__cmcc_soccer_net=NET;
+                  var XO=window.XMLHttpRequest;
+                  if(!XO||!XO.prototype) return;
+                  var open0=XO.prototype.open, send0=XO.prototype.send;
+                  XO.prototype.open=function(m,u){
+                    try{ this.__cmccM=String(m||''); this.__cmccU=String(u||'') }catch(e){}
+                    return open0.apply(this,arguments);
+                  };
+                  XO.prototype.send=function(){
+                    var x=this;
+                    try{
+                      x.addEventListener('load',function(){
+                        var u=''; try{ u=String(x.__cmccU||'') }catch(e){}
+                        var b=''; try{ b=String(x.responseText||'') }catch(e){}
+                        var st=0; try{ st=x.status }catch(e){}
+                        NET.push({m:String(x.__cmccM||''),u:u,s:st,b:b});
+                        if(NET.length>120) NET.shift();
+                      });
+                    }catch(e){}
+                    return send0.apply(this,arguments);
+                  };
+                }catch(e){}
+              })();
+              function netN(tail){
+                var n=0;
+                for(var i=0;i<NET.length;i++){
+                  var u=String(NET[i].u||'').split('?')[0];
+                  if(u.split('/').pop()===tail) n++;
+                }
+                return n;
+              }
+              function netBody(tail){
+                for(var i=NET.length-1;i>=0;i--){
+                  var u=String(NET[i].u||'').split('?')[0];
+                  if(u.split('/').pop()===tail) return String(NET[i].b||'');
+                }
+                return '';
+              }
               function cut(s,n){ s=String(s==null?'':s); return s.length>n?s.slice(0,n)+'…':s }
               function isFn(x){ return typeof x==='function' }
               function wait(ms){ return new Promise(function(r){ setTimeout(r,ms) }) }
@@ -566,6 +638,88 @@ final class SoccerTask {
                     }
                     return false;
                   }
+                  // ---- v4.36.0：任务不在首页，要先点「获取更多竞猜票」那张图片 ----
+                  // 用户给的两张图分工是明确的，别混为一谈：
+                  //   图1 moreguess.77c3d5f6.png = 蓝色圆形「获取更多 / 竞猜票」，
+                  //        在首页竞猜票区，点它才进任务界面（组件 GuessTicket.handleTaskClick）；
+                  //   图2「去完成」= 任务界面里**每个任务各一个**的按钮。
+                  // 旧脚本只在首页扫任务数组，扫出 0 项就写「今天确实没有任务」，
+                  // 属于没进门就说屋里没人。
+                  function moreGuessImg(){
+                    var out=[];
+                    try{
+                      var ims=document.images||[];
+                      for(var i=0;i<ims.length;i++){
+                        var e=ims[i];
+                        if(!vok(e)) continue;
+                        var src=String(e.currentSrc||e.src||e.getAttribute('src')||'');
+                        var alt=String(e.alt||e.title||'');
+                        var par='';
+                        try{ par=String((e.parentElement&&e.parentElement.innerText)||'') }catch(x){}
+                        var sc=0;
+                        if(/moreguess/i.test(src)) sc+=6;
+                        if(/获取更多|更多竞猜票|竞猜票/.test(alt+par)) sc+=4;
+                        if(/moreguess|guess/i.test(String(e.className||''))) sc+=2;
+                        if(sc>=4) out.push({el:e,src:src.split('?')[0].split('/').pop(),sc:sc});
+                      }
+                    }catch(x){}
+                    out.sort(function(a,b){ return b.sc-a.sc });
+                    return out;
+                  }
+                  function openTaskPanel(){
+                    var cands=moreGuessImg(), q=[];
+                    for(var i=0;i<cands.length&&i<5;i++) q.push(cands[i].src+'|s'+cands[i].sc);
+                    line('竞猜票入口: '+(q.length?q.join(' , '):'没找到 moreguess 图片'));
+                    var el=null, how='';
+                    if(cands.length){ el=cands[0].el; how='图片' }
+                    if(!el){
+                      var all=document.querySelectorAll('div,span,button,a,img');
+                      for(var i2=0;i2<all.length;i2++){
+                        if(!vok(all[i2])) continue;
+                        var t2=String(all[i2].innerText||'').replace(/\\s+/g,'');
+                        if(t2==='获取更多竞猜票'||t2==='获取更多'){ el=all[i2]; how='文案'; break }
+                      }
+                    }
+                    if(!el){
+                      line('进任务界面: 没找到「获取更多竞猜票」入口，按首页扫任务');
+                      return '';
+                    }
+                    var nm2=(how==='图片')
+                      ?String(el.currentSrc||el.src||'').split('?')[0].split('/').pop()
+                      :'获取更多竞猜票';
+                    var r2=null; try{ r2=el.getBoundingClientRect() }catch(x){}
+                    line('进任务界面: 点'+how+'「'+cut(nm2,40)+'」'
+                         +(r2?(' '+Math.round(r2.width)+'x'+Math.round(r2.height)):''));
+                    try{ el.scrollIntoView({block:'center'}) }catch(x){}
+                    try{
+                      var b2=el.getBoundingClientRect();
+                      var cx=b2.left+b2.width/2, cy=b2.top+b2.height/2;
+                      var hit=null;
+                      try{ hit=document.elementFromPoint(cx,cy) }catch(x){}
+                      var tgt=hit||el;
+                      var tps=['mousedown','mouseup','click'];
+                      for(var tp=0;tp<tps.length;tp++){
+                        try{
+                          tgt.dispatchEvent(new MouseEvent(tps[tp],
+                            {bubbles:true,cancelable:true,view:window,clientX:cx,clientY:cy}));
+                        }catch(x){}
+                      }
+                      if(tgt!==el){ try{ el.click() }catch(x){} }
+                      line('点击落点: '+String(tgt.tagName||'')+'.'+String(tgt.className||'').slice(0,30));
+                    }catch(x){ line('点击异常: '+x) }
+                    return how+'|'+nm2;
+                  }
+                  var panel=openTaskPanel();
+                  if(panel){
+                    await wait(2400);
+                    line('进任务界面后接口: taskIndex '+netN('taskIndex')
+                         +' 条 / doTask '+netN('doTask')
+                         +' / taskInfo '+netN('taskInfo')
+                         +' / page '+cut(String(location.href),120));
+                    // 面板是新渲染的，组件树要重新走一遍，否则还是首页那份快照。
+                    comps=[]; walk(root,0,comps);
+                    line('组件（进任务界面后）: '+comps.length+' 个');
+                  }
                   scanTasks();
 
                   // v3.66：11-08 08:33 的页面只剩 GuessTicket.buildInviteTask /
@@ -626,21 +780,58 @@ final class SoccerTask {
                   line('任务: 共 '+tasks.length+' 项');
                   // r18：数组读空时用 DOM 上的任务按钮做交叉验证。
                   // 页面有按钮 = 字段没对上（读错组件/读太早）；页面也没按钮 = 今天确实没任务。
-                  var domBtn=0;
+                  var domBtn=0, domWords={};
                   try{
                     var elAll=document.querySelectorAll('div,span,button,a');
                     for(var q=0;q<elAll.length;q++){
                       var tx=String(elAll[q].innerText||'').replace(/\\s+/g,'');
-                      if(/^(去完成|立即参与|去邀请|去逛逛|领取|去参与)$/.test(tx)) domBtn++;
+                      if(/^(去完成|立即参与|去邀请|去逛逛|领取|去参与)$/.test(tx)){
+                        domBtn++;
+                        domWords[tx]=(domWords[tx]||0)+1;
+                      }
                     }
                   }catch(e){}
-                  line('DOM任务按钮: '+domBtn+' 个');
+                  var dw=[];
+                  for(var dk in domWords) dw.push(dk+'×'+domWords[dk]);
+                  line('DOM任务按钮: '+domBtn+' 个'+(dw.length?('（'+dw.join(' / ')+'）'):''));
+                  // v4.36.0：任务界面里每个任务各一个「去完成」，这是「任务确实存在」的
+                  // 直接证据。邀请/关注/投票这类按老规矩**不代点**，先如实列出来。
+                  if(domBtn>0){
+                    line('任务入口说明: 「去完成」是任务界面里每个任务各一个的按钮；'
+                         +'邀请/关注/投票类不代做，这里只列出来当证据');
+                  }
                   var undo=0;
                   for(var i=0;i<tasks.length;i++){
                     var st=stageOf(tasks[i]);
                     if(/UNDO/i.test(st) || st==='') undo++;
                   }
                   line('待做: '+undo);
+
+                  // v4.36.0：邀请任务是**单对象**回执，不是数组 ——
+                  //   {"body":{"inviteCount":0,"inviteMax":5,"isComplete":"0"}}
+                  // harvest() 只捞数组，所以永远读不到它，日志才会写「今天确实没有任务」。
+                  // 邀请按老规矩不代做，但必须如实写「邀请任务 0/5 未完成」。
+                  var inv=null;
+                  try{
+                    var ib=netBody('taskInfo');
+                    if(ib){
+                      var io=JSON.parse(ib);
+                      var b0=(io&&io.body)?io.body:io;
+                      if(b0&&(b0.inviteMax!==undefined||b0.inviteCount!==undefined)){
+                        inv={count:Number(b0.inviteCount||0),max:Number(b0.inviteMax||0),
+                             complete:String(b0.isComplete||''),raw:cut(ib,160)};
+                      }else{
+                        line('邀请回执 taskInfo: '+cut(ib,160));
+                      }
+                    }
+                  }catch(e){ line('邀请回执解析失败: '+e) }
+                  if(inv){
+                    line('邀请任务: '+inv.count+'/'+inv.max
+                         +(inv.complete==='1'?' 已完成':' 未完成')
+                         +'（邀请类不代做，只如实列出）');
+                  }else{
+                    line('邀请任务: 没读到 invite/taskInfo 回执');
+                  }
 
                   var cands=[];
                   for(var i=0;i<comps.length;i++){
@@ -798,7 +989,9 @@ final class SoccerTask {
                         line('  '+opts[vi].name+' '+opts[vi].pct+'%');
                       }
                       if(opts.length<2){
-                        voteOut.err='页面上没找到两队选项';
+                        // v4.36.0：0~1 个选项多半是「当期没有可投的场次」（比赛没开 /
+                        // 已截止 / 还没放出对阵），不是「脚本没找到按钮」。分开写。
+                        voteOut.skip='当期无可投场次（页面上没有两队对阵选项）';
                       } else {
                         var mm=/(\\d{4}-\\d{1,2}-\\d{1,2})/.exec(bt0);
                         if(mm) voteOut.match=mm[1];
@@ -849,7 +1042,7 @@ final class SoccerTask {
 
                   done({ok:left===0, stage:'done', actNo:actNo, mode:mode,
                         total:tasks.length, undo:undo, done:doneCount, left:left,
-                        dom:domBtn, vote:voteOut});
+                        dom:domBtn, panel:panel||'', invite:inv, vote:voteOut});
                 }catch(err){
                   done({ok:false, stage:'error', msg:String((err&&err.stack)||err)});
                 }

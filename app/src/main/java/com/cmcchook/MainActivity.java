@@ -1936,6 +1936,12 @@ public final class MainActivity extends AppCompatActivity {
         String type = item.optString("type");
         String raw = item.optString("raw");
         String state = item.optString("state");
+        // v4.36.0：扫描端把「按钮=去查看」的券标成 usable=false —— 这批多是权益券/
+        // 第三方券，点「去查看」会跳外部页，批量用一定失败。这里直接拦掉置灰，
+        // 免得 UI 让人勾上一张点不动的券；日志里仍然逐张列出来。
+        if (item.has("usable") && !item.optBoolean("usable", true)) {
+            return true;
+        }
         String all = name + " " + type + " " + raw;
         if (state.contains("待生效") || state.contains("未生效") || state.contains("尚未生效")) {
             return true;
