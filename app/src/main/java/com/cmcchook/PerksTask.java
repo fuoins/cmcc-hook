@@ -423,7 +423,7 @@ final class PerksTask {
             (async function(){
               var ID='__cmcc_perks';
               window[ID]='';
-              var L=[], NET=[], WORDS=[], TARGET=0, RULE='';
+              var L=[], NET=[], WORDS=[], TARGET=0, RULE='', ACT='36293370';
               try{
                 if(window.__cmcc_perks_words&&window.__cmcc_perks_words.length){
                   WORDS=window.__cmcc_perks_words;
@@ -492,27 +492,35 @@ final class PerksTask {
                 return null
               }
 
-              // 两档奖池：ruleList["1"]=10 点档，ruleList["2"]=12 点档（周六日）。
+              // 两档奖池：ruleList["1"]=10 点档(receive.do)，["2"]=12 点档(stockOccupy.do，周六日)。
+              // 保留 prizeId/status/ruleType —— 直发请求体要用，不能只留奖品名。
+              function parseRuleList(rl){
+                var out={}, any=0;
+                for(var key in rl){
+                  if(!rl.hasOwnProperty(key)) continue;
+                  var arr=rl[key];
+                  if(!arr||!arr.length) continue;
+                  var r=arr[0], names=[], prizes=[], pl=r.prizeList||[];
+                  for(var j=0;j<pl.length;j++){
+                    var p=pl[j]||{}, nm=String(p.prizeName||'').replace(/\\s+/g,'');
+                    if(nm) names.push(nm);
+                    prizes.push({name:String(p.prizeName||''),id:String(p.prizeId||''),
+                                 status:String(p.status==null?'':p.status)});
+                  }
+                  out[key]={ruleId:String(r.ruleId||''),ruleType:String(r.ruleType||''),
+                            weekDay:String(r.weekDay||''),begin:String(r.beginTime||''),
+                            end:String(r.endTime||''),names:names,prizes:prizes};
+                  any++;
+                }
+                return any?out:null
+              }
               function rulesFromInfo(){
                 var rs=netHit(/dayWeekMoonReceive\\/queryActivityInfo\\.do/);
                 for(var i=rs.length-1;i>=0;i--){
                   var d=jsonOf(rs[i]), body=d&&d.body;
                   if(!body) continue;
-                  var rl=body.ruleList||{}, out={}, any=0;
-                  for(var key in rl){
-                    if(!rl.hasOwnProperty(key)) continue;
-                    var arr=rl[key];
-                    if(!arr||!arr.length) continue;
-                    var r=arr[0], names=[], pl=r.prizeList||[];
-                    for(var j=0;j<pl.length;j++){
-                      var nm=String(pl[j].prizeName||'').replace(/\\s+/g,'');
-                      if(nm) names.push(nm);
-                    }
-                    out[key]={ruleId:String(r.ruleId||''),weekDay:String(r.weekDay||''),
-                              begin:String(r.beginTime||''),end:String(r.endTime||''),names:names};
-                    any++;
-                  }
-                  if(any) return out;
+                  var o=parseRuleList(body.ruleList||{});
+                  if(o) return o;
                 }
                 return null
               }
@@ -727,6 +735,117 @@ final class PerksTask {
                 return pool[0]
               }
 
+              // ===== 直发通道：页面上下文发同源 XHR，不等 DOM 按钮亮 =====
+              // 签名 LJRkIeoW 每次请求都变，无法凭空拼；从页面自己发过的请求里借一条。
+              function anySign(){
+                var re=/[?&](LJRkIeoW=[^&]+)/, i, m;
+                for(i=NET.length-1;i>=0;i--){
+                  m=String(NET[i].u||'').match(re); if(m) return m[1];
+                }
+                try{
+                  var es=performance.getEntriesByType('resource');
+                  for(i=es.length-1;i>=0;i--){
+                    m=String(es[i].name||'').match(re); if(m) return m[1];
+                  }
+                }catch(e){}
+                return ''
+              }
+              function enc(s){ try{ return encodeURIComponent(String(s==null?'':s)) }catch(e){ return '' } }
+              function xhrPost(name, form, sign){
+                return new Promise(function(resolve){
+                  var url='https://rr.ln139.cn/rr/lm/dayWeekMoonReceive/'+name+'.do'+(sign?('?'+sign):'');
+                  var out={u:url,q:form,s:0,b:'',t:Date.now(),done:false};
+                  var x=null;
+                  function fin(){
+                    if(out.done) return; out.done=true;
+                    NET.push({m:'POST',u:url,s:out.s,b:out.b,q:form,t:Date.now()});
+                    if(NET.length>80) NET.shift();
+                    resolve(out);
+                  }
+                  try{
+                    x=new XMLHttpRequest();
+                    x.open('POST',url,true);
+                    x.setRequestHeader('Content-Type','application/x-www-form-urlencoded');
+                    x.onreadystatechange=function(){
+                      if(x.readyState!==4) return;
+                      out.s=x.status;
+                      try{ out.b=String(x.responseText||'') }catch(e){}
+                      fin();
+                    };
+                    x.send(form);
+                  }catch(e){ out.err=String(e); fin() }
+                  setTimeout(function(){ try{ if(x&&x.readyState!==4) x.abort() }catch(e){}; fin() },4500);
+                });
+              }
+              // 主动查一次奖池：查询类，到点前发也安全，顺带拿到可借的签名。
+              async function freshRules(){
+                var rec=await xhrPost('queryActivityInfo','activityCode='+ACT,anySign());
+                var d=jsonOf(rec), body=d&&d.body;
+                if(body&&body.ruleList) return parseRuleList(body.ruleList);
+                return null
+              }
+              function formOf(rule,p){
+                return 'activityCode='+ACT+'&ruleId='+enc(rule.ruleId)
+                      +'&prizeId='+enc(p.id)+'&prizeName='+enc(p.name)+'&provinceCode=91';
+              }
+              function judge(rec){
+                var d=jsonOf(rec);
+                var code=d?String(d.code||''):'', msg=d?String(d.msg||''):'';
+                var rid=(d&&d.body&&d.body.prizeRecordId)?String(d.body.prizeRecordId):'';
+                var txt=msg+' '+code;
+                return {ok:code==='0000'&&!!rid, code:code, msg:msg, rid:rid,
+                        terminal:/上限|已领|领过|明天|抢光|领完|存在未支付订单|已抢完|已达上限/.test(msg),
+                        notStart:/未开始|未开启|未到时间|不在活动|活动时间|未开放|未到/.test(msg),
+                        signErr:/签名|非法|鉴权|未登录|会话|失效|过期|LJRk|token|验签|重复请求|频繁/i.test(txt)};
+              }
+              // 按关键词挑奖品；status=1 可抢，0 未开（2.88 元话费券）。
+              function pickPrize(rule, skip){
+                var ps=(rule&&rule.prizes)||[], pool=[], i, w, k;
+                for(i=0;i<ps.length;i++){
+                  if(skip[ps[i].id]) continue;
+                  if(String(ps[i].status)==='1') pool.push(ps[i]);
+                }
+                if(!pool.length) return null;
+                for(w=0;w<WORDS.length;w++){
+                  var kw=String(WORDS[w]==null?'':WORDS[w]).replace(/\\s+/g,'');
+                  if(!kw) continue;
+                  for(k=0;k<pool.length;k++){
+                    if(String(pool[k].name).replace(/\\s+/g,'').indexOf(kw)>=0) return pool[k];
+                  }
+                }
+                return pool[0]
+              }
+              // 一档一次直发（含重试判定），返回 {ok,name,code,msg,rid,tries,stop}
+              async function burstOnce(rule, path, hardStop){
+                var skip={}, tries=0, lastCode='', lastMsg='';
+                while(Date.now()<hardStop){
+                  var p=pickPrize(rule,skip);
+                  if(!p) return {ok:false,stop:'这一档没有 status=1 的可抢奖品',tries:tries,code:lastCode,msg:lastMsg};
+                  var rec=await xhrPost(path,formOf(rule,p),anySign());
+                  var jd=judge(rec); tries++; lastCode=jd.code; lastMsg=jd.msg;
+                  if(tries<=4||tries%12===0){
+                    line('直发#'+tries+' '+cut(p.name,16)+' → status='+rec.s
+                         +' code='+jd.code+' '+cut(jd.msg,26));
+                  }
+                  if(jd.ok){
+                    line('直发命中: '+p.name+' rid='+jd.rid);
+                    return {ok:true,name:p.name,code:jd.code,msg:jd.msg,rid:jd.rid,tries:tries,stop:''};
+                  }
+                  if(jd.signErr){
+                    return {ok:false,stop:'签名被拒('+jd.code+' '+jd.msg+')',tries:tries,
+                            code:jd.code,msg:jd.msg,fallback:1};
+                  }
+                  if(jd.terminal && !jd.notStart){
+                    return {ok:false,stop:jd.msg||('业务码 '+jd.code),tries:tries,code:jd.code,msg:jd.msg};
+                  }
+                  // 3003 之类：换个奖品继续；未开始：继续贴点重试
+                  if(/存在未支付订单|已抢光|抢光|已达上限/.test(jd.msg)) skip[p.id]=1;
+                  await wait(Date.now()<hardStop-8000?160:350);
+                }
+                return {ok:false,stop:'直发窗口结束没拿到',tries:tries,code:lastCode,msg:lastMsg};
+              }
+              // ===== 直发通道结束 =====
+
               async function claimOne(t, quick){
                 var before=NET.length, clickAt=Date.now();
                 line('点「'+cut(t.label,10)+'」: '+cut(t.name,40));
@@ -749,7 +868,7 @@ final class PerksTask {
                 for(var n=0;n<(quick?12:24);n++){
                   await wait(500);
                   for(var m=before;m<NET.length;m++){
-                    if(/dayWeekMoonReceive\\/(receive|receiveWithRecord)\\.do/.test(String(NET[m].u||''))){
+                    if(/dayWeekMoonReceive\\/(receive|receiveWithRecord|stockOccupy)\\.do/.test(String(NET[m].u||''))){
                       if(NET[m].t && NET[m].t<clickAt-2000) continue;
                       rec=NET[m];
                     }
@@ -765,11 +884,12 @@ final class PerksTask {
                     r.rid=String(d.body.prizeRecordId);
                     r.ok=true;
                   }
-                  line('提交回执: receive.do status='+rec.s+' code='+r.code
-                       +' msg='+r.msg+(r.rid?(' rid='+r.rid):''));
+                  line('提交回执: '+String(rec.u||'').split('/').pop().split('?')[0]
+                       +' status='+rec.s+' code='+r.code+' msg='+r.msg
+                       +(r.rid?(' rid='+r.rid):''));
                   if(!r.ok) line('回执原文: '+cut(String(rec.b||''),200));
                 } else {
-                  line('提交回执: 12 秒内没有 receive.do（可能只弹了确认层或按钮没触发）');
+                  line('提交回执: 12 秒内没有领取回执（可能只弹了确认层或按钮没触发）');
                 }
                 return r
               }
@@ -784,32 +904,68 @@ final class PerksTask {
 
               var got=[], stop='', stopCode='', stopMsg='';
 
-              // 抢兑模式：先贴点等到点，再高频扫按钮，一出现就点。
+              // 抢兑模式：不等按钮亮，直接在页面上下文把领取请求发出去。
+              // 12 点档走 stockOccupy.do，10 点档走 receive.do（真机抓包实证）。
               if(TARGET>0){
                 line('抢兑: 目标 '+fmtTime(TARGET)+' · 档位 '+(RULE||'不限'));
-                while(Date.now()<TARGET-1500){ await wait(100) }
-                line('开扫: '+fmtTime(Date.now()));
-                var hardStop=TARGET+60000, tries=0;
-                while(Date.now()<hardStop){
-                  var rows0=scan(), t0=pick(rows0);
-                  if(!t0){
-                    tries++;
-                    var allGot=rows0.length>0;
-                    for(var ai=0;ai<rows0.length;ai++){ if(!rows0[ai].got) allGot=false }
-                    if(allGot){ stop='今日已领过'; break }
-                    if(tries===80&&RULE==='2') line('12 点档只在周六日开，今天可能没有这一档');
-                    if(tries%40===0) line('仍在等按钮… 已扫 '+tries+' 次');
-                    await wait(120);
-                    continue;
-                  }
-                  var r0=await claimOne(t0,true);
-                  if(r0.ok){ got.push(r0); line('抢到: '+cut(r0.name,30)); break }
-                  if(r0.code&&/上限|已领|领过|明天|抢光|领完/.test(String(r0.msg||''))){
-                    stop='该档没抢到'; stopCode=r0.code; stopMsg=r0.msg; break;
-                  }
-                  await wait(200);
+                var rule=RULES?RULES[RULE]:null;
+                if(!rule){
+                  var fr=await freshRules();
+                  if(fr){ RULES=fr; rule=fr[RULE];
+                    line('奖池: 主动查 queryActivityInfo 拿到 '+Object.keys(fr).length+' 档'); }
                 }
-                if(!got.length&&!stop) stop='60 秒内没出现可点按钮';
+                var sg=anySign();
+                line('通道: 页面上下文直发（借页面签名）· 签名 '+(sg?'已借到':'没借到'));
+                if(rule){
+                  line('规则: ruleId='+cut(rule.ruleId,12)+' ruleType='+rule.ruleType
+                       +' 奖品='+rule.prizes.length+' begin='+rule.begin+' weekDay='+rule.weekDay);
+                } else {
+                  line('规则: 没拿到这一档的奖池，只能退回按钮点击');
+                }
+
+                // 贴到目标前 350ms：开始高频发（提前量用于抵消网络/服务端时钟偏差）。
+                var path=(rule&&String(rule.ruleType)==='2')?'stockOccupy':'receive';
+                if(rule&&sg){
+                  var fireAt=TARGET-350;
+                  if(fireAt>Date.now()) line('贴点中: '+fmtTime(Date.now())+' → 开火 '+fmtTime(fireAt));
+                  while(Date.now()<fireAt){ await wait(40) }
+                  line('开火: '+fmtTime(Date.now())+' · '+path+'.do');
+                  var hardStop=TARGET+55000;
+                  var br=await burstOnce(rule,path,hardStop);
+                  line('直发合计 '+br.tries+' 次'+(br.stop?(' · '+br.stop):''));
+                  if(br.ok){
+                    got.push({name:br.name,code:br.code,msg:br.msg,rid:br.rid,ok:true});
+                  } else if(br.fallback){
+                    stop=br.stop; stopCode=br.code; stopMsg=br.msg;
+                    line('签名被拒，退回页面按钮（页面自己会生成合法签名）');
+                  } else {
+                    stop=br.stop; stopCode=br.code; stopMsg=br.msg;
+                  }
+                } else {
+                  stop=rule?'没借到页面签名':'没拿到这一档规则表';
+                }
+
+                // 兜底：直发没成才扫按钮；已命中就不再动页面。
+                if(!got.length && (sg||rule)){
+                  line('兜底: 扫页面按钮点击');
+                  var fbStop=Math.max(Date.now()+20000, TARGET+30000), fbTries=0;
+                  while(Date.now()<fbStop){
+                    var rows0=scan(), t0=pick(rows0);
+                    if(t0){
+                      var r0=await claimOne(t0,true);
+                      if(r0.ok){ got.push(r0); line('兜底抢到: '+cut(r0.name,30)); break }
+                      if(r0.code&&/上限|已领|领过|明天|抢光|领完/.test(String(r0.msg||''))){
+                        if(!stopCode){ stopCode=r0.code; stopMsg=r0.msg; }
+                        break;
+                      }
+                    } else {
+                      fbTries++;
+                      if(fbTries%40===0) line('兜底仍在等按钮… 已扫 '+fbTries+' 次');
+                    }
+                    await wait(150);
+                  }
+                }
+                if(!got.length&&!stop) stop='直发与按钮都没拿到';
                 var a0=scan(), aS0=stateOf(a0);
                 if(a0.length) line('收工状态: '+aS0);
                 done({stage:'done', grab:1, items:first.length, claimable:canN,
